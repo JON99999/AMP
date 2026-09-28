@@ -30,6 +30,7 @@ interface PlayerTabProps {
   isFolderChooserOpen?: boolean;
   onCloseFolderChooser?: () => void;
   onOpenFolderChooser?: () => void;
+  isReadOnly?: boolean;
 }
 
 export default function PlayerTab({ 
@@ -52,6 +53,7 @@ export default function PlayerTab({
   isFolderChooserOpen,
   onCloseFolderChooser,
   onOpenFolderChooser,
+  isReadOnly = false,
 }: PlayerTabProps) {
   const {
     playingStates,
@@ -2584,6 +2586,7 @@ export default function PlayerTab({
           playMode={playMode}
           isOverlay={true}
           isPreview={activeLiveReadOverlay.playMode === 'Export' || activeLiveReadOverlay.isPreview || playMode === 'Export'}
+          isReadOnly={isReadOnly}
           onClose={() => setActiveLiveReadOverlay(null)}
           onLogCommit={(logEntry) => {
             if (playMode !== 'Export' && activeLiveReadOverlay.playMode !== 'Export' && !activeLiveReadOverlay.isPreview) {

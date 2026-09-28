@@ -960,7 +960,7 @@ export const saveCalendarToDrive = async (schedules: Announcement[]): Promise<vo
       _meta: {
         schemaVersion: 1,
         minAppVersion: "0.16.0",
-        lastModifiedBy: "0.16.4",
+        lastModifiedBy: "0.16.6",
         lastModifiedAt: new Date().toISOString()
       },
       AnnouncementsBackupCounter: counter + 1,
@@ -1022,7 +1022,7 @@ export const saveShowsToDrive = async (shows: Show[]): Promise<void> => {
       _meta: {
         schemaVersion: 1,
         minAppVersion: "0.16.0",
-        lastModifiedBy: "0.16.4",
+        lastModifiedBy: "0.16.6",
         lastModifiedAt: new Date().toISOString()
       },
       ShowsBackupCounter: counter,

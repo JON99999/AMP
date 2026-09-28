@@ -51,6 +51,7 @@ interface LiveReadPopoutProps {
   onPlayBackupMp3?: (backupMp3Url: string) => void;
   isOverlay?: boolean;
   isPreview?: boolean;
+  isReadOnly?: boolean;
 }
 
 const isMac = typeof window !== 'undefined' && (
@@ -103,7 +104,8 @@ export default function LiveReadPopout({
   onLogCommit,
   onPlayBackupMp3,
   isOverlay = false,
-  isPreview = false
+  isPreview = false,
+  isReadOnly = false
 }: LiveReadPopoutProps) {
   // Configured file & schedule states
   const [fileName, setFileName] = useState(initialFileName);
@@ -263,22 +265,26 @@ export default function LiveReadPopout({
       ...(showDateTime ? { showDateTime } : {})
     };
 
-    if ((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) {
-      await (window as any).electronAPI.logLiveReadCommit(logEntry);
-    }
-
-    if (onLogCommit) {
-      onLogCommit(logEntry);
-    } else if (!((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) && !isPreviewMode) {
-      try {
-        await fetch('/api/logs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(logEntry)
-        });
-      } catch (e) {
-        console.error('Failed to log backup play directly:', e);
+    if (!isReadOnly) {
+      if ((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) {
+        await (window as any).electronAPI.logLiveReadCommit(logEntry);
       }
+
+      if (onLogCommit) {
+        onLogCommit(logEntry);
+      } else if (!((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) && !isPreviewMode) {
+        try {
+          await fetch('/api/logs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(logEntry)
+          });
+        } catch (e) {
+          console.error('Failed to log backup play directly:', e);
+        }
+      }
+    } else {
+      console.warn('Live Read backup play log skipped: Station data is in read-only compatibility mode.');
     }
 
     if (onPlayBackupMp3) {
@@ -542,22 +548,26 @@ export default function LiveReadPopout({
     };
 
     // Forward to main window via IPC if running inside Electron, or trigger callback
-    if ((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) {
-      await (window as any).electronAPI.logLiveReadCommit(logEntry);
-    }
-    
-    if (onLogCommit) {
-      onLogCommit(logEntry);
-    } else if (!((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) && !isPreviewMode) {
-      try {
-        await fetch('/api/logs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(logEntry)
-        });
-      } catch (e) {
-        console.error('Failed to log commit directly:', e);
+    if (!isReadOnly) {
+      if ((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) {
+        await (window as any).electronAPI.logLiveReadCommit(logEntry);
       }
+      
+      if (onLogCommit) {
+        onLogCommit(logEntry);
+      } else if (!((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) && !isPreviewMode) {
+        try {
+          await fetch('/api/logs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(logEntry)
+          });
+        } catch (e) {
+          console.error('Failed to log commit directly:', e);
+        }
+      }
+    } else {
+      console.warn('Live Read commit log skipped: Station data is in read-only compatibility mode.');
     }
 
     // Close window if running inside Electron, or trigger callback

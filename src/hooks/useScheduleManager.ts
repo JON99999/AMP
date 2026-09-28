@@ -18,6 +18,7 @@ export interface UseScheduleManagerProps {
   selectedPrerecordShowId?: string;
   selectedPlaylistShow?: Show | null;
   onShowLocationsModal?: () => void;
+  isReadOnly?: boolean;
 }
 
 export interface UseScheduleManagerResult {
@@ -44,6 +45,7 @@ export function useScheduleManager({
   selectedPrerecordShowId,
   selectedPlaylistShow,
   onShowLocationsModal,
+  isReadOnly = false,
 }: UseScheduleManagerProps): UseScheduleManagerResult {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [shows, setShows] = useState<Show[]>([]);
@@ -51,6 +53,9 @@ export function useScheduleManager({
   const [isSaving, setIsSaving] = useState(false);
   const [savingLabel, setSavingLabel] = useState<string | null>(null);
   const [saveRecoveryModal, setSaveRecoveryModal] = useState<SaveRecoveryInfo | null>(null);
+
+  const isReadOnlyRef = useRef(isReadOnly);
+  isReadOnlyRef.current = isReadOnly;
 
   const showsRef = useRef(shows);
   showsRef.current = shows;
@@ -92,6 +97,10 @@ export function useScheduleManager({
   }, [token]);
 
   const saveShows = useCallback(async (newShows: Show[]): Promise<boolean> => {
+    if (isReadOnlyRef.current) {
+      console.warn('Saving shows skipped: Station data is in read-only compatibility mode.');
+      return false;
+    }
     const settings = getSavedSettings();
     setIsSaving(true);
     setSavingLabel('Saving shows profile...');
@@ -162,6 +171,10 @@ export function useScheduleManager({
   }, [token, onShowLocationsModal]);
 
   const saveAnnouncements = useCallback(async (newAnnouncements: Announcement[]): Promise<boolean> => {
+    if (isReadOnlyRef.current) {
+      console.warn('Saving announcements skipped: Station data is in read-only compatibility mode.');
+      return false;
+    }
     const normalized = normalizeAnnouncements(newAnnouncements);
     const settings = getSavedSettings();
     setIsSaving(true);
@@ -233,6 +246,10 @@ export function useScheduleManager({
   }, [token, onShowLocationsModal]);
 
   const addLog = useCallback(async (entry: LogEntry) => {
+    if (isReadOnlyRef.current) {
+      console.warn('Recording play log skipped: Station data is in read-only compatibility mode.');
+      return;
+    }
     const settings = getSavedSettings();
 
     let showId = entry.showId;

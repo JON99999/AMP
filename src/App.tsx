@@ -53,7 +53,7 @@ import { ExportModal } from "./components/ExportModal";
 import { DataUpgradeRequiredModal } from "./components/DataUpgradeRequiredModal";
 import { NewerVersionDetectedModal } from "./components/NewerVersionDetectedModal";
 import { ReadOnlyCompatibilityBanner } from "./components/ReadOnlyCompatibilityBanner";
-import { assessDataCompatibility, CompatibilityReport } from "./lib/compatibility";
+import { assessDataCompatibility, CompatibilityReport, CURRENT_APP_VERSION } from "./lib/compatibility";
 import { getInitialTheme, applyTheme, ThemeId } from "./lib/theme";
 import { cn, extractFolderId, getSortedShows, getShowShade, isTimeInShow, getActualShowStart, normalizeAnnouncements, getAllRequiredMp3Urls, getActiveMp3ForSlot, formatExportTimeAmPm } from "./lib/utils";
 import {
@@ -592,6 +592,12 @@ export default function App() {
   const [selectedPlaylistShow, setSelectedPlaylistShow] = useState<Show | null>(null);
   const [selectedPrerecordShowId, setSelectedPrerecordShowId] = useState<string>("");
 
+  // Schema Version Compatibility State
+  const [compatibilityReport, setCompatibilityReport] = useState<CompatibilityReport | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [showNewerVersionModal, setShowNewerVersionModal] = useState(false);
+  const isReadOnlyCompatibility = compatibilityReport?.status === 'NEWER_VERSION_DETECTED' || (!isAdminApp && compatibilityReport?.status === 'OLDER_VERSION_DETECTED');
+
   const {
     announcements,
     setAnnouncements,
@@ -614,6 +620,7 @@ export default function App() {
     selectedPrerecordShowId,
     selectedPlaylistShow,
     onShowLocationsModal: () => setShowLocationsModal(true),
+    isReadOnly: isReadOnlyCompatibility,
   });
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [isFolderChooserOpen, setIsFolderChooserOpen] = useState(false);
@@ -646,24 +653,34 @@ export default function App() {
   const [showFilterText, setShowFilterText] = useState("");
   const dateSelectRef = useRef<HTMLSelectElement>(null);
 
-  // Schema Version Compatibility State
-  const [compatibilityReport, setCompatibilityReport] = useState<CompatibilityReport | null>(null);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
-  const [showNewerVersionModal, setShowNewerVersionModal] = useState(false);
-  const isReadOnlyCompatibility = compatibilityReport?.status === 'NEWER_VERSION_DETECTED' || (!isAdminApp && compatibilityReport?.status === 'OLDER_VERSION_DETECTED');
-
   const handleConfirmUpgrade = async () => {
     try {
-      await fetch("/api/compatibility/pre-upgrade-backup", { method: "POST" });
-      await saveAnnouncements(announcements);
-      await saveShows(shows);
+      const activeSettings = getSavedSettings();
+      if (activeSettings.mode === "Local") {
+        const resp = await fetch("/api/compatibility/upgrade", { method: "POST" });
+        const resData = await resp.json();
+        if (resData && resData.success) {
+          if (Array.isArray(resData.announcements)) {
+            setAnnouncements(normalizeAnnouncements(resData.announcements));
+          }
+          if (Array.isArray(resData.shows)) {
+            setShows(resData.shows);
+          }
+          setCompatibilityReport(assessDataCompatibility(resData.meta));
+        } else {
+          throw new Error(resData?.error || "Upgrade endpoint returned unsuccessful status");
+        }
+      } else {
+        await saveAnnouncements(announcements);
+        await saveShows(shows);
+        setCompatibilityReport({
+          status: 'COMPATIBLE',
+          schemaVersion: 1,
+          minAppVersion: '0.16.0',
+          lastModifiedBy: CURRENT_APP_VERSION
+        });
+      }
       setShowUpgradeModal(false);
-      setCompatibilityReport({
-        status: 'COMPATIBLE',
-        schemaVersion: 1,
-        minAppVersion: '0.16.0',
-        lastModifiedBy: '0.16.4'
-      });
     } catch (e) {
       console.error("Failed to upgrade data schema:", e);
     }
@@ -3238,6 +3255,7 @@ export default function App() {
                     isFolderChooserOpen={isFolderChooserOpen}
                     onCloseFolderChooser={() => setIsFolderChooserOpen(false)}
                     onOpenFolderChooser={() => setIsFolderChooserOpen(true)}
+                    isReadOnly={isReadOnlyCompatibility}
                   />
                 </motion.div>
               ) : activeTab === "calendar" ? (

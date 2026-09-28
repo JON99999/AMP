@@ -1423,7 +1423,7 @@ async function startServer() {
         _meta: {
           schemaVersion: 1,
           minAppVersion: "0.16.0",
-          lastModifiedBy: "0.16.4",
+          lastModifiedBy: "0.16.6",
           lastModifiedAt: new Date().toISOString()
         },
         AnnouncementsBackupCounter: counter,
@@ -1502,7 +1502,7 @@ async function startServer() {
         _meta: {
           schemaVersion: 1,
           minAppVersion: "0.16.0",
-          lastModifiedBy: "0.16.4",
+          lastModifiedBy: "0.16.6",
           lastModifiedAt: new Date().toISOString()
         },
         ShowsBackupCounter: counter,
@@ -1532,7 +1532,7 @@ async function startServer() {
     }
   });
 
-  // API - Compatibility Inspection and Pre-Upgrade Backup Snapshot
+  // API - Compatibility Inspection and Pre-Upgrade Backup Snapshot & Migration
   app.get('/api/compatibility/inspect', (req, res) => {
     try {
       const calPath = getCalendarFilePath();
@@ -1553,7 +1553,7 @@ async function startServer() {
         } catch (_) {}
       }
 
-      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: 1, minAppVersion: '0.16.0', lastModifiedBy: '0.16.4' };
+      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: 1, minAppVersion: '0.16.0', lastModifiedBy: '0.16.6' };
       res.json({ success: true, meta: activeMeta, announcementsMeta, showsMeta });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
@@ -1588,6 +1588,203 @@ async function startServer() {
 
       res.json({ success: true, backupsCreated });
     } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post('/api/compatibility/upgrade', (req, res) => {
+    try {
+      const calPath = getCalendarFilePath();
+      const showsPath = getShowsFilePath();
+      const settingsDir = getAmpSettingsDir(currentSettings);
+      const backupsDir = path.join(settingsDir, 'backups');
+      if (!fs.existsSync(backupsDir)) {
+        fs.mkdirSync(backupsDir, { recursive: true });
+      }
+
+      const now = new Date();
+      const timestamp = now.toISOString().replace(/[:.]/g, '-');
+      const backupsCreated: string[] = [];
+
+      // 1. Take snapshot backup
+      if (calPath && fs.existsSync(calPath)) {
+        const backupTarget = path.join(backupsDir, `announcements.backup-pre-upgrade-${timestamp}.json`);
+        fs.copyFileSync(calPath, backupTarget);
+        backupsCreated.push(backupTarget);
+      }
+      if (showsPath && fs.existsSync(showsPath)) {
+        const backupTarget = path.join(backupsDir, `shows.backup-pre-upgrade-${timestamp}.json`);
+        fs.copyFileSync(showsPath, backupTarget);
+        backupsCreated.push(backupTarget);
+      }
+
+      const isoNow = now.toISOString();
+
+      // 2. Read and deeply migrate announcements.json
+      let migratedAnnouncements: any[] = [];
+      let annCounter = 0;
+      if (calPath && fs.existsSync(calPath)) {
+        try {
+          const rawCal = fs.readFileSync(calPath, 'utf-8');
+          const parsed = JSON.parse(rawCal || '[]');
+          let rawList: any[] = [];
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            rawList = Array.isArray(parsed.data) ? parsed.data : [];
+            annCounter = parsed.AnnouncementsBackupCounter || 0;
+          } else if (Array.isArray(parsed)) {
+            rawList = parsed;
+          }
+
+          migratedAnnouncements = rawList.map((item: any, idx: number) => {
+            const rawTimeGated: any[] = Array.isArray(item.timeGatedMp3s) ? item.timeGatedMp3s : [];
+            let normalizedTimeGated = rawTimeGated.map((m: any, mIdx: number) => {
+              const url = (m.mp3Url || m.filename || '').trim();
+              const isScript = url.toLowerCase().match(/\.(txt|pdf|png|jpg|jpeg)$/);
+              const assetType = (m.assetType === 'script' || m.assetType === 'audio')
+                ? m.assetType
+                : (isScript ? 'script' : 'audio');
+              return {
+                id: m.id || `item-${Date.now()}-${mIdx}-${Math.random().toString(36).substring(2, 6)}`,
+                mp3Url: url,
+                startDate: m.startDate || '',
+                endDate: m.endDate || '',
+                assetType,
+                backupMp3Url: assetType === 'script' ? (m.backupMp3Url || '') : '',
+                approximateReadTime: assetType === 'script' ? (m.approximateReadTime || '') : '',
+                duration: assetType === 'audio' ? (m.duration || '') : '',
+                fileSize: m.fileSize || ''
+              };
+            });
+
+            if (normalizedTimeGated.length === 0 && item.mp3Url) {
+              const url = String(item.mp3Url).trim();
+              const isScript = url.toLowerCase().match(/\.(txt|pdf|png|jpg|jpeg)$/);
+              const assetType = item.assetType || (isScript ? 'script' : 'audio');
+              normalizedTimeGated = [{
+                id: `item-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+                mp3Url: url,
+                startDate: '',
+                endDate: '',
+                assetType,
+                backupMp3Url: assetType === 'script' ? (item.backupMp3Url || '') : '',
+                approximateReadTime: assetType === 'script' ? (item.approximateReadTime || '') : '',
+                duration: assetType === 'audio' ? (item.duration || '') : '',
+                fileSize: item.fileSize || ''
+              }];
+            }
+
+            const cleanItem: any = {
+              id: item.id || `ann-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+              name: item.name || 'Untitled Announcement',
+              type: item.type || 'basic-hourly',
+              enabled: typeof item.enabled === 'boolean' ? item.enabled : true,
+              minute: typeof item.minute === 'number' ? item.minute : 0,
+              days: Array.isArray(item.days) ? item.days : [0, 1, 2, 3, 4, 5, 6],
+              hours: Array.isArray(item.hours) ? item.hours : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+              gridRules: Array.isArray(item.gridRules) ? item.gridRules : [],
+              startDate: item.startDate || '',
+              endDate: item.endDate || '',
+              timeGatedMp3s: normalizedTimeGated,
+              metadata: {
+                createdBy: item.metadata?.createdBy || 'Admin',
+                createdDate: item.metadata?.createdDate || isoNow,
+                lastModifiedBy: '0.16.6',
+                lastModifiedDate: isoNow
+              }
+            };
+            if (item.date) cleanItem.date = item.date;
+            if (item.time) cleanItem.time = item.time;
+            return cleanItem;
+          });
+
+          annCounter += 1;
+          const updatedCalObj = {
+            _meta: {
+              schemaVersion: 1,
+              minAppVersion: "0.16.0",
+              lastModifiedBy: "0.16.6",
+              lastModifiedAt: isoNow
+            },
+            AnnouncementsBackupCounter: annCounter,
+            data: migratedAnnouncements
+          };
+          atomicWriteFileSync(calPath, JSON.stringify(updatedCalObj, null, 2));
+          const calBackup = getCalendarBackupPath();
+          if (calBackup) {
+            try { atomicWriteFileSync(calBackup, JSON.stringify(updatedCalObj, null, 2)); } catch (_) {}
+          }
+        } catch (err: any) {
+          console.error('Error migrating announcements during upgrade:', err);
+        }
+      }
+
+      // 3. Read and deeply migrate shows.json
+      let migratedShows: any[] = [];
+      let showCounter = 0;
+      if (showsPath && fs.existsSync(showsPath)) {
+        try {
+          const rawShows = fs.readFileSync(showsPath, 'utf-8');
+          const parsed = JSON.parse(rawShows || '[]');
+          let rawList: any[] = [];
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            rawList = Array.isArray(parsed.data) ? parsed.data : [];
+            showCounter = parsed.ShowsBackupCounter || 0;
+          } else if (Array.isArray(parsed)) {
+            rawList = parsed;
+          }
+
+          migratedShows = rawList.map((item: any, idx: number) => {
+            const rawName = item.name || `Show ${idx + 1}`;
+            const cleanShort = item.nameShort || rawName.replace(/[^a-zA-Z0-9]/g, '') || `Show${idx + 1}`;
+            return {
+              id: item.id || `show-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+              name: rawName,
+              nameShort: cleanShort,
+              days: Array.isArray(item.days) ? item.days : [0, 1, 2, 3, 4, 5, 6],
+              startHour: typeof item.startHour === 'number' ? item.startHour : 0,
+              startMinute: typeof item.startMinute === 'number' ? item.startMinute : 0,
+              endHour: typeof item.endHour === 'number' ? item.endHour : 23,
+              endMinute: typeof item.endMinute === 'number' ? item.endMinute : 59
+            };
+          });
+
+          showCounter += 1;
+          const updatedShowsObj = {
+            _meta: {
+              schemaVersion: 1,
+              minAppVersion: "0.16.0",
+              lastModifiedBy: "0.16.6",
+              lastModifiedAt: isoNow
+            },
+            ShowsBackupCounter: showCounter,
+            data: migratedShows
+          };
+          atomicWriteFileSync(showsPath, JSON.stringify(updatedShowsObj, null, 2));
+          const showsBackup = getShowsBackupPath();
+          if (showsBackup) {
+            try { atomicWriteFileSync(showsBackup, JSON.stringify(updatedShowsObj, null, 2)); } catch (_) {}
+          }
+        } catch (err: any) {
+          console.error('Error migrating shows during upgrade:', err);
+        }
+      }
+
+      const upgradedMeta = {
+        schemaVersion: 1,
+        minAppVersion: "0.16.0",
+        lastModifiedBy: "0.16.6",
+        lastModifiedAt: isoNow
+      };
+
+      res.json({
+        success: true,
+        meta: upgradedMeta,
+        announcements: migratedAnnouncements,
+        shows: migratedShows,
+        backupsCreated
+      });
+    } catch (e: any) {
+      console.error('Failed to run schema upgrade:', e);
       res.status(500).json({ success: false, error: e.message });
     }
   });
