@@ -189,7 +189,7 @@ export default function App() {
       .catch(() => {
         // Fallback gracefully
         const modeKey = (appModeEnv || 'Admin').toLowerCase();
-        setAppFlavorIconUrl(`https://raw.githubusercontent.com/JON99999/AGATE/assets/src/assets/images/${modeKey}/icon.png`);
+        setAppFlavorIconUrl(`https://raw.githubusercontent.com/JON99999/AMP/assets/src/assets/images/${modeKey}/icon.png`);
       });
   }, [appModeEnv]);
 
@@ -662,7 +662,7 @@ export default function App() {
         status: 'COMPATIBLE',
         schemaVersion: 1,
         minAppVersion: '0.16.0',
-        lastModifiedBy: '0.16.3'
+        lastModifiedBy: '0.16.4'
       });
     } catch (e) {
       console.error("Failed to upgrade data schema:", e);

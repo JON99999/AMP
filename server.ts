@@ -675,7 +675,7 @@ async function startServer() {
       iconUrl = '/api/app-flavor/icon';
     } else {
       // In web preview / cloud environments without local sync, supply the branch reference
-      iconUrl = `https://raw.githubusercontent.com/JON99999/AGATE/assets/src/assets/images/${modeKey}/icon.png`;
+      iconUrl = `https://raw.githubusercontent.com/JON99999/AMP/assets/src/assets/images/${modeKey}/icon.png`;
     }
     res.json({ mode, modeKey, iconUrl });
   });
@@ -1423,7 +1423,7 @@ async function startServer() {
         _meta: {
           schemaVersion: 1,
           minAppVersion: "0.16.0",
-          lastModifiedBy: "0.16.3",
+          lastModifiedBy: "0.16.4",
           lastModifiedAt: new Date().toISOString()
         },
         AnnouncementsBackupCounter: counter,
@@ -1502,7 +1502,7 @@ async function startServer() {
         _meta: {
           schemaVersion: 1,
           minAppVersion: "0.16.0",
-          lastModifiedBy: "0.16.3",
+          lastModifiedBy: "0.16.4",
           lastModifiedAt: new Date().toISOString()
         },
         ShowsBackupCounter: counter,
@@ -1539,7 +1539,6 @@ async function startServer() {
       const showsPath = getShowsFilePath();
       let announcementsMeta: any = null;
       let showsMeta: any = null;
-
       if (calPath && fs.existsSync(calPath)) {
         try {
           const parsed = JSON.parse(fs.readFileSync(calPath, 'utf-8') || '{}');
@@ -1554,7 +1553,7 @@ async function startServer() {
         } catch (_) {}
       }
 
-      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: 1, minAppVersion: '0.16.0', lastModifiedBy: '0.16.3' };
+      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: 1, minAppVersion: '0.16.0', lastModifiedBy: '0.16.4' };
       res.json({ success: true, meta: activeMeta, announcementsMeta, showsMeta });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
