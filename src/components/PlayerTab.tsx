@@ -1781,6 +1781,7 @@ export default function PlayerTab({
           isOverrun?: boolean;
           played?: boolean;
           playedAt?: string;
+          cancelled?: boolean;
         }
       | {
           type: 'show-end';
@@ -2322,6 +2323,66 @@ export default function PlayerTab({
         }
         const newCount = tracksBeforeBreakCount;
         const newBreakPositions = { ...breakPositions, [nextItem.id]: newCount };
+        setBreakPositions(newBreakPositions);
+        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
+      }
+    }
+  };
+
+  const handleMoveBreakUp = (breakId: string) => {
+    triggerMovedHighlight(breakId);
+    const activeTimelineCards = playlistTimeline.filter(
+      item => (item.type === 'track' && !item.played && !item.cancelled) || (item.type === 'break' && !item.played && !item.cancelled)
+    );
+    const cardIdx = activeTimelineCards.findIndex(item => item.id === breakId);
+    if (cardIdx > 0) {
+      const prevItem = activeTimelineCards[cardIdx - 1];
+      if (prevItem.type === 'track') {
+        let tracksBeforeBreakCount = 0;
+        for (let i = 0; i < cardIdx - 1; i++) {
+          if (activeTimelineCards[i].type === 'track') {
+            tracksBeforeBreakCount++;
+          }
+        }
+        const newBreakPositions = { ...breakPositions, [breakId]: tracksBeforeBreakCount };
+        setBreakPositions(newBreakPositions);
+        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
+      } else if (prevItem.type === 'break') {
+        const prevTarget = breakPositions[prevItem.id] ?? 0;
+        const newBreakPositions = {
+          ...breakPositions,
+          [breakId]: Math.max(0, prevTarget - 1)
+        };
+        setBreakPositions(newBreakPositions);
+        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
+      }
+    }
+  };
+
+  const handleMoveBreakDown = (breakId: string) => {
+    triggerMovedHighlight(breakId);
+    const activeTimelineCards = playlistTimeline.filter(
+      item => (item.type === 'track' && !item.played && !item.cancelled) || (item.type === 'break' && !item.played && !item.cancelled)
+    );
+    const cardIdx = activeTimelineCards.findIndex(item => item.id === breakId);
+    if (cardIdx !== -1 && cardIdx < activeTimelineCards.length - 1) {
+      const nextItem = activeTimelineCards[cardIdx + 1];
+      if (nextItem.type === 'track') {
+        let tracksBeforeBreakCount = 0;
+        for (let i = 0; i <= cardIdx + 1; i++) {
+          if (activeTimelineCards[i].type === 'track') {
+            tracksBeforeBreakCount++;
+          }
+        }
+        const newBreakPositions = { ...breakPositions, [breakId]: tracksBeforeBreakCount };
+        setBreakPositions(newBreakPositions);
+        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
+      } else if (nextItem.type === 'break') {
+        const nextTarget = breakPositions[nextItem.id] ?? 0;
+        const newBreakPositions = {
+          ...breakPositions,
+          [breakId]: nextTarget + 1
+        };
         setBreakPositions(newBreakPositions);
         saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
       }
@@ -3920,7 +3981,7 @@ export default function PlayerTab({
                     >
                       <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5">
                         <RadioTower className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                        now
+                        {modeStr === 'Prerecord' ? 'next' : 'now'}
                       </span>
                       {renderCacheStatusMessage()}
                     </div>
@@ -4205,6 +4266,11 @@ export default function PlayerTab({
                   const isPast = isBefore(slot, now) && !isPresent;
                   const diffSeconds = Math.abs(differenceInSeconds(now, slot));
 
+                  const timelineCardIdx = unplayedTimelineCards.findIndex(c => c.id === item.id);
+                  const isTopBreakInTimeline = timelineCardIdx === 0;
+                  const isBottomBreakInTimeline = timelineCardIdx === unplayedTimelineCards.length - 1;
+                  const isBreakMovedHighlight = item.id === movedHighlightTrackId;
+
                   return (
                     <Fragment key={item.id}>
                       {nowCard}
@@ -4243,15 +4309,17 @@ export default function PlayerTab({
 
                         const cardBorderClass = !isVerified
                           ? "border-red-500"
-                          : isCurrentlyPlaying || isUpcoming
-                            ? "border-purple-600 ring-1 ring-purple-600/30"
-                            : exported
-                              ? "border-emerald-600"
-                              : (isMissedRecent || isMissedOld)
-                                ? "border-amber-600"
-                                : (isPast && played)
-                                  ? "border-emerald-600"
-                                  : "border-slate-500";
+                          : (isBreakMovedHighlight || s.id === movedHighlightTrackId)
+                            ? "ring-2 ring-purple-500/90 shadow-lg scale-[1.01] z-10 border-purple-600"
+                            : isCurrentlyPlaying || isUpcoming
+                              ? "border-purple-600 ring-1 ring-purple-600/30"
+                              : exported
+                                ? "border-emerald-600"
+                                : (isMissedRecent || isMissedOld)
+                                  ? "border-amber-600"
+                                  : (isPast && played)
+                                    ? "border-emerald-600"
+                                    : "border-slate-500";
 
                         const cardBgClass = !isVerified
                           ? "bg-[#fef2f2]"
@@ -4301,11 +4369,43 @@ export default function PlayerTab({
                                 cardOpacityClass
                               )}
                             >
-                              <div className="flex justify-between items-center bg-slate-50 -mx-2 -mt-2 px-2 py-1 rounded-t">
-                                <div className="flex items-center gap-2">
+                              <div className="flex justify-between items-center bg-slate-50 -mx-2 -mt-2 px-2 py-1 rounded-t border-b border-slate-200/60">
+                                <div className="flex items-center gap-1.5">
                                   <span className="text-xs uppercase font-black text-slate-600 tracking-tighter">
                                     {format(slot, 'MMM dd')}
                                   </span>
+
+                                  {playlistTracks.length > 0 && !played && !exported && (
+                                    <div className="flex items-center gap-0.5">
+                                      {!isTopBreakInTimeline && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleMoveBreakUp(item.id);
+                                          }}
+                                          className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
+                                          title="Move announcement break up in queue"
+                                        >
+                                          <ChevronUp className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                      {!isBottomBreakInTimeline && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleMoveBreakDown(item.id);
+                                          }}
+                                          className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
+                                          title="Move announcement break down in queue"
+                                        >
+                                          <ChevronDown className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+
                                   <span className="text-xs font-mono font-black text-purple-600">
                                     {format(slot, 'h:mm a')}
                                   </span>
@@ -4622,7 +4722,7 @@ export default function PlayerTab({
                   >
                     <span className="text-xs font-black uppercase text-white tracking-normal font-sans flex items-center gap-1.5 font-sans">
                       <CassetteTape className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                      Prerecord Start
+                      Prerecord Next
                     </span>
                     {renderCacheStatusMessage()}
                   </div>

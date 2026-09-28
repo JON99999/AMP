@@ -9,7 +9,7 @@ import { Announcement, LogEntry, Show, DiscoveredFolderItem } from './src/types'
 // Cross-runtime directory resolution for Node ESM (dev) and bundled CommonJS (desktop / production)
 const _appFilename = typeof __filename !== 'undefined'
   ? __filename
-  : (typeof import.meta !== 'undefined' && import.meta?.url ? fileURLToPath(import.meta.url) : '');
+  : '';
 
 const _appDirname = typeof __dirname !== 'undefined'
   ? __dirname

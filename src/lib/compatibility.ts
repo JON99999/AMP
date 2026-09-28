@@ -4,7 +4,7 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.16.4";
+export const CURRENT_APP_VERSION = "0.16.5";
 
 export interface DataMetaHeader {
   schemaVersion: number;

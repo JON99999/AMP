@@ -2034,8 +2034,9 @@ export const saveShowPlaylistLogToDrive = async (
   parentFolder: 'Playlists' | 'Evergreens' = 'Playlists'
 ): Promise<string> => {
   const fileName = formatShowPlaylistLogFileName(showNameShort || showName, showStartTime);
+  const scopedKey = `${parentFolder}:${showNameShort || showName}:${fileName}`;
 
-  const previousSave = playlistLogSaveQueue.get(fileName) || Promise.resolve('');
+  const previousSave = playlistLogSaveQueue.get(scopedKey) || Promise.resolve('');
 
   const currentSave = (async () => {
     try {
@@ -2051,7 +2052,7 @@ export const saveShowPlaylistLogToDrive = async (
       showFolderId = await createFileInFolder(showNameShort || showName, playlistsId, 'application/vnd.google-apps.folder');
     }
 
-    let fileId = playlistLogFileIdCache.get(fileName) || null;
+    let fileId = playlistLogFileIdCache.get(scopedKey) || null;
 
     if (!fileId) {
       fileId = await findFileInFolderCaseInsensitive(fileName, showFolderId);
@@ -2064,14 +2065,14 @@ export const saveShowPlaylistLogToDrive = async (
     }
 
     if (fileId) {
-      playlistLogFileIdCache.set(fileName, fileId);
+      playlistLogFileIdCache.set(scopedKey, fileId);
       await uploadFileContent(fileId, jsonStr, 'application/json');
     }
 
     return fileName;
   })();
 
-  playlistLogSaveQueue.set(fileName, currentSave);
+  playlistLogSaveQueue.set(scopedKey, currentSave);
   return await currentSave;
 };
 
@@ -2090,10 +2091,11 @@ export const loadShowPlaylistLogFromDrive = async (
     if (!showFolderId) return null;
 
     const fileName = formatShowPlaylistLogFileName(showNameShort || showName, showStartTime);
-    const fileId = playlistLogFileIdCache.get(fileName) || await findFileInFolderCaseInsensitive(fileName, showFolderId);
+    const scopedKey = `${parentFolder}:${showNameShort || showName}:${fileName}`;
+    const fileId = playlistLogFileIdCache.get(scopedKey) || await findFileInFolderCaseInsensitive(fileName, showFolderId);
     if (!fileId) return null;
 
-    playlistLogFileIdCache.set(fileName, fileId);
+    playlistLogFileIdCache.set(scopedKey, fileId);
 
     const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
     if (!res.ok) return null;

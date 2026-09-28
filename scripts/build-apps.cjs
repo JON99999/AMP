@@ -210,21 +210,24 @@ async function syncRemoteIcons() {
   try {
     const cleanBuild = () => {
       console.log('Cleaning up old build outputs...');
-      if (fs.existsSync('dist')) {
-        fs.rmSync('dist', { recursive: true, force: true });
+      const distDir = path.join(rootDir, 'dist');
+      if (fs.existsSync(distDir)) {
+        fs.rmSync(distDir, { recursive: true, force: true });
       }
-      fs.mkdirSync('dist');
+      fs.mkdirSync(distDir, { recursive: true });
     };
 
     const compileAssets = (mode) => {
       console.log(`Compiling Vite assets for mode: ${mode}...`);
       execSync('npx vite build', {
+        cwd: rootDir,
         env: { ...process.env, VITE_APP_MODE: mode },
         stdio: 'inherit'
       });
 
       console.log(`Compiling server back-end for mode: ${mode}...`);
       execSync('npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs', {
+        cwd: rootDir,
         stdio: 'inherit'
       });
 
@@ -572,6 +575,7 @@ CONFIGURATION & PERSISTENCE:
         fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
         execSync(`npx electron-builder --mac --x64 --arm64 ${publishFlag}`, {
+          cwd: rootDir,
           stdio: 'inherit',
           env: { ...process.env }
         });
@@ -580,6 +584,7 @@ CONFIGURATION & PERSISTENCE:
         fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
         execSync(`npx electron-builder --win --x64 ${publishFlag}`, {
+          cwd: rootDir,
           stdio: 'inherit',
           env: { ...process.env }
         });
@@ -590,6 +595,7 @@ CONFIGURATION & PERSISTENCE:
         fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
         execSync(`npx electron-builder --publish never`, {
+          cwd: rootDir,
           stdio: 'inherit',
           env: { ...process.env }
         });

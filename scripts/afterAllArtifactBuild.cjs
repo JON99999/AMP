@@ -2,7 +2,24 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = async function (context) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  if (!context || !context.artifactPaths || !Array.isArray(context.artifactPaths)) {
+    return context ? context.artifactPaths : [];
+  }
+
+  // Early return if no DMG artifacts were produced (e.g. Windows/Linux packaging)
+  const hasDmg = context.artifactPaths.some(p => typeof p === 'string' && p.endsWith('.dmg'));
+  if (!hasDmg) {
+    return context.artifactPaths;
+  }
+
+  const rootDir = path.resolve(__dirname, '..');
+  const pkgPath = path.join(rootDir, 'package.json');
+  if (!fs.existsSync(pkgPath)) {
+    console.warn(`[afterAllArtifactBuild] package.json not found at ${pkgPath}, skipping rename hook.`);
+    return context.artifactPaths;
+  }
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   const version = pkg.version;
   const productName = pkg.productName;
   
