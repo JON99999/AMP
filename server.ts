@@ -5,6 +5,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import NodeID3 from 'node-id3';
 import { Announcement, LogEntry, Show, DiscoveredFolderItem } from './src/types';
+import { migrateAnnouncementsPayload, migrateShowsPayload, CURRENT_APP_VERSION, CURRENT_MIN_APP_VERSION, CURRENT_SCHEMA_VERSION } from './src/lib/compatibility';
 
 // Cross-runtime directory resolution for Node ESM (dev) and bundled CommonJS (desktop / production)
 const _appFilename = typeof __filename !== 'undefined'
@@ -1421,9 +1422,9 @@ async function startServer() {
       counter += 1; // Increment on every backup / save operation
       const updatedObj = {
         _meta: {
-          schemaVersion: 1,
-          minAppVersion: "0.16.0",
-          lastModifiedBy: "0.16.6",
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          minAppVersion: CURRENT_MIN_APP_VERSION,
+          lastModifiedBy: CURRENT_APP_VERSION,
           lastModifiedAt: new Date().toISOString()
         },
         AnnouncementsBackupCounter: counter,
@@ -1500,9 +1501,9 @@ async function startServer() {
       counter += 1;
       const updatedObj = {
         _meta: {
-          schemaVersion: 1,
-          minAppVersion: "0.16.0",
-          lastModifiedBy: "0.16.6",
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          minAppVersion: CURRENT_MIN_APP_VERSION,
+          lastModifiedBy: CURRENT_APP_VERSION,
           lastModifiedAt: new Date().toISOString()
         },
         ShowsBackupCounter: counter,
@@ -1553,7 +1554,7 @@ async function startServer() {
         } catch (_) {}
       }
 
-      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: 1, minAppVersion: '0.16.0', lastModifiedBy: '0.16.6' };
+      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: CURRENT_SCHEMA_VERSION, minAppVersion: CURRENT_MIN_APP_VERSION, lastModifiedBy: CURRENT_APP_VERSION };
       res.json({ success: true, meta: activeMeta, announcementsMeta, showsMeta });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
@@ -1620,167 +1621,78 @@ async function startServer() {
 
       const isoNow = now.toISOString();
 
-      // 2. Read and deeply migrate announcements.json
-      let migratedAnnouncements: any[] = [];
-      let annCounter = 0;
+      // 2. Transactional Phase 1: Transform in-memory using canonical compatibility engine
+      let annMigrationResult: { envelope: any; data: any[] } | null = null;
       if (calPath && fs.existsSync(calPath)) {
         try {
           const rawCal = fs.readFileSync(calPath, 'utf-8');
           const parsed = JSON.parse(rawCal || '[]');
-          let rawList: any[] = [];
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            rawList = Array.isArray(parsed.data) ? parsed.data : [];
-            annCounter = parsed.AnnouncementsBackupCounter || 0;
-          } else if (Array.isArray(parsed)) {
-            rawList = parsed;
-          }
-
-          migratedAnnouncements = rawList.map((item: any, idx: number) => {
-            const rawTimeGated: any[] = Array.isArray(item.timeGatedMp3s) ? item.timeGatedMp3s : [];
-            let normalizedTimeGated = rawTimeGated.map((m: any, mIdx: number) => {
-              const url = (m.mp3Url || m.filename || '').trim();
-              const isScript = url.toLowerCase().match(/\.(txt|pdf|png|jpg|jpeg)$/);
-              const assetType = (m.assetType === 'script' || m.assetType === 'audio')
-                ? m.assetType
-                : (isScript ? 'script' : 'audio');
-              return {
-                id: m.id || `item-${Date.now()}-${mIdx}-${Math.random().toString(36).substring(2, 6)}`,
-                mp3Url: url,
-                startDate: m.startDate || '',
-                endDate: m.endDate || '',
-                assetType,
-                backupMp3Url: assetType === 'script' ? (m.backupMp3Url || '') : '',
-                approximateReadTime: assetType === 'script' ? (m.approximateReadTime || '') : '',
-                duration: assetType === 'audio' ? (m.duration || '') : '',
-                fileSize: m.fileSize || ''
-              };
-            });
-
-            if (normalizedTimeGated.length === 0 && item.mp3Url) {
-              const url = String(item.mp3Url).trim();
-              const isScript = url.toLowerCase().match(/\.(txt|pdf|png|jpg|jpeg)$/);
-              const assetType = item.assetType || (isScript ? 'script' : 'audio');
-              normalizedTimeGated = [{
-                id: `item-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
-                mp3Url: url,
-                startDate: '',
-                endDate: '',
-                assetType,
-                backupMp3Url: assetType === 'script' ? (item.backupMp3Url || '') : '',
-                approximateReadTime: assetType === 'script' ? (item.approximateReadTime || '') : '',
-                duration: assetType === 'audio' ? (item.duration || '') : '',
-                fileSize: item.fileSize || ''
-              }];
-            }
-
-            const cleanItem: any = {
-              id: item.id || `ann-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
-              name: item.name || 'Untitled Announcement',
-              type: item.type || 'basic-hourly',
-              enabled: typeof item.enabled === 'boolean' ? item.enabled : true,
-              minute: typeof item.minute === 'number' ? item.minute : 0,
-              days: Array.isArray(item.days) ? item.days : [0, 1, 2, 3, 4, 5, 6],
-              hours: Array.isArray(item.hours) ? item.hours : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-              gridRules: Array.isArray(item.gridRules) ? item.gridRules : [],
-              startDate: item.startDate || '',
-              endDate: item.endDate || '',
-              timeGatedMp3s: normalizedTimeGated,
-              metadata: {
-                createdBy: item.metadata?.createdBy || 'Admin',
-                createdDate: item.metadata?.createdDate || isoNow,
-                lastModifiedBy: '0.16.6',
-                lastModifiedDate: isoNow
-              }
-            };
-            if (item.date) cleanItem.date = item.date;
-            if (item.time) cleanItem.time = item.time;
-            return cleanItem;
-          });
-
-          annCounter += 1;
-          const updatedCalObj = {
-            _meta: {
-              schemaVersion: 1,
-              minAppVersion: "0.16.0",
-              lastModifiedBy: "0.16.6",
-              lastModifiedAt: isoNow
-            },
-            AnnouncementsBackupCounter: annCounter,
-            data: migratedAnnouncements
-          };
-          atomicWriteFileSync(calPath, JSON.stringify(updatedCalObj, null, 2));
-          const calBackup = getCalendarBackupPath();
-          if (calBackup) {
-            try { atomicWriteFileSync(calBackup, JSON.stringify(updatedCalObj, null, 2)); } catch (_) {}
-          }
+          annMigrationResult = migrateAnnouncementsPayload(parsed, CURRENT_APP_VERSION);
         } catch (err: any) {
-          console.error('Error migrating announcements during upgrade:', err);
+          console.error('Error parsing announcements during upgrade:', err);
+          throw new Error(`Failed to parse announcements.json: ${err.message}`);
         }
       }
 
-      // 3. Read and deeply migrate shows.json
-      let migratedShows: any[] = [];
-      let showCounter = 0;
+      let showsMigrationResult: { envelope: any; data: any[] } | null = null;
       if (showsPath && fs.existsSync(showsPath)) {
         try {
           const rawShows = fs.readFileSync(showsPath, 'utf-8');
           const parsed = JSON.parse(rawShows || '[]');
-          let rawList: any[] = [];
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            rawList = Array.isArray(parsed.data) ? parsed.data : [];
-            showCounter = parsed.ShowsBackupCounter || 0;
-          } else if (Array.isArray(parsed)) {
-            rawList = parsed;
-          }
-
-          migratedShows = rawList.map((item: any, idx: number) => {
-            const rawName = item.name || `Show ${idx + 1}`;
-            const cleanShort = item.nameShort || rawName.replace(/[^a-zA-Z0-9]/g, '') || `Show${idx + 1}`;
-            return {
-              id: item.id || `show-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
-              name: rawName,
-              nameShort: cleanShort,
-              days: Array.isArray(item.days) ? item.days : [0, 1, 2, 3, 4, 5, 6],
-              startHour: typeof item.startHour === 'number' ? item.startHour : 0,
-              startMinute: typeof item.startMinute === 'number' ? item.startMinute : 0,
-              endHour: typeof item.endHour === 'number' ? item.endHour : 23,
-              endMinute: typeof item.endMinute === 'number' ? item.endMinute : 59
-            };
-          });
-
-          showCounter += 1;
-          const updatedShowsObj = {
-            _meta: {
-              schemaVersion: 1,
-              minAppVersion: "0.16.0",
-              lastModifiedBy: "0.16.6",
-              lastModifiedAt: isoNow
-            },
-            ShowsBackupCounter: showCounter,
-            data: migratedShows
-          };
-          atomicWriteFileSync(showsPath, JSON.stringify(updatedShowsObj, null, 2));
-          const showsBackup = getShowsBackupPath();
-          if (showsBackup) {
-            try { atomicWriteFileSync(showsBackup, JSON.stringify(updatedShowsObj, null, 2)); } catch (_) {}
-          }
+          showsMigrationResult = migrateShowsPayload(parsed, CURRENT_APP_VERSION);
         } catch (err: any) {
-          console.error('Error migrating shows during upgrade:', err);
+          console.error('Error parsing shows during upgrade:', err);
+          throw new Error(`Failed to parse shows.json: ${err.message}`);
         }
       }
 
+      // 3. Transactional Phase 2: Stage writes to temporary files (.upgrade.tmp)
+      const calTmp = (calPath && annMigrationResult) ? `${calPath}.upgrade.tmp` : null;
+      const showsTmp = (showsPath && showsMigrationResult) ? `${showsPath}.upgrade.tmp` : null;
+
+      try {
+        if (calTmp && annMigrationResult) {
+          fs.writeFileSync(calTmp, JSON.stringify(annMigrationResult.envelope, null, 2), 'utf-8');
+        }
+        if (showsTmp && showsMigrationResult) {
+          fs.writeFileSync(showsTmp, JSON.stringify(showsMigrationResult.envelope, null, 2), 'utf-8');
+        }
+
+        // 4. Transactional Commit: Atomically swap staged files into place
+        if (calTmp && calPath && annMigrationResult) {
+          fs.renameSync(calTmp, calPath);
+          const calBackup = getCalendarBackupPath();
+          if (calBackup) {
+            try { atomicWriteFileSync(calBackup, JSON.stringify(annMigrationResult.envelope, null, 2)); } catch (_) {}
+          }
+        }
+        if (showsTmp && showsPath && showsMigrationResult) {
+          fs.renameSync(showsTmp, showsPath);
+          const showsBackup = getShowsBackupPath();
+          if (showsBackup) {
+            try { atomicWriteFileSync(showsBackup, JSON.stringify(showsMigrationResult.envelope, null, 2)); } catch (_) {}
+          }
+        }
+      } catch (writeErr: any) {
+        // Rollback: Clean up any staged .tmp files if staging/rename failed
+        if (calTmp && fs.existsSync(calTmp)) try { fs.unlinkSync(calTmp); } catch (_) {}
+        if (showsTmp && fs.existsSync(showsTmp)) try { fs.unlinkSync(showsTmp); } catch (_) {}
+        console.error('Transactional write failure during schema upgrade, rolled back temporary files:', writeErr);
+        throw writeErr;
+      }
+
       const upgradedMeta = {
-        schemaVersion: 1,
-        minAppVersion: "0.16.0",
-        lastModifiedBy: "0.16.6",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        minAppVersion: CURRENT_MIN_APP_VERSION,
+        lastModifiedBy: CURRENT_APP_VERSION,
         lastModifiedAt: isoNow
       };
 
       res.json({
         success: true,
         meta: upgradedMeta,
-        announcements: migratedAnnouncements,
-        shows: migratedShows,
+        announcements: annMigrationResult ? annMigrationResult.data : [],
+        shows: showsMigrationResult ? showsMigrationResult.data : [],
         backupsCreated
       });
     } catch (e: any) {

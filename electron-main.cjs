@@ -375,7 +375,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: `Version 0.16.1\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
+              detail: `Version 0.16.7\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
             });
           }
         }

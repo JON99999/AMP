@@ -164,7 +164,7 @@ export default function PlayerTab({
       return activeShows[0] || null;
     }
     if (playMode === 'Live' && shows && shows.length > 0) {
-      const targetDate = syncTime || new Date();
+      const targetDate = now || syncTime || new Date();
       const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
       const dayName = daysOrder[targetDate.getDay()];
       const hour = targetDate.getHours();
@@ -175,7 +175,7 @@ export default function PlayerTab({
       return activeShows[0] || null;
     }
     return null;
-  }, [playMode, playlistShow, prerecordDate, syncTime, shows]);
+  }, [playMode, playlistShow, prerecordDate, now, syncTime, shows]);
 
   const getShowForSlot = useCallback((slot: Date): Show | null => {
     if (playMode === 'Playlist') return playlistShow;
@@ -323,7 +323,7 @@ export default function PlayerTab({
 
         const showStart = (playMode === 'Prerecord' || playMode === 'Export') && prerecordDate
           ? prerecordDate
-          : getActualShowStart(effectiveShow, syncTime || new Date());
+          : getActualShowStart(effectiveShow, now || syncTime || new Date());
 
         const activePlayedMap = (overridePlayedMap && Object.keys(overridePlayedMap).length > 0)
           ? { ...playedPlaylistTracksRef.current, ...overridePlayedMap }
@@ -477,7 +477,7 @@ export default function PlayerTab({
 
       const showStart = (playMode === 'Prerecord' || playMode === 'Export') && prerecordDate
         ? prerecordDate
-        : getActualShowStart(effectiveShow, syncTime || new Date());
+        : getActualShowStart(effectiveShow, now || syncTime || new Date());
 
       // 1. Fetch existing JSON playlist log for state restoration and folder targeting
       let existingLog: ShowPlaylistLog | null = null;
@@ -1626,8 +1626,9 @@ export default function PlayerTab({
       }
       return slots;
     } else {
-      const start = subMinutes(syncTime, 120);
-      const end = addMinutes(syncTime, 120);
+      const baseTime = now || syncTime || new Date();
+      const start = subMinutes(baseTime, 120);
+      const end = addMinutes(baseTime, 120);
       const slots = [];
       
       let current = startOfMinute(start);
@@ -1637,7 +1638,7 @@ export default function PlayerTab({
       }
       return slots;
     }
-  }, [syncTime, playMode, prerecordDate, prerecordLengthMinutes]);
+  }, [now, syncTime, playMode, prerecordDate, prerecordLengthMinutes]);
 
   // Dynamic persistent header padding adjustment to align its right edge with the cards in the scrollable container.
   useEffect(() => {
@@ -1712,7 +1713,7 @@ export default function PlayerTab({
 
     const showStart = (playMode === 'Prerecord' || playMode === 'Export') && prerecordDate
       ? prerecordDate
-      : getActualShowStart(effectiveShow, syncTime);
+      : getActualShowStart(effectiveShow, now || syncTime || new Date());
 
     const showDurationMinutes = (effectiveShow.durationHours * 60) + effectiveShow.durationMinutes;
     const showEnd = addMinutes(showStart, showDurationMinutes);

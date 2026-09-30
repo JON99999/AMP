@@ -91,6 +91,7 @@ import {
   getOrCreateDrivePlaylistsFolder,
   getOrCreateDriveEvergreensFolder,
   getOrCreateDriveAnnouncementsFolder,
+  upgradeDriveDataSchema,
 } from "./lib/driveService";
 import { useStartupGate } from "./hooks/useStartupGate";
 import { useAppClock } from "./hooks/useAppClock";
@@ -671,14 +672,18 @@ export default function App() {
           throw new Error(resData?.error || "Upgrade endpoint returned unsuccessful status");
         }
       } else {
-        await saveAnnouncements(announcements);
-        await saveShows(shows);
-        setCompatibilityReport({
-          status: 'COMPATIBLE',
-          schemaVersion: 1,
-          minAppVersion: '0.16.0',
-          lastModifiedBy: CURRENT_APP_VERSION
-        });
+        const driveUpgradeRes = await upgradeDriveDataSchema();
+        if (driveUpgradeRes && driveUpgradeRes.success) {
+          if (Array.isArray(driveUpgradeRes.announcements)) {
+            setAnnouncements(normalizeAnnouncements(driveUpgradeRes.announcements));
+          }
+          if (Array.isArray(driveUpgradeRes.shows)) {
+            setShows(driveUpgradeRes.shows);
+          }
+          setCompatibilityReport(assessDataCompatibility(driveUpgradeRes.meta));
+        } else {
+          throw new Error("Google Drive schema upgrade failed");
+        }
       }
       setShowUpgradeModal(false);
     } catch (e) {
@@ -3889,6 +3894,23 @@ export default function App() {
         isOpen={showUpgradeModal}
         onConfirmUpgrade={handleConfirmUpgrade}
         onCancelOrChangeFolder={handleCancelOrChangeFolder}
+        folderPath={locationMode === "Local" ? (localPathAmp || localPathCalendar || "") : (driveFolderDescMap[driveFolderAmp || ""] || driveFolderAmp || "")}
+        folderName={
+          locationMode === "Local"
+            ? ((localPathAmp || localPathCalendar || "").split(/[/\\]/).filter(Boolean).pop() || localPathAmp || localPathCalendar || "your chosen folder")
+            : (driveFolderDescMap[driveFolderAmp || ""] || driveFolderAmp || "your chosen folder")
+        }
+        onOpenFolder={(path) => {
+          if (locationMode === "Local") {
+            handleOpenExportFolder(path || localPathAmp || localPathCalendar);
+          } else if (driveFolderAmp) {
+            const folderId = extractFolderId(driveFolderAmp);
+            if (folderId) {
+              window.open(`https://drive.google.com/drive/folders/${folderId}`, '_blank');
+            }
+          }
+        }}
+        onBrowseFolder={handleCancelOrChangeFolder}
         schemaVersion={compatibilityReport?.schemaVersion || 0}
       />
       <NewerVersionDetectedModal

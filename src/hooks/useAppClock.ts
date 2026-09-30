@@ -8,8 +8,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 export type SleepStatus = 'active' | 'status1' | 'status2';
 
 // Inactivity Thresholds
-const STATUS_1_INACTIVITY_MS = 30 * 60 * 1000; // 30 minutes
-const STATUS_2_INACTIVITY_MS = 3 * 60 * 60 * 1000; // 3 total hours (2.5 hours after Status 1)
+const STATUS_1_INACTIVITY_MS = 30 * 60 * 1000; // 30 minutes (remains in Status 1 indefinitely)
 
 interface UseAppClockOptions {
   animationsDisabled: boolean;
@@ -66,12 +65,8 @@ export function useAppClock({
     let lastActivityLogged = Date.now();
     const handleActivity = () => {
       const nowMs = Date.now();
-      if (sleepStatus === 'status2') {
-        // In full sleep mode (Status 2), wakeUp is triggered explicitly via overlay interaction
-        return;
-      }
+      // Status 1: User resumes activity, immediately return to active 1-second clock with real-time sync
       if (sleepStatus === 'status1') {
-        // Status 1: User resumes activity, immediately return to active 1-second clock with real-time sync
         lastActiveTimeRef.current = nowMs;
         setSleepStatus('active');
         setNow(new Date());
@@ -111,12 +106,8 @@ export function useAppClock({
 
       const elapsedInactivity = Date.now() - lastActiveTimeRef.current;
 
-      // Status transitions based on total elapsed inactivity
-      if (elapsedInactivity >= STATUS_2_INACTIVITY_MS) {
-        if (sleepStatus !== 'status2') {
-          setSleepStatus('status2');
-        }
-      } else if (elapsedInactivity >= STATUS_1_INACTIVITY_MS) {
+      // Status transitions based on total elapsed inactivity (Stage 2: Status 1 after 30 minutes, indefinitely)
+      if (elapsedInactivity >= STATUS_1_INACTIVITY_MS) {
         if (sleepStatus !== 'status1') {
           setSleepStatus('status1');
         }

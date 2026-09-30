@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { Announcement, LogEntry, Show } from '../types';
 import { Mp3ID3Metadata, parseID3Bytes, extractAudioMetadataBytes, normalizeAnnouncements, generateBackupFilename, isAudioFile, isScriptFile, classifyMediaAsset, AUDIO_EXTENSIONS, SCRIPT_EXTENSIONS } from './utils';
+import { migrateAnnouncementsPayload, migrateShowsPayload, CURRENT_APP_VERSION, CURRENT_SCHEMA_VERSION, CURRENT_MIN_APP_VERSION, DataMetaHeader } from './compatibility';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App & Auth
@@ -958,9 +959,9 @@ export const saveCalendarToDrive = async (schedules: Announcement[]): Promise<vo
     const normalizedSchedules = normalizeAnnouncements(schedules);
     const envelope = {
       _meta: {
-        schemaVersion: 1,
-        minAppVersion: "0.16.0",
-        lastModifiedBy: "0.16.6",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        minAppVersion: CURRENT_MIN_APP_VERSION,
+        lastModifiedBy: CURRENT_APP_VERSION,
         lastModifiedAt: new Date().toISOString()
       },
       AnnouncementsBackupCounter: counter + 1,
@@ -1020,9 +1021,9 @@ export const saveShowsToDrive = async (shows: Show[]): Promise<void> => {
     counter += 1;
     const envelope = {
       _meta: {
-        schemaVersion: 1,
-        minAppVersion: "0.16.0",
-        lastModifiedBy: "0.16.6",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        minAppVersion: CURRENT_MIN_APP_VERSION,
+        lastModifiedBy: CURRENT_APP_VERSION,
         lastModifiedAt: new Date().toISOString()
       },
       ShowsBackupCounter: counter,
@@ -1031,6 +1032,85 @@ export const saveShowsToDrive = async (shows: Show[]): Promise<void> => {
     await uploadFileContent(fileId, JSON.stringify(envelope, null, 2));
   } catch (err) {
     console.error('Error saving shows to Google Drive:', err);
+    throw err;
+  }
+};
+
+/**
+ * Executes a deterministic schema upgrade on Drive data stores with pre-upgrade snapshots
+ */
+export const upgradeDriveDataSchema = async (): Promise<{
+  success: boolean;
+  announcements: Announcement[];
+  shows: Show[];
+  meta: DataMetaHeader;
+}> => {
+  try {
+    const settingsFolder = await getOrCreateDriveSettingsFolder();
+    const backupsFolder = await getOrCreateBackupsFolder(settingsFolder);
+
+    // 1. Fetch raw announcements.json
+    const annFileId = await findFileInFolder('announcements.json', settingsFolder);
+    let rawAnnContent = '[]';
+    if (annFileId) {
+      const res = await driveFetch(`drive/v3/files/${annFileId}?alt=media`);
+      rawAnnContent = await res.text();
+    }
+    const rawAnnParsed = JSON.parse(rawAnnContent || '[]');
+
+    // 2. Fetch raw shows.json
+    const showsFileId = await findFileInFolder('shows.json', settingsFolder);
+    let rawShowsContent = '[]';
+    if (showsFileId) {
+      const res = await driveFetch(`drive/v3/files/${showsFileId}?alt=media`);
+      rawShowsContent = await res.text();
+    }
+    const rawShowsParsed = JSON.parse(rawShowsContent || '[]');
+
+    // 3. Create pre-upgrade timestamped snapshots in backups folder
+    const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const annBackupName = `announcements.backup-pre-upgrade-${timestampStr}.json`;
+    const showsBackupName = `shows.backup-pre-upgrade-${timestampStr}.json`;
+
+    let annBackupFileId = await findFileInFolder(annBackupName, backupsFolder);
+    if (!annBackupFileId) {
+      annBackupFileId = await createFileInFolder(annBackupName, backupsFolder);
+    }
+    await uploadFileContent(annBackupFileId, rawAnnContent);
+
+    let showsBackupFileId = await findFileInFolder(showsBackupName, backupsFolder);
+    if (!showsBackupFileId) {
+      showsBackupFileId = await createFileInFolder(showsBackupName, backupsFolder);
+    }
+    await uploadFileContent(showsBackupFileId, rawShowsContent);
+
+    // 4. Perform deterministic migration using canonical compatibility engine
+    const annMigration = migrateAnnouncementsPayload(rawAnnParsed, CURRENT_APP_VERSION);
+    const showsMigration = migrateShowsPayload(rawShowsParsed, CURRENT_APP_VERSION);
+
+    // 5. Commit upgraded envelopes
+    if (annFileId) {
+      await uploadFileContent(annFileId, JSON.stringify(annMigration.envelope, null, 2));
+    } else {
+      const newAnnId = await createFileInFolder('announcements.json', settingsFolder);
+      await uploadFileContent(newAnnId, JSON.stringify(annMigration.envelope, null, 2));
+    }
+
+    if (showsFileId) {
+      await uploadFileContent(showsFileId, JSON.stringify(showsMigration.envelope, null, 2));
+    } else {
+      const newShowsId = await createFileInFolder('shows.json', settingsFolder);
+      await uploadFileContent(newShowsId, JSON.stringify(showsMigration.envelope, null, 2));
+    }
+
+    return {
+      success: true,
+      announcements: annMigration.data,
+      shows: showsMigration.data,
+      meta: annMigration.envelope._meta!
+    };
+  } catch (err) {
+    console.error('Failed to upgrade Drive data schema:', err);
     throw err;
   }
 };
