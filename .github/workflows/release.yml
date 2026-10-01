@@ -39,6 +39,7 @@ jobs:
 
       - name: Resolve Release Tag
         id: release_meta
+        shell: bash
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
