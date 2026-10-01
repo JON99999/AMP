@@ -6,7 +6,33 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.16.7
+### Current Release: v0.16.8
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.16.8",
+      "lastModifiedAt": "2026-09-30T21:00:00.000Z"
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Compatibility with v0.16.7, v0.16.6, v0.16.5 & v0.16.4**: 100% direct binary and schema compatibility.
+* **Release Enhancements**:
+  * **Immediate Live/Prerecord/Playlist Break NEXT Badge Clearing**: Next indicator dynamically dismisses upon announcement playback or read completion during the active minute (`!played && !exported`), eliminating stale indicator states before minute turnover.
+  * **Card State Class Alignment**: Instant evaluation of `played` state for border and background highlights, synchronizing visual completion status instantly across timeline views.
+  * **Automated Sync Workflow for Public Distribution**: Added `.github/workflows/sync-public.yml` for automated sanitized synchronization from private master repository to public release repo.
+  * **Historical Archive Deduplication**: Cleaned legacy duplicate files from prior archives while preserving structural fidelity.
+
+---
+
+### v0.16.7
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope)
 * **Schedule Storage File**: `announcements.json`
 * **JSON Structure**:
