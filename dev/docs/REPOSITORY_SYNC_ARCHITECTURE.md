@@ -53,6 +53,7 @@ Whenever changes or version tags (`v*`) are pushed to `main` on `AMP_Private`:
 3. **Scrubbing Phase**:
    - Recursively deletes `dev/` (`rm -rf dev/`).
    - Removes internal rule files (`rm -f AGENTS.md AGENTS_PHILOSOPHY.md`).
+   - Removes synchronizer workflow (`rm -f .github/workflows/sync-public.yml`).
 4. **Target Push**:
    - Authenticates via `PUBLIC_REPO_TOKEN` secret.
    - Stages and commits the sanitized tree.
@@ -66,7 +67,9 @@ To maintain the automated pipeline:
 
 1. **Personal Access Token (PAT)**:
    - Created on GitHub under **Settings** > **Developer Settings** > **Personal Access Tokens (classic)**.
-   - Required scope: `repo` (Full control of private and public repositories).
+   - Required scopes:
+     * **`repo`** (Full control of private and public repositories).
+     * **`workflow`** (Update GitHub Action workflows — required whenever pushing `.github/workflows/` files such as `release.yml`).
 2. **Repository Secret**:
    - Configured in `AMP_Private` under **Settings** > **Secrets and variables** > **Actions**.
    - Secret Name: `PUBLIC_REPO_TOKEN`
