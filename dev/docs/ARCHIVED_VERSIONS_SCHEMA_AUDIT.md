@@ -6,7 +6,32 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.16.9
+### Current Release: v0.16.10
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.16.10",
+      "lastModifiedAt": "2026-09-30T22:26:00.000Z"
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Compatibility with v0.16.9, v0.16.8, v0.16.7, v0.16.6, v0.16.5 & v0.16.4**: 100% direct binary and schema compatibility.
+* **Release Enhancements**:
+  * **Shell-Agnostic Tag Resolution**: Rewrote `Resolve Release Tag` in `.github/workflows/release.yml` using Node.js, ensuring 100% cross-platform compatibility across Windows PowerShell, CMD, Linux Bash, and macOS.
+  * **Robust Force-Tagging in Sync Action**: Configured `.github/workflows/sync-public.yml` with `--force` tag updates to eliminate build discrepancies between private code and public release tags.
+  * **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.16.10/`.
+
+---
+
+### v0.16.9
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope)
 * **Schedule Storage File**: `announcements.json`
 * **JSON Structure**:
