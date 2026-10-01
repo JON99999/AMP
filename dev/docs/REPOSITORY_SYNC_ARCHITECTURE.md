@@ -50,18 +50,29 @@ Whenever changes or version tags (`v*`) are pushed to `main` on `AMP_Private`:
 
 1. **Trigger**: Push to `main` branch or tag matching `v*`.
 2. **Checkout**: Checks out the full commit tree from `AMP_Private`.
-3. **Scrubbing Phase**:
+3. **Scrubbing & Metadata Transfer Phase**:
+   - Extracts full commit message body and change deltas from `AMP_Private`.
    - Recursively deletes `dev/` (`rm -rf dev/`).
    - Removes internal rule files (`rm -f AGENTS.md AGENTS_PHILOSOPHY.md`).
    - Removes synchronizer workflow (`rm -f .github/workflows/sync-public.yml`).
 4. **Target Push**:
    - Authenticates via `PUBLIC_REPO_TOKEN` secret.
-   - Stages and commits the sanitized tree.
+   - Stages and commits the sanitized tree using the extracted delta commit message.
    - Pushes directly to `https://github.com/JON99999/AMP.git` (`main` and any associated version tags).
 
 ---
 
-## 4. Setup & Secret Configuration
+## 4. Public Release Building (`.github/workflows/release.yml`)
+
+The public repository build workflow supports:
+- **Automatic Tag Triggers**: Pushes matching `v*` (e.g. `v0.16.8`).
+- **Release UI Triggers**: Publishing a release via GitHub Releases UI (`release: types: [published, created]`).
+- **Manual Trigger**: "Run workflow" button in the GitHub Actions tab (`workflow_dispatch`).
+- **Automated Release Notes**: Uses `generate_release_notes: true` to compile full change logs, commits, and deltas into the GitHub Release.
+
+---
+
+## 5. Setup & Secret Configuration
 
 To maintain the automated pipeline:
 
@@ -77,7 +88,7 @@ To maintain the automated pipeline:
 
 ---
 
-## 5. AI Studio Connection Procedure
+## 6. AI Studio Connection Procedure
 
 When reconnecting or linking Google AI Studio to GitHub:
 

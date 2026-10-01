@@ -6,7 +6,33 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.16.8
+### Current Release: v0.16.9
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.16.9",
+      "lastModifiedAt": "2026-09-30T22:05:00.000Z"
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Compatibility with v0.16.8, v0.16.7, v0.16.6, v0.16.5 & v0.16.4**: 100% direct binary and schema compatibility.
+* **Release Enhancements**:
+  * **Automated CI Release Auto-Tagging**: Enhanced `.github/workflows/sync-public.yml` to automatically detect version changes in `package.json`, create annotated `v*` release tags on `AMP`, and trigger the cross-platform compile pipeline.
+  * **Delta & Release Notes Propagation**: Preserved commit bodies and delta notes in `sync-public.yml` and enabled `generate_release_notes: true` in `release.yml`.
+  * **Interactive Actions Dispatch Support**: Added `workflow_dispatch` and `release: [published, created]` triggers to `.github/workflows/release.yml`.
+  * **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.16.9/`.
+
+---
+
+### v0.16.8
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope)
 * **Schedule Storage File**: `announcements.json`
 * **JSON Structure**:
