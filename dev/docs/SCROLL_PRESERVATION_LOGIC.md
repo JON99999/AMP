@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines the rationale, design options, and implementation logic for preserving scroll position in the **Prerecord**, **Export**, and **Playlist** views of **Interstitial-er**.
+This document outlines the rationale, design options, and implementation logic for preserving scroll position in the **Prerecord**, **Export**, and **Playlist** views of **Announcement Media Player**.
 
 ---
 

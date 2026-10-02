@@ -1,5 +1,5 @@
 /**
- * Universal folder selector for Interstitial-er.
+ * Universal folder selector for AMP (Announcement Media Player).
  * Uses Electron native openDirectory dialog when running in desktop app,
  * with a fallback prompt/picker when in browser mode.
  */

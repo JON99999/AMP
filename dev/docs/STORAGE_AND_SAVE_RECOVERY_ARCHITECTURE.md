@@ -1,6 +1,6 @@
 # Storage, Writing Architecture, and Save Recovery Documentation
 
-This document records the design, implementation, and comparison between legacy save mechanics, intermediate iterations, and the current atomic save and recovery architecture in **Interstitial-er**.
+This document records the design, implementation, and comparison between legacy save mechanics, intermediate iterations, and the current atomic save and recovery architecture in **Announcement Media Player**.
 
 ---
 

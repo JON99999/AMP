@@ -134,7 +134,7 @@ export default function DriveAuthHelpModal({ isOpen, onClose }: DriveAuthHelpMod
                 <ol className="list-decimal pl-4 space-y-1">
                   <li>Navigate to the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline inline-flex items-center gap-0.5">Google Cloud Console <ExternalLink className="w-2.5 h-2.5" /></a>.</li>
                   <li>Create a new project (or select your active organization domain).</li>
-                  <li>Enable the API library directly at: <a href="https://console.cloud.google.com/apis/library/browse?project=announcement-er" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-mono">console.cloud.google.com/apis/library/browse?project=announcement-er</a>. Make sure your project is selected in the top bar, search for <strong>Google Drive API</strong>, and click <strong>Enable</strong>.</li>
+                  <li>Enable the API library directly at: <a href="https://console.cloud.google.com/apis/library/browse?project=announcement-media-player" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-mono">console.cloud.google.com/apis/library/browse?project=announcement-media-player</a>. Make sure your project is selected in the top bar, search for <strong>Google Drive API</strong>, and click <strong>Enable</strong>.</li>
                 </ol>
               </div>
 

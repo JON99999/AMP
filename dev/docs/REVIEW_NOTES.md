@@ -2,7 +2,7 @@
 
 ## [review of 0.10.6] - Live Reads Alignment and Logging Robustness
 
-This document contains the backend and functional review notes for the Interstitial-er application's Live Read ("Read") features, updated for version **0.10.6**.
+This document contains the backend and functional review notes for the Announcement Media Player application's Live Read ("Read") features, updated for version **0.10.6**.
 
 ---
 

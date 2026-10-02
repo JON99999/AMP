@@ -8,7 +8,7 @@
 ## 1. Executive Architectural Overview & Rationale
 
 ### 1.1 The Problem: Fragmented 3-Entity Model (Local & Google Drive)
-In earlier versions of **Interstitial-er** (v0.1.0 – v0.13.0), the application required radio broadcasters to manually configure and link three independent directory locations or Google Drive folder IDs:
+In earlier versions of **Announcement Media Player** (v0.1.0 – v0.13.0), the application required radio broadcasters to manually configure and link three independent directory locations or Google Drive folder IDs:
 1. **Media / MP3s**: `localPathMP3s` (Local) / `driveFolderMP3s` (Google Drive)
 2. **Audit & Playout Logs**: `localPathLogs` (Local) / `driveFolderLogs` (Google Drive)
 3. **Calendar & Schedules**: `localPathCalendar` (Local) / `driveFolderPreferences` (Google Drive)

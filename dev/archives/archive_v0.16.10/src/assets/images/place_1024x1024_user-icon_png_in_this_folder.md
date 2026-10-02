@@ -1,6 +1,6 @@
 # Custom Launcher Icon Configuration
 
-To customize the desktop application launcher and installer icon for Interstitial-er, place your custom application icon in this folder:
+To customize the desktop application launcher and installer icon for AMP (Announcement Media Player), place your custom application icon in this folder:
 
 - **Path**: `src/assets/images/user-icon.png`
 - **Required Size**: Exactly `1024x1024` pixels

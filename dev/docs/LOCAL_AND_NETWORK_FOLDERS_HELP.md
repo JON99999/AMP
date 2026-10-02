@@ -1,6 +1,6 @@
-# Local, Network, and Cloud Directory Mapping Guide (Interstitial-er)
+# Local, Network, and Cloud Directory Mapping Guide (Announcement Media Player)
 
-This guide provides technical steps to configure local network directories and cloud-synchronized folders so they appear as standard local directories on your operating system. By mapping these systems correctly, **Interstitial-er**'s "Local Folder" synchronization option can read scheduler databases, log listings, and play MP3 audio files directly from remote sources.
+This guide provides technical steps to configure local network directories and cloud-synchronized folders so they appear as standard local directories on your operating system. By mapping these systems correctly, **Announcement Media Player**'s "Local Folder" synchronization option can read scheduler databases, log listings, and play MP3 audio files directly from remote sources.
 
 ---
 
@@ -38,8 +38,8 @@ To ensure the folder remains mapped after a restart:
 3. Browse to your mounted network volume under **Locations** in Finder and click **Add**.
 4. The system will now automatically attempt to remount the share when the user logs in.
 
-#### Target Path in Interstitial-er:
-When using the "Local Folder" picker in Interstitial-er, select the mounted volume. The underlying absolute path resolved by the OS is:
+#### Target Path in Announcement Media Player:
+When using the "Local Folder" picker in Announcement Media Player, select the mounted volume. The underlying absolute path resolved by the OS is:
 ```text
 /Volumes/InterstitialerShare/
 ```
@@ -61,8 +61,8 @@ On Windows, network paths should be assigned a persistent drive letter (e.g., `Z
 6. Check **Connect using different credentials** if you are accessing another computer's files with separate local accounts.
 7. Click **Finish**. Enter the credentials and check "Remember my credentials".
 
-#### Target Path in Interstitial-er:
-In the Interstitial-er settings panel, use the folder selector to navigate to the mapped drive or enter:
+#### Target Path in Announcement Media Player:
+In the Announcement Media Player settings panel, use the folder selector to navigate to the mapped drive or enter:
 ```text
 Z:\
 ```
@@ -74,7 +74,7 @@ Z:\
 Online storage services (Google Drive, Dropbox, OneDrive, iCloud) offer desktop synchronization clients. These clients download or cache files locally, allowing the operating system to serve them as native file directories.
 
 > ### ⚠️ Critical Performance Prerequisite: Always Enable Offline Access
-> Most modern sync clients use "On-Demand" or "Stream" mode by default. This keeps files virtual, downloading them only when opened. If an audio track has not been cached, Interstitial-er may experience latency or lookup failures when trying to play a scheduled track.
+> Most modern sync clients use "On-Demand" or "Stream" mode by default. This keeps files virtual, downloading them only when opened. If an audio track has not been cached, Announcement Media Player may experience latency or lookup failures when trying to play a scheduled track.
 >
 > You **MUST** mark your scheduler directory as **"Available Offline"** or **"Always keep on this device"** in your operating system's file browser to ensure instant playback without network delays.
 
@@ -150,11 +150,11 @@ iCloud Drive behaves identically to other cloud sync services and can be accesse
 
 ---
 
-## 🔧 Section 3: Configuring the Path inside Interstitial-er
+## 🔧 Section 3: Configuring the Path inside Announcement Media Player
 
 Once your network or cloud drive is correctly mounted and synced offline, configure the application to target it.
 
-1. Open **Interstitial-er**.
+1. Open **Announcement Media Player**.
 2. Go to **Settings** (gear icon).
 3. Find the directory configuration section.
 4. Under **Sync Source**, choose the **Local Folder** option.

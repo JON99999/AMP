@@ -6,7 +6,33 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.16.10
+### Current Release: v0.17.0
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.17.0",
+      "lastModifiedAt": "2026-10-01T22:04:00.000Z"
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Compatibility with v0.16.x & v0.15.5**: 100% direct binary and schema compatibility.
+* **Release Enhancements**:
+  * **Milestone Consolidation Release**: Consolidated all schema versioning, two-phase atomic upgrades, automated CI cross-platform releases, and real-time live clock features.
+  * **Standardized Changelog**: Created `CHANGELOG.md` tracking all historical enhancements from `v0.15.5` through `v0.17.0`.
+  * **Strict Archive Immutability Governance**: Formalized Mandatory Rule #1 for explicit user control over snapshots.
+  * **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.17.0/`.
+
+---
+
+### v0.16.10
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope)
 * **Schedule Storage File**: `announcements.json`
 * **JSON Structure**:

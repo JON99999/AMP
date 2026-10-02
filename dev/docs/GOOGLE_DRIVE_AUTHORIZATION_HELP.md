@@ -1,15 +1,15 @@
-# Google Drive Authorization & Connection Guide (Interstitial-er)
+# Google Drive Authorization & Connection Guide (Announcement Media Player)
 
-This guide provides step-by-step instructions on how the different authentication options work in **Interstitial-er**, how to obtain the necessary credentials, and how to configure them for standard desktop or restricted corporate environments.
+This guide provides step-by-step instructions on how the different authentication options work in **Announcement Media Player**, how to obtain the necessary credentials, and how to configure them for standard desktop or restricted corporate environments.
 
 ---
 
 ## 🧭 Understanding the Connection Methods
 
-Interstitial-er offers two main, active techniques to link your application with Google Drive so it can synchronize scheduler listings, MP3 audio libraries, and log databases, along with a disabled failsafe option for reference:
+Announcement Media Player offers two main, active techniques to link your application with Google Drive so it can synchronize scheduler listings, MP3 audio libraries, and log databases, along with a disabled failsafe option for reference:
 
 ### Option: Preapproved (Pop-up login using OAUTH Client ID) — *PRIMARY METHOD*
-* **How it works:** With a OAUTH Client ID, Interstitial-er opens a pop-up login window. Google user email must be preapproved in that Client ID in Google OAUTH. See your admin to be added.
+* **How it works:** With a OAUTH Client ID, Announcement Media Player opens a pop-up login window. Google user email must be preapproved in that Client ID in Google OAUTH. See your admin to be added.
 * **Best for:** Standard operations, Apple Silicon / Intel Macs, and Windows PCs.
 * **Requirements:** A valid Client ID configured for Desktop environments that whitelists loopback callbacks (default pre-packaged ID works out of the box).
 
@@ -22,20 +22,20 @@ Interstitial-er offers two main, active techniques to link your application with
 
 ## 🛠️ Step-by-Step Google Cloud Project (Custom Client ID) Setup
 
-Your Interstitial-er app comes pre-packaged with a default Client ID. However, for dedicated enterprise stability or if you run into whitelisted testing limits, you should generate your own Google Cloud Client ID.
+Your Announcement Media Player app comes pre-packaged with a default Client ID. However, for dedicated enterprise stability or if you run into whitelisted testing limits, you should generate your own Google Cloud Client ID.
 
 ### Step 1: Create your GCP Project & Enable APIs
 1. Navigate directly to the [Google Cloud Console](https://console.cloud.google.com/).
 2. Create a new project (e.g., `Interstitialer-Scheduler`).
 3. Enable the Google Drive API:
-   * Go to the API library page: [https://console.cloud.google.com/apis/library/browse?project=interstitial-er](https://console.cloud.google.com/apis/library/browse?project=interstitial-er) *(Ensure your active project is selected in the console header dropdown)*.
+   * Go to the API library page: [https://console.cloud.google.com/apis/library/browse?project=announcement-media-player](https://console.cloud.google.com/apis/library/browse?project=announcement-media-player) *(Ensure your active project is selected in the console header dropdown)*.
    * Search for **Google Drive API** and click **Enable**.
 
 ### Step 2: Configure the OAuth Consent Screen
 Since you are deploying this as a desktop environment, define who can authorize access.
 1. Click **APIs & Services** > **OAuth consent screen** ([Consent Screen Link](https://console.cloud.google.com/apis/credentials/consent)).
 2. Select **External** and click **Create**.
-3. Input basic details: Set App Name to `Interstitial-er`, and insert your email address as the developer/support contact.
+3. Input basic details: Set App Name to `Announcement Media Player`, and insert your email address as the developer/support contact.
 4. Click **Save and Continue** to navigate to the **Test Users** screen.
 
 ### Step 3: Authorizing Test Email Addresses
@@ -64,7 +64,7 @@ By default, custom Google Cloud projects exist in "Testing Mode." Google blocks 
 ## 🏃 Setup Steps for Individual Options
 
 ### Setup Step: Option: Preapproved
-1. Open Interstitial-er Settings, expand the **Advanced connection options**.
+1. Open Announcement Media Player Settings, expand the **Advanced connection options**.
 2. Paste your **Google OAuth Client ID** into the OAUTH Client ID field under Option: Preapproved.
 3. Click **Connect** (or **Login**).
 4. Authorize the app in your pop-up window. Once finished, the window will close and you will be connected.
@@ -76,12 +76,12 @@ To test with Google's temporary Playground:
 3. Authorize via your Google account.
 4. On Step 2 in the playground, click the **Exchange authorization code for tokens** button.
 5. Copy the **Access Token** value from the input/details panel.
-6. Open Interstitial-er settings, expand Advanced connection options, select Option: Access Token, paste the access_token value, and click **Connect**.
+6. Open Announcement Media Player settings, expand Advanced connection options, select Option: Access Token, paste the access_token value, and click **Connect**.
 
 ---
 
 ## 🧪 Disabled / Subsection: Commented Out Method
 
 ### Option 2: Browser Verification with Copy-Paste (Failsafe)
-* **How it works:** This was designed as an absolute failsafe method. It processes logins using the exact same OAuth setup, but bypasses the automatic loopback listener network channel. When you click **Get Token from Browser**, you authorize in your browser. Upon redirect, the webpage secure local layout prints the temporary access token directly onto the screen. Copy that token, paste it into the Interstitial-er access box, and click **Apply**.
+* **How it works:** This was designed as an absolute failsafe method. It processes logins using the exact same OAuth setup, but bypasses the automatic loopback listener network channel. When you click **Get Token from Browser**, you authorize in your browser. Upon redirect, the webpage secure local layout prints the temporary access token directly onto the screen. Copy that token, paste it into the Announcement Media Player access box, and click **Apply**.
 * **Status:** This option is currently commented out in the interface code. Future developers might want to try to implement the "Untested Option" in code.

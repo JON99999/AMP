@@ -610,7 +610,7 @@ CONFIGURATION & PERSISTENCE:
 
     // --- Step 1: Build & Package Admin ---
     console.log('\n=========================================');
-    console.log(' BUILDING ANNOUNCEMENT-ER ADMIN ');
+    console.log(' BUILDING AMP ADMIN ');
     console.log('=========================================\n');
     cleanBuild();
     compileAssets('Admin');
@@ -618,7 +618,7 @@ CONFIGURATION & PERSISTENCE:
 
     // --- Step 2: Build & Package Live ---
     console.log('\n=========================================');
-    console.log(' BUILDING ANNOUNCEMENT-ER LIVE ');
+    console.log(' BUILDING AMP LIVE ');
     console.log('=========================================\n');
     cleanBuild();
     compileAssets('Live');
@@ -626,7 +626,7 @@ CONFIGURATION & PERSISTENCE:
 
     // --- Step 3: Build & Package Studio ---
     console.log('\n=========================================');
-    console.log(' BUILDING ANNOUNCEMENT-ER STUDIO ');
+    console.log(' BUILDING AMP STUDIO ');
     console.log('=========================================\n');
     cleanBuild();
     compileAssets('Studio');

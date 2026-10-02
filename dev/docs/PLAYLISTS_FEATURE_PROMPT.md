@@ -1,6 +1,6 @@
 # Playlists Feature Implementation Specification & Prompts
 
-This document contains the original feature prompt provided for the **Playlist** mode in **Interstitial-er**, followed by a structured 5-phase breakdown designed for sequential implementation and verification.
+This document contains the original feature prompt provided for the **Playlist** mode in **Announcement Media Player**, followed by a structured 5-phase breakdown designed for sequential implementation and verification.
 
 ---
 
@@ -56,7 +56,7 @@ Use the following prompts individually in sequence to implement the Playlist fea
 
 **Prompt to copy/paste**:
 > **Phase 1: Playlist Mode & Show Selector UI**
-> Please implement Phase 1 of the Playlist feature in Interstitial-er:
+> Please implement Phase 1 of the Playlist feature in Announcement Media Player:
 > 1. Add `playlist` as a 4th Player mode alongside `live`, `prerecord`, and `export`.
 > 2. Duplicate the core layout and behavior of Live mode to serve as the foundation for Playlist mode.
 > 3. When entering Playlist mode, display a show selector dialog/dropdown checking available MP3 files in the current show and next show's playlist folders.
@@ -71,7 +71,7 @@ Use the following prompts individually in sequence to implement the Playlist fea
 
 **Prompt to copy/paste**:
 > **Phase 2: Playlists Folder Structure & Storage Audit**
-> Please implement Phase 2 of the Playlist feature in Interstitial-er:
+> Please implement Phase 2 of the Playlist feature in Announcement Media Player:
 > 1. Extend media folder management by adding a top-level `playlists` directory alongside `evergreen`.
 > 2. Ensure per-show subfolder rules for `playlists` match the existing `evergreen` subfolder conventions exactly.
 > 3. Update the storage/evergreen audit functionality to include `playlists` folders in the health check and auto-maintenance scan, preserving all existing safeguards against accidental renaming or deletion.
@@ -83,7 +83,7 @@ Use the following prompts individually in sequence to implement the Playlist fea
 
 **Prompt to copy/paste**:
 > **Phase 3: Playlist Track Assembly & Interstitial Alignment**
-> Please implement Phase 3 of the Playlist feature in Interstitial-er:
+> Please implement Phase 3 of the Playlist feature in Announcement Media Player:
 > 1. In Playlist mode for the chosen show, load track ordering from a `.m3u` playlist file if present; otherwise, sort MP3 files alphabetically.
 > 2. Calculate cumulative playback timestamps for all playlist tracks and interleave them with scheduled show interstitials.
 > 3. Interstitial Overlap Alignment Rules:
@@ -97,7 +97,7 @@ Use the following prompts individually in sequence to implement the Playlist fea
 
 **Prompt to copy/paste**:
 > **Phase 4: Dynamic Timeline Refresh & Show Playlist Log Generation**
-> Please implement Phase 4 of the Playlist feature in Interstitial-er:
+> Please implement Phase 4 of the Playlist feature in Announcement Media Player:
 > 1. Add a 1-minute periodic refresh timer when Playlist mode is active (and no audio is playing and live read popup is closed):
 >    - If songs remain unplayed behind schedule, move the first unplayed track to "now" (current timestamp) and recalculate remaining playlist track start times.
 > 2. Played Song Display:
@@ -113,7 +113,7 @@ Use the following prompts individually in sequence to implement the Playlist fea
 
 **Prompt to copy/paste**:
 > **Phase 5: Interactive Queue Controls (Up, Down, Cancel, Reactivate)**
-> Please implement Phase 5 of the Playlist feature in Interstitial-er:
+> Please implement Phase 5 of the Playlist feature in Announcement Media Player:
 > 1. Add 3 action icons to each unplayed playlist song card: **Up**, **Down**, and **Cancel (X)**.
 > 2. Reordering Logic:
 >    - Clicking **Up** or **Down** shifts the song position in the active playlist queue and triggers an instant view recalculation.

@@ -4,10 +4,10 @@
 
 ### Executive Summary & Operational Context
 
-This document outlines an enterprise-grade, highly portable architecture for **Interstitial-er** deployed exclusively as a **standalone native desktop application (macOS DMG / Windows NSIS Executable)** across physical studio workstations. All instances operate under shared local OS login accounts on workstations connected to a custom Google Workspace domain (< 100 total users).
+This document outlines an enterprise-grade, highly portable architecture for **Announcement Media Player** deployed exclusively as a **standalone native desktop application (macOS DMG / Windows NSIS Executable)** across physical studio workstations. All instances operate under shared local OS login accounts on workstations connected to a custom Google Workspace domain (< 100 total users).
 
 #### Fundamental Constraints & Deployment Premises:
-1. **Desktop Executable Only**: Users do not access a web-based client. Interstitial-er runs locally as an Electron + Express desktop binary on macOS (Silicon/Intel) and Windows 10/11.
+1. **Desktop Executable Only**: Users do not access a web-based client. Announcement Media Player runs locally as an Electron + Express desktop binary on macOS (Silicon/Intel) and Windows 10/11.
 2. **Unapproved OAuth App Boundary**: Operations utilize internal/testing Google Workspace OAuth scopes without requiring formal public Google Cloud OAuth Verification.
 3. **Multi-PC Shared Workstation Terminals**: Multiple physical PCs/Macs run the standalone desktop executable. Because studio staff share local OS accounts, local operating system file permissions cannot differentiate individual human users.
 4. **Domain Ownership**: Complete administrative authority over Google Workspace users, Organizational Units (OUs), Google Groups, and Shared Drives.
@@ -22,7 +22,7 @@ This document outlines an enterprise-grade, highly portable architecture for **I
 │                     LOCAL WORKSTATION RUNTIME (macOS / Windows PC)                      │
 │                                                                                         │
 │  ┌───────────────────────────────────────────────────────────────────────────────────┐  │
-│  │                     Interstitial-er Native Desktop App                             │  │
+│  │                     Announcement Media Player Native Desktop App                             │  │
 │  │   • Electron Main Process (Node.js) + Bundled Express Server                     │  │
 │  │   • Default UI Mode: Player (Read-Only Schedule & Playback Controls)              │  │
 │  └───────────────────────────┬───────────────────────────┬───────────────────────────┘  │
@@ -62,7 +62,7 @@ When running native desktop software on shared OS workstation accounts, local `.
 - **Asynchronous Cloud Append**: Concurrently, the Electron main process transmits structured JSON log payloads (containing Terminal Workstation ID, Timestamp, Action ID, and Authenticated User Identity) over HTTPS to an isolated ingestion endpoint (e.g., a Google Apps Script Web App or Google Cloud Logging endpoint).
 - **Security Boundary**:
   - The central log store (Google Sheet or Log Storage Bucket) is owned exclusively by `admin-vault@domain.com`.
-  - The Interstitial-er desktop app holds **Write/Append-Only** credentials for this endpoint.
+  - The Announcement Media Player desktop app holds **Write/Append-Only** credentials for this endpoint.
   - Studio operators have zero Read, Edit, or Delete permissions on the cloud log repository, guaranteeing audit integrity even if local disk files are manipulated.
 
 ---
@@ -70,7 +70,7 @@ When running native desktop software on shared OS workstation accounts, local `.
 ### 2. Desktop-Based Authorization & Show Scoping
 
 #### A. Admin vs. Regular Player Authorization
-- **Default State**: Interstitial-er launches in **Player Mode** on every desktop workstation (read-only schedule display, active audio playback engine, locked admin functions).
+- **Default State**: Announcement Media Player launches in **Player Mode** on every desktop workstation (read-only schedule display, active audio playback engine, locked admin functions).
 - **Desktop OAuth Loopback**: Elevating to Admin Mode initiates an OAuth 2.0 PKCE authentication flow. The Electron main process launches a secure system browser loop or embedded window asking for the user's custom-domain Google credentials (`user@domain.com`).
 - **Group Verification**: The desktop app calls the Google Directory API using the acquired access token to verify membership in `admins@<domain>`.
   - **Success**: The desktop app unlocks Admin tabs and controls for that session.
@@ -128,13 +128,13 @@ To insulate the studio against accidental file overwrites, corrupted MP3 headers
   - Runs independently of individual workstation power states, creating point-in-time recovery archives.
 
 #### Tier 4: Desktop OS Native Hardware Snapshots (Time Capsule / macOS Time Machine / Windows VSS)
-Because Interstitial-er runs as a native desktop application storing local caches and settings on local workstation drives:
+Because Announcement Media Player runs as a native desktop application storing local caches and settings on local workstation drives:
 - **macOS Time Machine & Time Capsule**:
   - On Mac studio terminals, configure macOS Time Machine to perform automated hourly backups to a local network backup target (e.g., Apple Time Capsule, Synology NAS, or encrypted USB/Thunderbolt storage).
-  - Backs up local application paths (`~/Library/Application Support/interstitial-er`) and mapped media drives.
+  - Backs up local application paths (`~/Library/Application Support/announcement-media-player`) and mapped media drives.
   - Access to the Time Capsule / network backup target is restricted to Superuser admin credentials so local workstation operators cannot format or purge backup images.
 - **Windows Volume Shadow Copy Service (VSS)**:
-  - On Windows studio PCs, enable system Volume Shadow Copies on the drive housing `%APPDATA%\interstitial-er` and local audio folders, maintaining automatic shadow points every 12–24 hours.
+  - On Windows studio PCs, enable system Volume Shadow Copies on the drive housing `%APPDATA%\announcement-media-player` and local audio folders, maintaining automatic shadow points every 12–24 hours.
 
 ---
 

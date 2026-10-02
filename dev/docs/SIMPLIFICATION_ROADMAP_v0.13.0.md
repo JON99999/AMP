@@ -1,6 +1,6 @@
 # v0.13.0 Simplification & Architecture Roadmap
 
-This document outlines the phased simplification plan for Interstitial-er version `0.13.0`, constructed in strict accordance with `AGENTS_PHILOSOPHY.md` to remove redundancies, spaghetti state, dead features, and over-complications.
+This document outlines the phased simplification plan for Announcement Media Player version `0.13.0`, constructed in strict accordance with `AGENTS_PHILOSOPHY.md` to remove redundancies, spaghetti state, dead features, and over-complications.
 
 ---
 

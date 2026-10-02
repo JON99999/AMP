@@ -1,4 +1,4 @@
-# Interstitial-er Live Reads Integration Blueprint
+# Announcement Media Player Live Reads Integration Blueprint
 This document preserves the architecture, phase prompts, and state for the "Live Read" text script integration. It serves as both a reference and a sequence of prompts that can be fed back to the AI assistant to perform the implementation in stages without overwhelming the context window.
 
 ## Current System State (Baseline for Reversion)
@@ -26,7 +26,7 @@ This document preserves the architecture, phase prompts, and state for the "Live
 
 ### Step-by-Step Prompt to Initiate Phase 1
 ```markdown
-Please implement Phase 1 of the Live Reads Integration for "Interstitial-er". 
+Please implement Phase 1 of the Live Reads Integration for "Announcement Media Player". 
 
 ### Phase 1 Scope & Requirements:
 1. **Schema & Types**:
@@ -59,7 +59,7 @@ All code modifications must be carefully structured and cleanly documented for f
 
 ### Step-by-Step Prompt to Initiate Phase 2
 ```markdown
-Please implement Phase 2 of the Live Reads Integration for "Interstitial-er".
+Please implement Phase 2 of the Live Reads Integration for "Announcement Media Player".
 
 ### Phase 2 Scope & Requirements:
 1. **Visual Styling & Icons**:
@@ -93,7 +93,7 @@ Ensure all rendering pathways respect the global animations switch, remaining fl
 
 ### Step-by-Step Prompt to Initiate Phase 3
 ```markdown
-Please implement Phase 3 of the Live Reads Integration for "Interstitial-er".
+Please implement Phase 3 of the Live Reads Integration for "Announcement Media Player".
 
 ### Phase 3 Scope & Requirements:
 1. **Prerecorded / Automation Mode**:

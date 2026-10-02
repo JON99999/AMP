@@ -1,6 +1,6 @@
 # Color Scheme & Font Definition Reference
 
-This reference documents the default Light theme font and color definitions for Interstitial-er.
+This reference documents the default Light theme font and color definitions for AMP (Announcement Media Player).
 
 > **CRITICAL DIRECTIVE**: The Light theme font and color settings documented below represent the mandatory default baseline. Do **NOT** change these Light theme settings in code or documentation unless explicitly instructed by the user.
 
@@ -163,7 +163,7 @@ The **Folders Modal** (Storage Locations popup) established the benchmark palett
 
 ## 5. Tailwind CSS v4 Theme Architecture (Light / Dark / System)
 
-Interstitial-er implements a standard Tailwind CSS v4 theme architecture supporting three primary theme modes:
+AMP (Announcement Media Player) implements a standard Tailwind CSS v4 theme architecture supporting three primary theme modes:
 
 1. **Light Mode (`light`)**:
    - Explicitly sets `data-theme="light"` and removes `.dark` class on `document.documentElement`.

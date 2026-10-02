@@ -4,10 +4,10 @@
 
 ### Executive Summary
 
-This document presents a minimal architectural blueprint for **Interstitial-er** operating as a native desktop application across studio workstations under a **hybrid split access model**:
+This document presents a minimal architectural blueprint for **Announcement Media Player** operating as a native desktop application across studio workstations under a **hybrid split access model**:
 
 1. **Player Users (Standard Operations)**: Access schedules, `.m3u` playlists, and `.mp3` audio files strictly through **localized Google Drive folders** provided at the operating system level by the official Google Drive for Desktop application (`G:\My Drive\...` on Windows or `~/Library/CloudStorage/GoogleDrive-...` on macOS).
-2. **Admin Users (Administrative Operations)**: Authenticate directly inside the Interstitial-er application via **direct Google Drive REST API calls (OAuth 2.0 PKCE)**, bypassing local OS mounted Google Drive folders to perform admin management, schedule overrides, and backup triggers.
+2. **Admin Users (Administrative Operations)**: Authenticate directly inside the Announcement Media Player application via **direct Google Drive REST API calls (OAuth 2.0 PKCE)**, bypassing local OS mounted Google Drive folders to perform admin management, schedule overrides, and backup triggers.
 3. **Automated Vault Mirroring**: An isolated backup vault receives scheduled or admin-triggered copies of the organization-wide open-security folder.
 
 ---
@@ -19,7 +19,7 @@ This document presents a minimal architectural blueprint for **Interstitial-er**
 │                         DESKTOP WORKSTATION (macOS / Windows)                            │
 │                                                                                          │
 │  ┌────────────────────────────────────────────────────────────────────────────────────┐  │
-│  │                        Interstitial-er Native Desktop App                          │  │
+│  │                        Announcement Media Player Native Desktop App                          │  │
 │  │                                                                                    │  │
 │  │  ┌──────────────────────────────────────┐  ┌────────────────────────────────────┐  │  │
 │  │  │        PLAYER UI / PLAYBACK          │  │          ADMIN INTERFACE           │  │  │
@@ -57,7 +57,7 @@ This document presents a minimal architectural blueprint for **Interstitial-er**
 #### Mechanism A: Player Operations via Localized OS Google Drive Folders
 - **Target Location**: Localized OS paths managed by Google Drive for Desktop (e.g., `G:\My Drive\Public_Station_Storage\` or `~/Library/CloudStorage/GoogleDrive-user@domain.com/My Drive/Public_Station_Storage/`).
 - **Application Interaction**:
-  - The Interstitial-er Player engine reads schedules (`.json`), playlists (`.m3u`), and audio (`.mp3`) directly from the local OS filesystem using standard Node.js file I/O (`fs.promises.readFile`, `fs.promises.stat`).
+  - The Announcement Media Player Player engine reads schedules (`.json`), playlists (`.m3u`), and audio (`.mp3`) directly from the local OS filesystem using standard Node.js file I/O (`fs.promises.readFile`, `fs.promises.stat`).
   - Player users **do not perform any in-app Google authentication**.
   - Local caching, file streaming, and background cloud synchronization are handled entirely by the background Google Drive for Desktop OS client.
 
@@ -83,15 +83,15 @@ While separating Player local file reads from Admin direct API access simplifies
 #### A. Vulnerabilities in Player Mode (Localized OS Google Drive Folders)
 
 1. **File Hydration & Cloud Sync Stalls ("Beachballing")**
-   - **Hole**: Google Drive for Desktop uses "Files On-Demand" (virtual stubs). If an `.mp3` or `.json` file is modified on another machine but hasn't fully downloaded to the local workstation OS filesystem when Interstitial-er attempts to play or read it, file I/O calls freeze or return incomplete data.
+   - **Hole**: Google Drive for Desktop uses "Files On-Demand" (virtual stubs). If an `.mp3` or `.json` file is modified on another machine but hasn't fully downloaded to the local workstation OS filesystem when Announcement Media Player attempts to play or read it, file I/O calls freeze or return incomplete data.
    - **Impact**: Playback stutters or silent failures occur during live broadcast automation.
 
 2. **Operating System File Locking Conflicts**
    - **Hole**: When Google Drive for Desktop is actively uploading or downloading a modified schedule or audio file, the OS locks the file handles (`EBUSY` or `PERM` errors on Windows/macOS).
-   - **Impact**: Interstitial-er may throw unhandled read/write errors when accessing files currently locked by the Google Drive sync daemon.
+   - **Impact**: Announcement Media Player may throw unhandled read/write errors when accessing files currently locked by the Google Drive sync daemon.
 
 3. **Unrestricted Local OS File Tampering**
-   - **Hole**: Because Player users access files via standard local filesystem directories, any operator on the shared workstation can open Finder or File Explorer and manually alter or delete `.json` schedules or `.mp3` files outside of Interstitial-er.
+   - **Hole**: Because Player users access files via standard local filesystem directories, any operator on the shared workstation can open Finder or File Explorer and manually alter or delete `.json` schedules or `.mp3` files outside of Announcement Media Player.
    - **Impact**: Accidental deletions bypass application logic and take effect immediately in the local OS sync folder.
 
 4. **Lack of Offline/Sync Status Awareness in App**
@@ -103,7 +103,7 @@ While separating Player local file reads from Admin direct API access simplifies
 #### B. Vulnerabilities in Admin Mode (Direct In-App Google Drive API)
 
 1. **OAuth Session Persistence Risk on Shared OS Logins**
-   - **Hole**: Since all workstation users log into the same local OS account, if an Admin logs into Interstitial-er and forgets to explicitly log out, subsequent operators on that workstation remain authenticated as Admins.
+   - **Hole**: Since all workstation users log into the same local OS account, if an Admin logs into Announcement Media Player and forgets to explicitly log out, subsequent operators on that workstation remain authenticated as Admins.
    - **Mitigation Requirement**: Implement aggressive, non-persistent session timers (e.g., automatically revoking in-memory OAuth tokens after 15 minutes of inactivity or when the app window is blurred/closed).
 
 2. **Unverified OAuth Application Rate Limits**
