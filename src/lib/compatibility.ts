@@ -6,11 +6,18 @@ export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
 export const CURRENT_APP_VERSION = "0.18.0";
 
+export interface ScheduleWindowConfig {
+  windowBeforeMinutes?: number; // -x: default 5 minutes
+  windowAfterMinutes?: number;  // +y: default 5 minutes
+  showLookaroundHours?: number; // default 1 hour
+}
+
 export interface DataMetaHeader {
   schemaVersion: number;
   minAppVersion: string;
   lastModifiedBy: string;
   lastModifiedAt: string;
+  scheduleWindow?: ScheduleWindowConfig;
 }
 
 export interface DataEnvelope<T> {
@@ -46,12 +53,17 @@ export function compareSemver(v1: string, v2: string): number {
 /**
  * Creates a standard metadata envelope header for saved JSON stores
  */
-export function createDataMetaHeader(): DataMetaHeader {
+export function createDataMetaHeader(customWindow?: ScheduleWindowConfig): DataMetaHeader {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     minAppVersion: CURRENT_MIN_APP_VERSION,
     lastModifiedBy: CURRENT_APP_VERSION,
-    lastModifiedAt: new Date().toISOString()
+    lastModifiedAt: new Date().toISOString(),
+    scheduleWindow: {
+      windowBeforeMinutes: customWindow?.windowBeforeMinutes ?? 5,
+      windowAfterMinutes: customWindow?.windowAfterMinutes ?? 5,
+      showLookaroundHours: customWindow?.showLookaroundHours ?? 1
+    }
   };
 }
 

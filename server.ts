@@ -85,7 +85,7 @@ interface ServerSettings {
   driveFolderShows?: string;
 }
 
-let currentSettings: ServerSettings = {
+const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   mode: 'Demo',
   localPathAmp: '',
   driveFolderAmp: '',
@@ -110,6 +110,8 @@ let currentSettings: ServerSettings = {
   driveFolderEvergreens: '',
   driveFolderShows: '',
 };
+
+let currentSettings: ServerSettings = { ...DEFAULT_SERVER_SETTINGS };
 
 // Load settings from file on launch if available
 try {
@@ -722,6 +724,51 @@ async function startServer() {
         error: 'Failed to write settings: ' + (e?.message || e),
         code: e?.code || 'WRITE_FAILED',
         filePath: SETTINGS_FILE
+      });
+    }
+  });
+
+  // API - Reset settings (keep folders or full factory reset)
+  app.post('/api/settings/reset', (req, res) => {
+    try {
+      const keepFolders = req.body?.keepFolders === true;
+      if (keepFolders) {
+        // Retain only folder paths, subfolder paths, and operating mode
+        currentSettings = {
+          mode: currentSettings.mode || 'Demo',
+          localPathAmp: currentSettings.localPathAmp || '',
+          driveFolderAmp: currentSettings.driveFolderAmp || '',
+          paths: currentSettings.paths || { ...DEFAULT_SERVER_SETTINGS.paths },
+          localPathMP3s: currentSettings.localPathMP3s || '',
+          localPathMediaAnnouncements: currentSettings.localPathMediaAnnouncements || '',
+          localPathMediaEvergreens: currentSettings.localPathMediaEvergreens || '',
+          localPathMediaShows: currentSettings.localPathMediaShows || '',
+          localPathLogs: currentSettings.localPathLogs || '',
+          localPathCalendar: currentSettings.localPathCalendar || '',
+          driveFolderLogs: currentSettings.driveFolderLogs || '',
+          driveFolderMP3s: currentSettings.driveFolderMP3s || '',
+          driveFolderPreferences: currentSettings.driveFolderPreferences || '',
+          driveFolderAnnouncements: currentSettings.driveFolderAnnouncements || '',
+          driveFolderEvergreens: currentSettings.driveFolderEvergreens || '',
+          driveFolderShows: currentSettings.driveFolderShows || '',
+        };
+        atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2));
+        return res.json({ success: true, settings: currentSettings, preservedFolders: true });
+      } else {
+        // Full factory reset
+        currentSettings = { ...DEFAULT_SERVER_SETTINGS };
+        try {
+          if (fs.existsSync(SETTINGS_FILE)) {
+            fs.unlinkSync(SETTINGS_FILE);
+          }
+        } catch (_) {}
+        return res.json({ success: true, settings: currentSettings, preservedFolders: false });
+      }
+    } catch (e: any) {
+      console.error('Failed to reset settings:', e);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to reset settings: ' + (e?.message || e)
       });
     }
   });

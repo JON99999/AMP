@@ -81,6 +81,22 @@ This application is primarily a **Desktop Application** built with Electron and 
 - **Never Fake a Schedule or MP3 File**: Do not construct simulated, preset, or fake schedule arrays or MP3 database file listings in any mode (including Demo mode). Always read directly from designated directory stores; if folders are unconfigured or files are not found, state clearly that they cannot be found.
 - **Never Fake Application Executable and Installer Icons**: Do not construct, simulate, or use dummy base64/placeholder representations for application executable and installer icons. Always fetch the authentic icon assets from the GitHub `assets` branch or local storage as required; if missing or unconfigured, log the status clearly without embedding fake icons. This rule only applies to application executable and installer icons; do not apply this rule to in-app icons (e.g. standard vector ui icons), which may be generated or modeled normally.
 
+## Live_Dev Sandbox & Prototyping Isolation
+
+- **AI Studio Preview-Only Gating**:
+  - The `Live_Dev` tab and its controls exist exclusively for debugging, visual prototyping, and formatting layout experimentation within the AI Studio preview environment (`isAiStudio` / `!isElectron`).
+  - It MUST never be exposed in packaged Electron desktop builds or production views.
+- **Strict Sandbox Boundary**:
+  - All mock data, card types, visual experiments, and status models for `Live_Dev` must remain strictly encapsulated within `src/components/LiveDevTab.tsx`.
+  - The sandbox must have zero shared mutable state, zero side effects, and zero audio playback collisions with shipping components (`PlayerTab.tsx`, `CalendarTab.tsx`, `LogTab.tsx`, backend audio APIs, or Google Drive sync).
+- **No Unsolicited Propagation or Alignment to Live Code**:
+  - Work done in `Live_Dev` (including formatting tests, font tweaks, card reorganizations, color adjustments, or timing changes in "Current" or "To-Be" views) is experimental and sandbox-only.
+  - The agent **MUST NEVER** proactively propagate, merge, or align changes made in `Live_Dev` into production code (`PlayerTab.tsx`, `CalendarTab.tsx`, etc.) unless the user gives an explicit, direct command to implement or promote those specific changes to the live application.
+- **Mock Data Clarity & Structural Naming**:
+  - Mock data in `Live_Dev` (and any sandbox or test components) must strictly use literal, structural descriptors rather than playful, whimsical, or pseudo-realistic filler names.
+  - For example, show names and show spacers must be named "Show Spacer 1", "Show Spacer 2", host names must be "Host 1", "Host 2", and items must be named "Live Read Future Example", "LR Future", "MP3 Audio Played Example", "PS Future", etc.
+  - Whimsical, radio-station trope, or pseudo-realistic names (e.g., "Midday Jams Show", "Morning Drive Show", "Early Morning Show", "DJ Awesome") are strictly prohibited.
+
 ## Versioning Alignment Workflows
 
 - **Explicit Version Change Authorization Only**: The agent **MUST NOT** increment or modify the application version string unless explicitly instructed to do so by the user. The agent is permitted to suggest or propose version increments when presenting plans or proposals, but must wait for user confirmation before applying version changes to the codebase.

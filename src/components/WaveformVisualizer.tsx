@@ -11,21 +11,6 @@ interface WaveformVisualizerProps {
   className?: string;
 }
 
-// Generate deterministic fallback peaks from URL string so fallback is static and uniform
-const generatePseudoPeaks = (str: string, count: number): number[] => {
-  const peaks: number[] = [];
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
-  }
-  for (let i = 0; i < count; i++) {
-    const val = Math.abs(Math.sin(hash + i * 0.7) * 0.75 + Math.cos(hash * 0.3 + i * 1.3) * 0.25);
-    peaks.push(Math.max(0.18, Math.min(1.0, val)));
-  }
-  return peaks;
-};
-
 // Design configuration variables for waveform spikes
 const BAR_WIDTH_PX = 2; // Width of each bar spike in pixels
 const BAR_GAP_PX = 1;   // Gap between spikes in pixels
@@ -103,8 +88,8 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
       }
       return res;
     }
-    return generatePseudoPeaks(url || 'default', effectiveBarsCount);
-  }, [cachedPeaks, url, effectiveBarsCount]);
+    return new Array(effectiveBarsCount).fill(1.0);
+  }, [cachedPeaks, effectiveBarsCount]);
 
   // Option A: Quantize/throttle currentTime to 1-second ticks during playback to limit updates
   const throttledTime = useMemo(() => {
@@ -139,7 +124,10 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
 
     const dpr = window.devicePixelRatio || 1;
     const canvasHeight = 12;
-    const totalCanvasWidth = effectiveBarsCount * BAR_WIDTH_PX + (effectiveBarsCount - 1) * BAR_GAP_PX;
+    const actualWidth = canvas.clientWidth || (containerRef.current ? containerRef.current.clientWidth - 4 : 300) || 300;
+    const autoBars = Math.max(1, Math.floor((actualWidth + BAR_GAP_PX) / pitch));
+    const effectiveBars = customBarsCount ? Math.min(customBarsCount, autoBars) : autoBars;
+    const totalCanvasWidth = effectiveBars * BAR_WIDTH_PX + (effectiveBars - 1) * BAR_GAP_PX;
 
     canvas.width = totalCanvasWidth * dpr;
     canvas.height = canvasHeight * dpr;
@@ -170,21 +158,21 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
       ctx.fillStyle = fillColor;
       ctx.fillRect(x, y, BAR_WIDTH_PX, barHeight);
     });
-  }, [peaks, activeIndex, isPlaying, isPlayed, effectiveBarsCount]);
+  }, [peaks, activeIndex, isPlaying, isPlayed, effectiveBarsCount, containerWidth]);
 
   return (
     <div 
       ref={containerRef}
-      className={`w-full flex items-center justify-start h-[12px] px-0.5 py-0 rounded border border-slate-200/50 dark:border-slate-800/50 bg-[#f8fafc] dark:bg-slate-900/60 overflow-hidden select-none ${className}`}
+      className={`w-full min-w-0 flex items-center justify-start h-[12px] px-0.5 py-0 rounded border border-slate-200/50 dark:border-slate-800/50 bg-[#f8fafc] dark:bg-slate-900/60 overflow-hidden select-none ${className}`}
       title={effectiveDuration > 0 ? `${Math.round(progressRatio * 100)}% played` : undefined}
     >
       <canvas 
         ref={canvasRef} 
         style={{
-          width: `${effectiveBarsCount * BAR_WIDTH_PX + (effectiveBarsCount - 1) * BAR_GAP_PX}px`,
+          width: '100%',
           height: '12px'
         }}
-        className="block shrink-0"
+        className="block w-full h-[12px]"
       />
     </div>
   );

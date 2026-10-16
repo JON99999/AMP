@@ -2534,7 +2534,7 @@ export default function PlayerTab({
                 Please close popup to continue
               </p>
               {activeLiveReadOverlay.name || activeLiveReadOverlay.announcementName ? (
-                <p className="text-xs text-slate-400 truncate pt-1 font-mono">
+                <p className="text-xs text-slate-400 truncate pt-1 font-sans">
                   {activeLiveReadOverlay.name || activeLiveReadOverlay.announcementName}
                 </p>
               ) : null}
@@ -3526,13 +3526,13 @@ export default function PlayerTab({
                           </div>
 
                           {isCurrentlyPlaying ? (
-                            <div className="flex items-center gap-1 text-xs font-mono font-bold leading-none text-purple-600 dark:text-purple-400">
+                            <div className="flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none text-purple-600 dark:text-purple-400">
                               <span>{formatTime(playingStates[item.track.id]?.currentTime || 0)}</span>
                               <span className="opacity-30">/</span>
                               <span>{formatTime(playingStates[item.track.id]?.duration || item.track.durationSeconds || 0)}</span>
                             </div>
                           ) : (
-                            <span className="text-xs font-mono font-bold text-slate-500 dark:text-slate-400 leading-none">
+                            <span className="text-xs font-sans font-bold tabular-nums text-slate-500 dark:text-slate-400 leading-none">
                               {mp3DurationCache.get(item.track.streamUrl) || availableFilesCache.get(item.track.fileName)?.duration || item.track.durationFormatted}
                             </span>
                           )}
@@ -3616,7 +3616,7 @@ export default function PlayerTab({
                                 <span className="text-xs uppercase font-black text-slate-600 tracking-tighter">
                                   {format(slot, 'MMM dd')}
                                 </span>
-                                <span className="text-xs font-mono font-black text-blue-700">
+                                <span className="text-xs font-sans font-black tabular-nums text-blue-700">
                                   {slotTimeStr}
                                 </span>
                               </div>
@@ -3783,11 +3783,11 @@ export default function PlayerTab({
                       <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
                         <Flag className="w-3.5 h-3.5 text-slate-300 shrink-0" />
                         show end
-                        <span className="text-[10px] text-slate-300 font-mono font-normal">
+                        <span className="text-[10px] text-slate-300 font-sans font-normal tabular-nums">
                           ({format(item.showEnd, 'h:mm a')})
                         </span>
                       </span>
-                      <span className="text-xs font-bold font-mono tracking-wide px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-600 text-slate-100 shrink-0">
+                      <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-600 text-slate-100 shrink-0 tabular-nums">
                         {item.status === 'over' ? (
                           `Over by: ${item.diffFormatted}`
                         ) : item.status === 'under' ? (
@@ -3803,7 +3803,7 @@ export default function PlayerTab({
                 if (item.type === 'extra-tracks') {
                   return (
                     <div 
-                      key={item.id}
+                      key={item.id} 
                       className="min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border bg-amber-700 border-amber-600 text-white select-none w-full flex-wrap"
                       id="extra-tracks-indicator"
                     >
@@ -3811,7 +3811,7 @@ export default function PlayerTab({
                         <ListPlus className="w-3.5 h-3.5 text-amber-200 shrink-0" />
                         overrun
                       </span>
-                      <span className="text-xs font-bold font-mono tracking-wide px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-500/50 text-amber-100 shrink-0">
+                      <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-500/50 text-amber-100 shrink-0 tabular-nums">
                         {`Over by: ${item.extraFormatted}`}
                       </span>
                     </div>
@@ -4233,13 +4233,13 @@ export default function PlayerTab({
                               </div>
 
                               {isCurrentlyPlaying ? (
-                                <div className="flex items-center gap-1 text-xs font-mono font-bold leading-none text-purple-600 dark:text-purple-400">
+                                <div className="flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none text-purple-600 dark:text-purple-400">
                                   <span>{formatTime(playingStates[item.track.id]?.currentTime || 0)}</span>
                                   <span className="opacity-30">/</span>
                                   <span>{formatTime(playingStates[item.track.id]?.duration || item.track.durationSeconds || 0)}</span>
                                 </div>
                               ) : (
-                                <span className="text-xs font-mono font-bold text-slate-500 dark:text-slate-400 leading-none">
+                                <span className="text-xs font-sans font-bold tabular-nums text-slate-500 dark:text-slate-400 leading-none">
                                   {mp3DurationCache.get(item.track.streamUrl) || availableFilesCache.get(item.track.fileName)?.duration || item.track.durationFormatted}
                                 </span>
                               )}
@@ -4365,7 +4365,7 @@ export default function PlayerTab({
                                     : '#a855f7'
                               }}
                               className={cn(
-                                "flex-1 rounded border shadow-sm p-2 transition-all flex flex-col gap-1.5 select-none cursor-pointer hover:shadow hover:border-slate-300 active:scale-[99.5%] active:bg-slate-50/30 text-left",
+                                "flex-1 min-w-0 rounded border shadow-sm p-2 transition-colors flex flex-col gap-1.5 select-none cursor-pointer hover:shadow hover:border-slate-300 active:scale-[99.5%] active:bg-slate-50/30 text-left",
                                 activeShow ? "ml-1" : "", "border-l-[4px] rounded-l-none",
                                 !isScript && isVerified ? "pb-[1px]" : "",
                                 cardBorderClass,
@@ -4410,7 +4410,7 @@ export default function PlayerTab({
                                     </div>
                                   )}
 
-                                  <span className="text-xs font-mono font-black text-purple-600">
+                                  <span className="text-xs font-sans font-black tabular-nums text-purple-600">
                                     {format(slot, 'h:mm a')}
                                   </span>
                                 </div>
@@ -4442,7 +4442,7 @@ export default function PlayerTab({
                                       handlePlay(s, slot);
                                     }}
                                     className={cn(
-                                      "shrink-0 p-1 rounded-full transition-all shadow-sm cursor-pointer",
+                                      "shrink-0 p-1 rounded-full transition-colors shadow-sm cursor-pointer",
                                       !isVerified ? "bg-red-50 text-red-300" :
                                       isCurrentlyPlaying ? "bg-slate-900 text-white" :
                                       (played || exported) ? "bg-slate-100 text-slate-500" :
@@ -4465,7 +4465,7 @@ export default function PlayerTab({
                                 ) : (
                                   <div 
                                     className={cn(
-                                      "shrink-0 p-1 rounded-full transition-all shadow-sm",
+                                      "shrink-0 p-1 rounded-full transition-colors shadow-sm",
                                       !isVerified ? "bg-red-50 text-red-300" :
                                       isCurrentlyPlaying ? "bg-slate-900 text-white" :
                                       (played || exported) ? "bg-slate-100 text-slate-500" :
@@ -4539,13 +4539,13 @@ export default function PlayerTab({
                                   )}
                                   
                                   {isCurrentlyPlaying ? (
-                                    <div className="flex items-center gap-1 text-xs font-mono font-bold leading-none text-purple-600">
+                                    <div className="flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none text-purple-600">
                                       <span>{formatTime(playingStates[slotKey]?.currentTime || 0)}</span>
                                       <span className="opacity-30">/</span>
                                       <span>{formatTime(playingStates[slotKey]?.duration || 0)}</span>
                                     </div>
                                   ) : isVerified ? (
-                                    <span className="text-xs font-mono font-bold text-slate-500 leading-none">
+                                    <span className="text-xs font-sans font-bold tabular-nums text-slate-500 leading-none">
                                       {isScript ? (activeMp3?.approximateReadTime ? (activeMp3.approximateReadTime.startsWith('~') ? activeMp3.approximateReadTime : `~${activeMp3.approximateReadTime}`) : '-:--') : (mp3DurationCache.get(activeMp3Url) || activeMp3?.duration || '--:--')}
                                     </span>
                                   ) : null}
@@ -4581,11 +4581,11 @@ export default function PlayerTab({
                         <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
                           <Flag className="w-3.5 h-3.5 text-slate-300 shrink-0" />
                           show end
-                          <span className="text-[10px] text-slate-300 font-mono font-normal">
+                          <span className="text-[10px] text-slate-300 font-sans font-normal tabular-nums">
                             ({format(item.showEnd, 'h:mm a')})
                           </span>
                         </span>
-                        <span className="text-xs font-bold font-mono tracking-wide px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-600 text-slate-100 shrink-0">
+                        <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-600 text-slate-100 shrink-0 tabular-nums">
                           {item.status === 'over' ? (
                             `Over by: ${item.diffFormatted}`
                           ) : item.status === 'under' ? (
@@ -4611,7 +4611,7 @@ export default function PlayerTab({
                           <ListPlus className="w-3.5 h-3.5 text-amber-200 shrink-0" />
                           overrun
                         </span>
-                        <span className="text-xs font-bold font-mono tracking-wide px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-500/50 text-amber-100 shrink-0">
+                        <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-500/50 text-amber-100 shrink-0 tabular-nums">
                           {`Over by: ${item.extraFormatted}`}
                         </span>
                       </div>
@@ -4726,7 +4726,7 @@ export default function PlayerTab({
                   >
                     <span className="text-xs font-black uppercase text-white tracking-normal font-sans flex items-center gap-1.5 font-sans">
                       <CassetteTape className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                      Prerecord Next
+                      Prerecord
                     </span>
                     {renderCacheStatusMessage()}
                   </div>
@@ -4854,7 +4854,7 @@ export default function PlayerTab({
                              : '#a855f7'
                        }}
                        className={cn(
-                         "flex-1 rounded border shadow-sm p-2 transition-all flex flex-col gap-1.5 select-none cursor-pointer hover:shadow hover:border-slate-300 active:scale-[99.5%] active:bg-slate-50/30 text-left",
+                         "flex-1 min-w-0 rounded border shadow-sm p-2 transition-colors flex flex-col gap-1.5 select-none cursor-pointer hover:shadow hover:border-slate-300 active:scale-[99.5%] active:bg-slate-50/30 text-left",
                          activeShow ? "ml-1" : "", "border-l-[4px] rounded-l-none",
                          !isScript && isVerified ? "pb-[1px]" : "",
                          cardBorderClass,
@@ -4869,7 +4869,7 @@ export default function PlayerTab({
                           {format(slot, 'MMM dd')}
                         </span>
                         <span className={cn(
-                          "text-xs font-mono font-black",
+                          "text-xs font-sans font-black tabular-nums",
                           isMissedRecent && !isCurrentlyPlaying ? "text-amber-800" : (isPre ? "text-emerald-600" : "text-purple-600")
                         )}>
                           {format(slot, 'h:mm a')}
@@ -4907,7 +4907,7 @@ export default function PlayerTab({
                            handlePlay(s, slot);
                          }}
                          className={cn(
-                           "shrink-0 p-1 rounded-full transition-all shadow-sm cursor-pointer",
+                           "shrink-0 p-1 rounded-full transition-colors shadow-sm cursor-pointer",
                            !isVerified ? "bg-red-50 text-red-300" :
                            isCurrentlyPlaying ? "bg-slate-900 text-white" :
                            (played || exported) ? "bg-slate-100 text-slate-500" :
@@ -4930,7 +4930,7 @@ export default function PlayerTab({
                      ) : (
                        <div 
                          className={cn(
-                           "shrink-0 p-1 rounded-full transition-all shadow-sm",
+                           "shrink-0 p-1 rounded-full transition-colors shadow-sm",
                            !isVerified ? "bg-red-50 text-red-300" :
                            isCurrentlyPlaying ? "bg-slate-900 text-white" :
                            (played || exported) ? "bg-slate-100 text-slate-500" :
@@ -5003,13 +5003,13 @@ export default function PlayerTab({
                      )}
                      
                      {isCurrentlyPlaying ? (
-                       <div className={cn("flex items-center gap-1 text-xs font-mono font-bold leading-none", isPre ? "text-emerald-600" : "text-purple-600")}>
+                       <div className={cn("flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none", isPre ? "text-emerald-600" : "text-purple-600")}>
                          <span>{formatTime(playingStates[slotKey]?.currentTime || 0)}</span>
                          <span className="opacity-30">/</span>
                          <span>{formatTime(playingStates[slotKey]?.duration || 0)}</span>
                        </div>
                      ) : isVerified ? (
-                       <span className="text-xs font-mono font-bold text-slate-500 leading-none">
+                       <span className="text-xs font-sans font-bold tabular-nums text-slate-500 leading-none">
                          {isScript ? (activeMp3?.approximateReadTime ? (activeMp3.approximateReadTime.startsWith('~') ? activeMp3.approximateReadTime : `~${activeMp3.approximateReadTime}`) : '-:--') : (mp3DurationCache.get(activeMp3Url) || activeMp3?.duration || '--:--')}
                        </span>
                      ) : null}

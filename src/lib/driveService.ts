@@ -251,17 +251,30 @@ export const extractWaveformForUrl = async (url: string, sourceUrlOrBlob?: strin
 
   try {
     let arrayBuffer: ArrayBuffer | null = null;
-    const cachedBlob = rawBlobCache.get(url);
+    const cachedBlob = rawBlobCache.get(url) || (availableFilesCache.get(url)?.path ? rawBlobCache.get(availableFilesCache.get(url)!.path) : undefined);
     if (cachedBlob) {
       arrayBuffer = await cachedBlob.arrayBuffer();
     } else if (sourceUrlOrBlob instanceof Blob) {
       arrayBuffer = await sourceUrlOrBlob.arrayBuffer();
     } else if (typeof sourceUrlOrBlob === 'string') {
-      const targetUrl = mp3BlobCache.get(sourceUrlOrBlob) || sourceUrlOrBlob;
+      const targetUrl = mp3BlobCache.get(sourceUrlOrBlob) || getPlayableUrl(sourceUrlOrBlob) || sourceUrlOrBlob;
       const resp = await fetch(targetUrl);
       if (resp.ok) {
         const blob = await resp.blob();
         arrayBuffer = await blob.arrayBuffer();
+      }
+    } else {
+      const playable = mp3BlobCache.get(url) || getPlayableUrl(url);
+      if (playable) {
+        try {
+          const resp = await fetch(playable);
+          if (resp.ok) {
+            const blob = await resp.blob();
+            arrayBuffer = await blob.arrayBuffer();
+          }
+        } catch (fetchErr) {
+          // ignore network error
+        }
       }
     }
 
@@ -358,8 +371,15 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
     resolvedUrl = fileInCache.path;
   }
 
+  if (/^[a-zA-Z0-9_-]{25,50}$/.test(resolvedUrl)) {
+    resolvedUrl = `https://www.googleapis.com/drive/v3/files/${resolvedUrl}?alt=media`;
+  }
+
   if (mp3BlobCache.has(resolvedUrl)) {
     return mp3BlobCache.get(resolvedUrl)!;
+  }
+  if (mp3BlobCache.has(url)) {
+    return mp3BlobCache.get(url)!;
   }
 
   if (pendingFetches.has(resolvedUrl)) {
@@ -1432,6 +1452,14 @@ export const getPlayableUrl = (url: string | undefined): string => {
   if (mp3BlobCache.has(resolvedUrl)) {
     return mp3BlobCache.get(resolvedUrl)!;
   }
+  if (mp3BlobCache.has(url)) {
+    return mp3BlobCache.get(url)!;
+  }
+
+  if (/^[a-zA-Z0-9_-]{25,50}$/.test(resolvedUrl)) {
+    resolvedUrl = `https://www.googleapis.com/drive/v3/files/${resolvedUrl}?alt=media`;
+  }
+
   const token = getAccessToken();
   if (resolvedUrl.includes('googleapis.com') && token) {
     return `${resolvedUrl}&access_token=${token}`;

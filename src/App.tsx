@@ -43,6 +43,7 @@ import { Announcement, AnnouncementType, LogEntry, Show } from "./types";
 import PlayerTab from "./components/PlayerTab";
 import CalendarTab from "./components/CalendarTab";
 import LogTab from "./components/LogTab";
+import LiveDevTab from "./components/LiveDevTab";
 import LiveReadPopout from "./components/LiveReadPopout";
 import LocalHelpModal from "./components/LocalHelpModal";
 import { SaveRecoveryModal, SaveRecoveryInfo } from "./components/SaveRecoveryModal";
@@ -169,7 +170,7 @@ export default function App() {
     return window.fetch(url, init);
   };
 
-  const [activeTab, setActiveTab] = useState<"player" | "calendar" | "log">(
+  const [activeTab, setActiveTab] = useState<"player" | "calendar" | "log" | "live_dev">(
     "player",
   );
   const [calendarSubTab, setCalendarSubTab] = useState<"calendar" | "list" | "shows">(
@@ -2910,6 +2911,25 @@ export default function App() {
                 Log
               </span>
             </button>
+            {isAiStudio && (
+              <button
+                disabled={isLiveReadActive}
+                onClick={() => confirmNavAction(() => setActiveTab("live_dev"))}
+                className={cn(
+                  "flex items-center gap-1.5 px-2 py-1 rounded transition-colors cursor-pointer",
+                  activeTab === "live_dev"
+                    ? "bg-purple-600 text-white"
+                    : "text-amber-400 hover:text-amber-300 bg-amber-950/40 border border-amber-500/30",
+                  isLiveReadActive && "opacity-40 cursor-not-allowed pointer-events-none"
+                )}
+                title="Live_Dev Sandbox (AI Studio Preview Only)"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-xs font-bold uppercase tracking-tighter">
+                  Live_Dev
+                </span>
+              </button>
+            )}
 
           </div>
         </div>
@@ -2928,7 +2948,7 @@ export default function App() {
                   <ListOrdered className="w-3.5 h-3.5" />
                   Playlist Export
                 </p>
-                <p className="text-xs font-mono font-black text-slate-900 tabular-nums mt-1 leading-none">
+                <p className="text-xs font-sans font-black text-slate-900 tabular-nums mt-1 leading-none">
                   {prerecordDate
                     ? `${format(prerecordDate, "MM/dd/yyyy h:mm a")} to ${format(
                         addMinutes(prerecordDate, prerecordLengthMinutes),
@@ -2943,7 +2963,7 @@ export default function App() {
                   <CassetteTape className="w-3.5 h-3.5" />
                   Prerecord time and date
                 </p>
-                <p className="text-xs font-mono font-black text-slate-900 tabular-nums mt-1 leading-none">
+                <p className="text-xs font-sans font-black text-slate-900 tabular-nums mt-1 leading-none">
                   {prerecordDate
                     ? `${format(prerecordDate, "MM/dd/yyyy h:mm a")} to ${format(
                         addMinutes(prerecordDate, prerecordLengthMinutes),
@@ -2962,7 +2982,7 @@ export default function App() {
                   <p className="text-xs uppercase text-slate-400 font-black tracking-tighter leading-none">
                     Time
                   </p>
-                  <p className="text-xs font-mono font-black text-slate-900 tabular-nums leading-none">
+                  <p className="text-xs font-sans font-black text-slate-900 tabular-nums leading-none">
                     {format(now, "h:mm:ss a")}
                   </p>
                 </div>
@@ -2977,7 +2997,7 @@ export default function App() {
                   <p className="text-xs uppercase text-slate-400 font-black tracking-tighter leading-none">
                     Time
                   </p>
-                  <p className="text-xs font-mono font-black text-slate-900 tabular-nums leading-none">
+                  <p className="text-xs font-sans font-black text-slate-900 tabular-nums leading-none">
                     {format(now, "h:mm:ss a")}
                   </p>
                 </div>
@@ -3224,6 +3244,8 @@ export default function App() {
               "w-full mx-auto pt-3 h-full transition-all flex flex-col min-h-0 pb-1",
               activeTab === "player"
                 ? "max-w-[200px] px-1"
+                : activeTab === "live_dev"
+                ? "max-w-4xl px-4 flex-1 overflow-y-auto"
                 : "max-w-full px-4 md:px-6 lg:px-8 flex-1",
             )}
           >
@@ -3262,6 +3284,16 @@ export default function App() {
                     onOpenFolderChooser={() => setIsFolderChooserOpen(true)}
                     isReadOnly={isReadOnlyCompatibility}
                   />
+                </motion.div>
+              ) : activeTab === "live_dev" ? (
+                <motion.div
+                  key="live_dev"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="h-full flex flex-col min-h-0 flex-1"
+                >
+                  <LiveDevTab />
                 </motion.div>
               ) : activeTab === "calendar" ? (
                 <motion.div

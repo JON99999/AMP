@@ -147,7 +147,7 @@ export function resolveShowsForDate(
     }
 
     return null;
-  }).filter((s): a is Show => s !== null && s.active);
+  }).filter((s): s is Show => s !== null && s.active);
 }
 
 const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;

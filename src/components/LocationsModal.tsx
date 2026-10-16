@@ -299,7 +299,7 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
                 <div className="flex items-center gap-2 text-blue-600">
                   <Folder className="w-5 h-5" />
                   <h3 className="text-xs font-black uppercase tracking-widest text-slate-900">
-                    Storage Folders
+                    Settings &amp; Storage Folders
                   </h3>
                 </div>
               </div>

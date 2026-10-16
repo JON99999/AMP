@@ -453,10 +453,12 @@ function createWindow() {
     height: 800,
     title: appTitle,
     fullscreenable: false,
+    acceptsFirstMouse: true, // Allow direct first-click activation on unfocused/background windows (macOS)
     hasShadow: !disableShadows, // OPTION 3: Disable window shadows on Intel Macs to bypass expensive WindowServer calculations
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false, // Prevent timer & input throttling when window is backgrounded
       devTools: appMode === 'Admin',
       preload: path.join(__dirname, 'preload.cjs'),
     },
@@ -620,6 +622,7 @@ global.spawnLiveRead = async (data) => {
     ...(popoutIcon ? { icon: popoutIcon } : {}),
     title: "Live Read Script - " + (data.name || data.announcementName || "Script"),
     alwaysOnTop: true, // Floats over other apps for the broadcaster
+    acceptsFirstMouse: true, // Direct first-click response on macOS
     resizable: true,
     fullscreenable: false,
     hasShadow: !disableShadows,
@@ -629,6 +632,7 @@ global.spawnLiveRead = async (data) => {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false,
       devTools: appMode === 'Admin',
       preload: path.join(__dirname, 'preload.cjs')
     }

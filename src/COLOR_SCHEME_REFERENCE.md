@@ -10,11 +10,10 @@ This reference documents the default Light theme font and color definitions for 
 
 ### A. Font Families & Imports
 - **Sans-Serif Font Family (`--font-sans`)**: `"Inter", ui-sans-serif, system-ui, sans-serif`
-  - **Google Font Import**: `https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700`
-  - **Weights Supported**: 400 (Regular), 500 (Medium), 600 (SemiBold), 700 (Bold)
-- **Monospace Font Family (`--font-mono`)**: `"JetBrains Mono", ui-monospace, SFMono-Regular, monospace`
-  - **Google Font Import**: `https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700`
-  - **Weights Supported**: 400 (Regular), 500 (Medium), 700 (Bold)
+  - **Google Font Import**: `https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap`
+  - **Weights Supported**: 400 (Regular), 500 (Medium), 600 (SemiBold), 700 (Bold), 800 (ExtraBold), 900 (Black)
+- **Monospace Font Family (`--font-mono`)**: Standardized to `"Inter", ui-sans-serif, system-ui, sans-serif` for uniform sans-serif appearance across all views.
+  - **Numeric Alignment**: Pair with `tabular-nums` for precise alignment of dates, times, durations, and numeric codes.
 
 ### B. Font Sizing & Utility Strategy
 - **Sizing Framework**: Standard Tailwind Utility Classes (`text-xs`, `text-sm`, `text-base`, `text-lg`, `text-xl`, etc.).
@@ -88,7 +87,7 @@ Global theme variables defined in `:root` / `[data-theme="light"]` and exposed t
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-mono: "Inter", ui-sans-serif, system-ui, sans-serif;
 
   --color-fg-primary: var(--fg-primary);
   --color-fg-secondary: var(--fg-secondary);

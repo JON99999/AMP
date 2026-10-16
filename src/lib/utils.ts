@@ -79,8 +79,14 @@ export function getFileExtension(filenameOrUrl: string | undefined | null): stri
  */
 export function isAudioFile(filenameOrUrl: string | undefined | null): boolean {
   if (!filenameOrUrl) return false;
-  const ext = getFileExtension(filenameOrUrl);
-  return (AUDIO_EXTENSIONS as readonly string[]).includes(ext);
+  const str = String(filenameOrUrl).trim();
+  if (str.startsWith('blob:') || str.includes('/api/media/stream') || str.includes('/api/shows/playlist/stream-file') || str.startsWith('mock-')) return true;
+  const clean = getCleanFilename(str).toLowerCase();
+  const ext = getFileExtension(clean);
+  if ((AUDIO_EXTENSIONS as readonly string[]).includes(ext)) return true;
+  // Support 25-50 char alphanumeric Google Drive IDs (e.g. 11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch)
+  if (/^[a-zA-Z0-9_-]{25,50}$/.test(str)) return true;
+  return false;
 }
 
 /**

@@ -1728,7 +1728,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <span className="text-[11px] font-mono bg-slate-100 border border-slate-200 text-slate-500 font-bold px-2 py-0.5 rounded uppercase leading-none">
+              <span className="text-[11px] font-sans bg-slate-100 border border-slate-200 text-slate-500 font-bold px-2 py-0.5 rounded uppercase leading-none">
                 ID: {showFormData.id}
               </span>
               <button
@@ -1781,7 +1781,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                     const sanitized = rawVal.replace(/[^a-zA-Z0-9_]/g, '');
                     setShowFormData({ ...showFormData, nameShort: sanitized.slice(0, 24) });
                   }}
-                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800"
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800"
                 />
                 <p className="text-xs text-slate-400 font-medium">
                   Max 24 characters. Alphanumeric and underscores only.
@@ -1842,7 +1842,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                         if (isPM) h24 += 12;
                         setShowFormData({ ...showFormData, startHour: h24 });
                       }}
-                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
+                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
                     />
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Hour</span>
                   </div>
@@ -1853,7 +1853,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                       max="59"
                       value={showFormData.startMinute !== undefined ? showFormData.startMinute : 0}
                       onChange={e => setShowFormData({ ...showFormData, startMinute: Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)) })}
-                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
+                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
                     />
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Min</span>
                   </div>
@@ -1889,7 +1889,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                       max="23"
                       value={showFormData.durationHours !== undefined ? showFormData.durationHours : 1}
                       onChange={e => setShowFormData({ ...showFormData, durationHours: Math.max(0, parseInt(e.target.value) || 0) })}
-                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
+                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
                     />
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Hours</span>
                   </div>
@@ -1900,7 +1900,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                       max="59"
                       value={showFormData.durationMinutes !== undefined ? showFormData.durationMinutes : 0}
                       onChange={e => setShowFormData({ ...showFormData, durationMinutes: Math.max(0, Math.min(59, parseInt(e.target.value) || 0)) })}
-                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
+                      className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
                     />
                     <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Mins</span>
                   </div>
@@ -2119,7 +2119,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                     <span className="px-1 py-0.5 bg-blue-50 text-blue-700 border border-blue-150 rounded text-[11px] font-black uppercase tracking-wide text-center leading-none">
                       {show.day}
                     </span>
-                    <span className="flex items-center justify-center gap-0.5 text-[11px] font-mono text-slate-500 font-bold bg-slate-100 px-1 py-0.5 rounded border border-slate-200 leading-none">
+                    <span className="flex items-center justify-center gap-0.5 text-[11px] font-sans font-bold tabular-nums text-slate-500 bg-slate-100 px-1 py-0.5 rounded border border-slate-200 leading-none">
                       <Clock className="w-3 h-3 text-slate-400 shrink-0" />
                       {show.startHour !== undefined && show.startMinute !== undefined ? (
                         <span>
@@ -2127,7 +2127,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                         </span>
                       ) : null}
                     </span>
-                    <span className="text-[10px] text-slate-400 font-mono font-bold uppercase text-center leading-none">
+                    <span className="text-[10px] text-slate-400 font-sans font-bold tabular-nums uppercase text-center leading-none">
                       {show.durationHours}h {show.durationMinutes}m
                     </span>
 
@@ -2164,7 +2164,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                         {show.description}
                       </p>
                     )}
-                    <div className="text-[10px] text-slate-400 font-mono font-bold uppercase mt-1 leading-none">
+                    <div className="text-[10px] text-slate-400 font-sans font-bold uppercase mt-1 leading-none">
                       ID: {show.id} {show.nameShort && `• Code: ${show.nameShort}`}
                     </div>
                   </div>
@@ -2429,7 +2429,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
 
           {/* Debug Pixel Ruler */}
           {showPixelRuler && (
-            <div className="my-2 p-1.5 bg-slate-900 text-slate-100 rounded-lg text-[10px] font-mono select-none overflow-hidden shrink-0 border border-slate-700 shadow-sm">
+            <div className="my-2 p-1.5 bg-slate-900 text-slate-100 rounded-lg text-[10px] font-sans tabular-nums select-none overflow-hidden shrink-0 border border-slate-700 shadow-sm">
               <div className="flex justify-between items-center px-1 mb-1 text-[11px] font-bold text-amber-400">
                 <span className="flex items-center gap-2">
                   <span>DEBUG PIXEL RULER</span>
@@ -2795,7 +2795,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                         }
                                       }}
                                       className={cn(
-                                        "p-1 py-1 rounded text-xs font-black font-mono tracking-tight text-center border cursor-pointer select-none transition-all",
+                                        "p-1 py-1 rounded text-xs font-black font-sans tabular-nums tracking-tight text-center border cursor-pointer select-none transition-all",
                                         isSelected
                                           ? "bg-blue-600 text-white border-blue-600 font-extrabold"
                                           : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
@@ -2923,7 +2923,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                 <div className="overflow-y-auto flex-1 custom-scrollbar min-h-0 flex flex-col">
                   {/* Header row (Static outside of the scrollable viewport, matching log grid layout) */}
                   <div className={cn("grid bg-slate-100 border-b border-slate-250 select-none text-xs font-black text-slate-500 uppercase tracking-tighter shrink-0 shadow-sm sticky top-0 z-20", calendarTimeframe === 'daily' ? "grid-cols-[74px_1fr]" : "grid-cols-[74px_repeat(7,minmax(0,1fr))]")}>
-                    <div className="p-2 border-r border-slate-205 flex items-center justify-center font-mono text-slate-450">
+                    <div className="p-2 border-r border-slate-205 flex items-center justify-center font-sans text-slate-450">
                       Hour
                     </div>
                     {getCalendarDays(calendarDate).map((day, idx) => {
@@ -2952,7 +2952,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                             {dayName} <span className="opacity-80 font-normal ml-1">{dateStr}</span>
                           </span>
                           {dayAudit && dayAudit.totalPlanned > 0 && (
-                            <div className="flex items-center justify-center gap-1 mt-0.5 text-[10px] font-mono leading-none not-italic select-none">
+                            <div className="flex items-center justify-center gap-1 mt-0.5 text-[10px] font-sans tabular-nums leading-none not-italic select-none">
                               <span className="text-emerald-700 font-bold" title={`Played: ${dayAudit.totalPlayed}`}>{dayAudit.totalPlayed}✓</span>
                               {dayAudit.totalMissed > 0 && (
                                 <span className="text-rose-700 font-bold" title={`Missed: ${dayAudit.totalMissed}`}>{dayAudit.totalMissed}⚠</span>
@@ -3152,7 +3152,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                               {/* Hour column */}
                               {defIdx === 0 ? (
                                 <div className={cn(
-                                  "border-r border-slate-200 flex items-center justify-center select-none font-black font-mono uppercase shrink-0 transition-colors",
+                                  "border-r border-slate-200 flex items-center justify-center select-none font-black font-sans tabular-nums uppercase shrink-0 transition-colors",
                                   calendarLayoutMode === 'compact'
                                     ? "p-1 px-0.5 text-xs min-h-[26px]"
                                     : "p-1.5 px-0.5 text-xs min-h-[28px]",
@@ -3321,7 +3321,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                             startEdit(s);
                                           }}
                                           className={cn(
-                                            "inline-flex items-center justify-center p-0.5 px-0.5 rounded font-mono text-xs font-black leading-none shadow-sm border cursor-pointer select-none shrink-0 transition-all hover:scale-105 relative",
+                                            "inline-flex items-center justify-center p-0.5 px-0.5 rounded font-sans tabular-nums text-xs font-black leading-none shadow-sm border cursor-pointer select-none shrink-0 transition-all hover:scale-105 relative",
                                             !s.enabled 
                                               ? "bg-slate-100 text-slate-400 border-grid-inactive line-through" 
                                               : (showIssues && hasSlotIssues)
@@ -3399,7 +3399,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                         title={summaryText}
                                       >
                                         <div className={cn("truncate flex items-center gap-1", cellIsPast && "italic")}>
-                                          <span className={cn("font-mono font-black text-xs text-slate-455 shrink-0", cellIsPast && "italic")}>:{formattedMin}</span>
+                                          <span className={cn("font-sans tabular-nums font-black text-xs text-slate-455 shrink-0", cellIsPast && "italic")}>:{formattedMin}</span>
                                           {isPlayed && (
                                             <span className="shrink-0 px-1 py-0.2 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[9px] font-black uppercase leading-none not-italic">
                                               {isPrerecord ? 'PREREC' : 'PLAYED'}
@@ -3438,7 +3438,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                   >
                                     <div className="flex-1 text-left p-1 rounded font-sans text-xs leading-tight border border-transparent block">
                                       <div className="flex items-center gap-0.5">
-                                        <span className="font-mono font-black text-xs shrink-0">:00</span>
+                                        <span className="font-sans tabular-nums font-black text-xs shrink-0">:00</span>
                                         <span className="truncate">Placeholder</span>
                                       </div>
                                     </div>
@@ -3447,7 +3447,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
 
                                 const renderCompactAnnouncementPlaceholder = (key: string) => (
                                   <div key={key} className="inline-flex items-stretch gap-[2px] opacity-0 pointer-events-none select-none shrink-0">
-                                    <div className="inline-flex items-center justify-center p-0.5 px-0.5 rounded font-mono text-xs font-black leading-none border border-transparent">
+                                    <div className="inline-flex items-center justify-center p-0.5 px-0.5 rounded font-sans tabular-nums text-xs font-black leading-none border border-transparent">
                                       00
                                     </div>
                                   </div>
@@ -4223,7 +4223,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
               {/* Column 1: Editor/ID Label and ID Value */}
               <div className="flex flex-col gap-0.5 shrink-0">
                 <span className="text-xs font-black text-slate-700 uppercase tracking-widest select-none leading-none">Editor</span>
-                <p className="text-xs text-slate-400 font-black truncate leading-none mt-1 font-mono">
+                <p className="text-xs text-slate-400 font-black truncate leading-none mt-1 font-sans">
                   {editingId === 'new' ? 'New Profile' : `${formData.id}`}
                 </p>
               </div>
@@ -4308,7 +4308,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                               const newVal = d ? `${d}T${t}` : '';
                               setFormData({ ...formData, startDate: newVal });
                             }}
-                            className="w-[110px] p-0.5 border-0 border-b border-slate-350 rounded-none text-xs font-bold font-mono outline-none bg-white text-slate-800 shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0"
+                            className="w-[110px] p-0.5 border-0 border-b border-slate-350 rounded-none text-xs font-bold font-sans tabular-nums outline-none bg-white text-slate-800 shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0"
                           />
                           <div className="shrink-0">
                             <MilitaryTimeInput
@@ -4346,7 +4346,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                               const t = getTimePart(formData.endDate) || '23:59';
                               setFormData({ ...formData, endDate: `${d}T${t}` });
                             }}
-                            className="w-[110px] p-0.5 border-0 border-b border-slate-350 rounded-none text-xs font-bold font-mono outline-none bg-white text-slate-800 shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0"
+                            className="w-[110px] p-0.5 border-0 border-b border-slate-350 rounded-none text-xs font-bold font-sans tabular-nums outline-none bg-white text-slate-800 shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0"
                           />
                           <div className="shrink-0">
                             <MilitaryTimeInput
@@ -4688,7 +4688,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                             });
                                           }}
                                           className={cn(
-                                            "w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-mono outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0",
+                                            "w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0",
                                             hasStartOverlap
                                               ? "border-red-500 bg-red-50 text-red-900 font-bold"
                                               : hasMissingStart
@@ -4769,7 +4769,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                             });
                                           }}
                                           className={cn(
-                                            "w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-mono outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0",
+                                            "w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0",
                                             hasEndOverlap
                                               ? "border-red-500 bg-red-50 text-red-900 font-bold"
                                               : hasEndGap
@@ -4819,7 +4819,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                     )}>
                                       <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
                                         <span className={cn(
-                                          "text-xs font-mono font-bold truncate min-w-0",
+                                          "text-xs font-sans font-bold truncate min-w-0",
                                           hasMissingFile ? "text-amber-900 font-semibold" : "text-slate-800"
                                         )} title={item.mp3Url ? getFilenameFromUrlOrPath(item.mp3Url) : 'No file selected'}>
                                           #{idx + 1}: {item.mp3Url ? getFilenameFromUrlOrPath(item.mp3Url) : <span className="italic text-amber-700 font-sans font-bold">No file selected (Required)</span>}
@@ -4834,7 +4834,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                           if (trackAudit.totalPlays === 0) return null;
                                           return (
                                             <span 
-                                              className="text-[10px] font-mono font-bold bg-blue-50 text-blue-800 border border-blue-200 px-1.5 py-0.5 rounded select-none shrink-0" 
+                                              className="text-[10px] font-sans font-bold tabular-nums bg-blue-50 text-blue-800 border border-blue-200 px-1.5 py-0.5 rounded select-none shrink-0" 
                                               title={`First Broadcast: ${trackAudit.firstUsedAt || '—'}\nLast Broadcast: ${trackAudit.lastUsedAt || '—'}\nTotal Broadcasts: ${trackAudit.totalPlays}`}
                                             >
                                               {trackAudit.totalPlays} plays
@@ -4849,7 +4849,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                             const dispDur = item.duration || pickerDurations[filename] || (filename ? availableFilesCache.get(filename)?.duration : '') || '';
                                             return (
                                               <span className={cn(
-                                                "text-xs font-mono font-bold px-1.5 py-0.5 rounded border select-none shrink-0",
+                                                "text-xs font-sans font-bold tabular-nums px-1.5 py-0.5 rounded border select-none shrink-0",
                                                 dispDur ? "text-slate-600 bg-slate-100 border-slate-200" : "text-slate-400 bg-slate-50 border-slate-200"
                                               )}>
                                                 {dispDur || '--:--'}
@@ -4872,7 +4872,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                                       approximateReadTime: sorted[0]?.approximateReadTime || undefined
                                                     });
                                                   }}
-                                                  className="w-[44px] p-0.5 border-0 border-b border-slate-350 rounded-none text-xs font-bold font-mono text-slate-800 outline-none bg-white shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 text-center"
+                                                  className="w-[44px] p-0.5 border-0 border-b border-slate-350 rounded-none text-xs font-bold font-sans tabular-nums text-slate-800 outline-none bg-white shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-500 h-6.5 text-center"
                                                   title="Approximate Read Time (m:ss)"
                                                 />
                                               </div>
@@ -4981,7 +4981,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                       return (
                                         <div className="@container flex items-center justify-between gap-1.5 flex-nowrap pt-1 min-w-0">
                                           <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-                                            <span className="text-xs font-mono font-bold text-slate-800 truncate min-w-0" title={item.backupMp3Url ? getFilenameFromUrlOrPath(item.backupMp3Url) : 'No backup audio selected'}>
+                                            <span className="text-xs font-sans font-bold text-slate-800 truncate min-w-0" title={item.backupMp3Url ? getFilenameFromUrlOrPath(item.backupMp3Url) : 'No backup audio selected'}>
                                               <span className="font-black text-slate-700 select-none">Backup: </span>
                                               {item.backupMp3Url ? (
                                                 getFilenameFromUrlOrPath(item.backupMp3Url)
@@ -4999,7 +4999,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                                                 const bDur = pickerDurations[bFilename] || (bFilename ? availableFilesCache.get(bFilename)?.duration : '') || '';
                                                 return (
                                                   <span className={cn(
-                                                    "text-xs font-mono font-bold px-1.5 py-0.5 rounded border select-none shrink-0",
+                                                    "text-xs font-sans font-bold tabular-nums px-1.5 py-0.5 rounded border select-none shrink-0",
                                                     bDur ? "text-slate-600 bg-slate-100 border-slate-200" : "text-slate-400 bg-slate-50 border-slate-200"
                                                   )}>
                                                     {bDur || '--:--'}
@@ -5205,7 +5205,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
                             <tr key={h} className="hover:bg-blue-100/30 dark:hover:bg-slate-800/40 transition-colors">
                               <td 
                                 onClick={() => toggleRow(h)}
-                                className="p-0 text-xs font-black text-slate-500 dark:text-slate-400 pr-1.5 cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors border-r border-b border-blue-200/80 dark:border-slate-700/60 text-right leading-none h-4 font-mono select-none"
+                                className="p-0 text-xs font-black text-slate-500 dark:text-slate-400 pr-1.5 cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors border-r border-b border-blue-200/80 dark:border-slate-700/60 text-right leading-none h-4 font-sans tabular-nums select-none"
                               >
                                 {formatHour12(h, false)}
                               </td>
@@ -5268,7 +5268,7 @@ export default function CalendarTab({ announcements, onSave, isAdmin, onAdminTog
             </button>
 
             {formData.metadata && (
-              <div className="text-xs font-mono text-slate-400 text-center leading-tight">
+              <div className="text-xs font-sans tabular-nums text-slate-400 text-center leading-tight">
                 <div>Created {formatMetadataDate(formData.metadata.createdDate)}</div>
                 <div>Modified {formatMetadataDate(formData.metadata.lastModifiedDate)}</div>
               </div>

@@ -956,7 +956,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                           <span title={log.announcementName}>{log.announcementName || '—'}</span>
                         </span>
                         <span className="text-slate-400 font-normal mr-1">:</span>
-                        <span className="font-mono text-slate-600 font-normal mr-1" title={log.mp3Name}>
+                        <span className="font-sans text-slate-600 font-normal mr-1" title={log.mp3Name}>
                           {getMP3Status(log.mp3Name).filename}
                         </span>
                         {(log.showName || log.hostName) && (
@@ -985,7 +985,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                             {log.announcementName || '—'}
                           </span>
                           <span className="text-slate-400 font-normal shrink-0">:</span>
-                          <span className="text-xs font-mono text-slate-600 truncate min-w-0 flex-1" title={log.mp3Name}>
+                          <span className="text-xs font-sans text-slate-600 truncate min-w-0 flex-1" title={log.mp3Name}>
                             {getMP3Status(log.mp3Name).filename}
                           </span>
                         </div>
@@ -1005,7 +1005,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
 
                     {/* Bottom row: Times (S: & A: stacked) + ID & Mode */}
                     {containerWidth < 315 ? (
-                      <div className="border-t border-slate-200/80 pt-1 flex flex-col gap-1 text-xs font-mono">
+                      <div className="border-t border-slate-200/80 pt-1 flex flex-col gap-1 text-xs font-sans tabular-nums">
                         <div className="flex flex-col text-slate-900 font-bold tabular-nums text-xs leading-tight">
                           <span title={`Scheduled: ${log.timestamp}`}>
                             S:{sched.dateStr} {sched.timeStr}
@@ -1036,7 +1036,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                         </div>
                       </div>
                     ) : (
-                      <div className="border-t border-slate-200/80 pt-1 flex items-center justify-between text-xs font-mono">
+                      <div className="border-t border-slate-200/80 pt-1 flex items-center justify-between text-xs font-sans tabular-nums">
                         <div className="flex flex-col text-slate-900 font-bold tabular-nums text-xs leading-tight">
                           <span title={`Scheduled: ${log.timestamp}`}>
                             S:{sched.dateStr} {sched.timeStr}
@@ -1084,19 +1084,19 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                   )}
                 >
                   {/* Timestamp cell mapped to Schedule/Actual */}
-                  <div style={{ width: `${colWidths.time}px` }} className="text-xs font-mono font-bold text-slate-900 tabular-nums flex flex-col justify-center gap-0 pr-1 pl-2 shrink-0 overflow-hidden py-1">
+                  <div style={{ width: `${colWidths.time}px` }} className="text-xs font-sans font-bold text-slate-900 tabular-nums flex flex-col justify-center gap-0 pr-1 pl-2 shrink-0 overflow-hidden py-1">
                     <div className="leading-tight line-clamp-2 text-ellipsis overflow-hidden text-slate-905" title={`${format(new Date(log.timestamp), 'yyyy-MM-dd')} ${format(new Date(log.timestamp), 'hh:mm:ss a')}`}>
                       S:{sched.dateStr} {sched.timeStr}
                     </div>
                     {actl ? (
                       <span 
-                        className="text-xs font-mono font-medium text-slate-500 tracking-tighter leading-tight line-clamp-2 text-ellipsis overflow-hidden"
+                        className="text-xs font-sans font-medium text-slate-500 tabular-nums tracking-tighter leading-tight line-clamp-2 text-ellipsis overflow-hidden"
                         title={`ACTL: ${format(new Date(log.logTimeStamp), 'yyyy-MM-dd hh:mm:ss a')}`}
                       >
                         A:{actl.dateStr} {actl.timeStr}
                       </span>
                     ) : (
-                      <span className="text-xs font-mono font-medium text-slate-400 leading-tight">-</span>
+                      <span className="text-xs font-sans font-medium text-slate-400 leading-tight">-</span>
                     )}
                   </div>
 
@@ -1116,7 +1116,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                         {log.announcementName || '—'}
                       </span>
                       <span className="text-slate-400 font-normal shrink-0">:</span>
-                      <span className="text-xs font-mono text-slate-600 truncate min-w-0 flex-1" title={log.mp3Name}>
+                      <span className="text-xs font-sans text-slate-600 truncate min-w-0 flex-1" title={log.mp3Name}>
                         {getMP3Status(log.mp3Name).filename}
                       </span>
                     </div>
