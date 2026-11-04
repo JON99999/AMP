@@ -11,9 +11,6 @@ bun.lock
 .agents_global.md
 
 # Temporary Rolling GitHub Sync Batch Ignores
-dev/archives/archive_v0.18.1/
-dev/archives/archive_v0.19.0/
-dev/archives/archive_v0.19.1/
 dev/archives/archive_v0.19.2/
 dev/archives/archive_v0.19.3/
 dev/archives/archive_v0.19.4/
