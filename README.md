@@ -70,12 +70,10 @@ If you need to specify unique locations for certain types of data, you can speci
 
 Because these installation files are distributed directly and are not downloaded from the official Mac App Store or Microsoft Store, both macOS and Windows will flag them as untrusted or "scary internet files" upon first launch. Follow the guide below to authorize and run the application.
 
-### macOS Installation & Authorization
+### macOS Installation & Authorization (macOS 12 Monterey or Newer)
 
-#### 1. Selecting the Correct Architecture File
-Select the installer appropriate for your hardware:
-- **Apple Silicon (newer arm64)**: Choose this version if you are on a Mac with Apple Silicon (M1, M2, M3 chips, etc.).
-- **Apple Intel (older x64)**: Choose this version if you are on an older, Intel-based Mac.
+#### 1. Universal macOS Installer (`-Mac.dmg`)
+- Each AMP edition (`Admin`, `Live`, and `Studio`) ships as a single **Universal macOS `.dmg` installer** that runs natively on both **Apple Silicon (`arm64` — M1, M2, M3, M4)** and **Intel (`x64`)** Macs running **macOS 12.0 Monterey or newer**.
 
 #### 2. Bypassing macOS Gatekeeper Gate
 Because the app is unsigned, macOS will block execution on the first attempt:
@@ -88,11 +86,11 @@ Because the app is unsigned, macOS will block execution on the first attempt:
 
 ---
 
-### Windows Installation & Authorization
+### Windows Installation & Authorization (Windows 10 v1809+ / Windows 11 64-bit)
 
 #### 1. Selecting the Correct Format
-- **Portable Version**: Runs directly from the `.exe` file without modifying system files or creating an installer profile.
-- **Installer Version**: Installs the application to your standard Program Files registry.
+- **Portable Version (`.zip`)**: Extracts and runs directly from its folder without modifying system files or creating an installer profile.
+- **Installer Version (`.exe`)**: Installs the application to your standard Windows user/system profile.
 
 #### 2. Bypassing Windows Defender SmartScreen
 When opening the executable on Windows:

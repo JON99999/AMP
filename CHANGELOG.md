@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.1] - 2026-11-04
+
+### Changed
+- **Single macOS Universal Binary Installer (`#44`)**: Replaced split `--x64 --arm64` macOS packaging in `scripts/build-apps.cjs`, `package.json`, and `scripts/afterAllArtifactBuild.cjs` with a single `--mac --universal` `.dmg` target per edition (`AMP Admin-0.20.1-Mac.dmg`, `AMP Live-0.20.1-Mac.dmg`, `AMP Studio-0.20.1-Mac.dmg`) that runs natively on both Apple Silicon (`arm64`) and Intel (`x64`) Macs (macOS 12 Monterey and newer).
+- **OS & Module Currency Alignment (`#44`)**: Updated in-range dependencies (`electron@42.11.18`, `electron-builder@26.18.0`, `express@4.22.3`, `react@19.3.1`, `vite@6.4.5`, `tailwindcss@4.3.4`, `date-fns@4.4.0`), refreshed the *Open Source Licenses* dialog in `electron-main.cjs`, and updated `README.md` with Universal macOS (`macOS 12+`) and Windows (`Windows 10 v1809+ / Windows 11 64-bit`) installation guidance.
+
+---
+
 ## [0.20.0] - 2026-11-03
 
 ### Changed

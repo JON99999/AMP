@@ -207,13 +207,13 @@ Key Open Source Libraries & Components:
 • Electron (Chromium & Node.js runtime) - MIT License
 • React & React DOM - MIT License
 • Express - MIT License
-• Vite - MIT License
+• Vite & esbuild - MIT License
 • Tailwind CSS - MIT License
 • Lucide Icons - ISC License
 • Motion (motion/react) - MIT License
 • electron-builder - MIT License
-• Google GenAI & Google APIs - Apache 2.0
-• node-cron - ISC License
+• date-fns, music-metadata, node-id3, & SheetJS (xlsx) - MIT / Apache 2.0
+• Google GenAI & Firebase SDKs - Apache 2.0
 • dotenv - BSD-2-Clause
 
 For full component listings and complete license texts, see OPEN_SOURCE_LICENSES.md and LICENSE in the application directory.`;
@@ -388,7 +388,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: `Version 0.20.0\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
+              detail: `Version 0.20.1\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
             });
           }
         }

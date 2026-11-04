@@ -6,11 +6,21 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.0
+### Current Release: v0.20.1
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow`, Live Read `.txt`/`.md` Copy Editor, Legacy Script WPM Read-Time Backfill, Rotating Multi-Item `mediaItems: TimeGatedMediaItem[]`, Non-Destructive Gate Inactivation `inactivated`/`inactivatedAt`, Unified `scheduleEngine.ts`, & Modular `src/server/` Storage Provider)
 * **Schedule Storage File**: `announcements.json` (stores `mediaItems` value-arrays per time gate, preserves `inactivated` and `inactivatedAt` on `TimeGatedMp3`, dual-writes top-level `TimeGatedMp3` media siblings for `v0.15.4/5` coexistence, and automatically backfills ~150 WPM `approximateReadTime` on legacy readable `.txt`/`.md` script slots and historical revisions)
 * **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
 * **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Desktop Packaging**: Single macOS Universal (`arm64` + `x64`) `.dmg` per edition (`-Mac.dmg`, macOS 12 Monterey+) and Windows 64-bit Installer (`.exe`) + Portable (`.zip`) (Windows 10 v1809+ / Windows 11).
+
+---
+
+### v0.20.0
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow`, Live Read `.txt`/`.md` Copy Editor, Legacy Script WPM Read-Time Backfill, Rotating Multi-Item `mediaItems: TimeGatedMediaItem[]`, Non-Destructive Gate Inactivation `inactivated`/`inactivatedAt`, Unified `scheduleEngine.ts`, & Modular `src/server/` Storage Provider)
+* **Schedule Storage File**: `announcements.json` (stores `mediaItems` value-arrays per time gate, preserves `inactivated` and `inactivatedAt` on `TimeGatedMp3`, dual-writes top-level `TimeGatedMp3` media siblings for `v0.15.4/5` coexistence, and automatically backfills ~150 WPM `approximateReadTime` on legacy readable `.txt`/`.md` script slots and historical revisions)
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.20.0/`.
 
 ---
 

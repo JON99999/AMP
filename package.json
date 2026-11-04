@@ -1,7 +1,7 @@
 {
   "name": "amp",
   "private": true,
-  "version": "0.20.0",
+  "version": "0.20.1",
   "description": "AMP - Announcement Media Player - An app designed for Radio Stations to schedule, play, read, and log announcements and drops.",
   "author": "AMP",
   "repository": {
@@ -66,39 +66,41 @@
         "NSFileSharingEnabled": true
       }
     },
-    "dmg": {}
+    "dmg": {
+      "artifactName": "${productName}-${version}-Mac.${ext}"
+    }
   },
   "dependencies": {
-    "express": "^4.21.2",
+    "express": "^4.22.3",
     "music-metadata": "^11.16.1",
     "node-id3": "^0.2.9",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@google/genai": "^1.29.0",
-    "@tailwindcss/vite": "^4.1.14",
+    "@google/genai": "^1.52.0",
+    "@tailwindcss/vite": "^4.3.4",
     "@types/archiver": "^8.0.0",
-    "@types/express": "^4.17.21",
-    "@types/node": "^22.14.0",
-    "@vitejs/plugin-react": "^5.0.4",
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.20.5",
+    "@vitejs/plugin-react": "^5.2.0",
     "archiver": "^8.0.0",
-    "autoprefixer": "^10.4.21",
+    "autoprefixer": "^10.6.2",
     "clsx": "^2.1.1",
-    "date-fns": "^4.2.1",
-    "dotenv": "^17.2.3",
-    "electron": "^42.1.0",
-    "electron-builder": "^26.8.1",
-    "esbuild": "^0.25.0",
-    "firebase": "^12.13.0",
+    "date-fns": "^4.4.0",
+    "dotenv": "^17.4.2",
+    "electron": "^42.11.18",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.25.12",
+    "firebase": "^12.19.0",
     "jimp": "^1.6.1",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
-    "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "tailwind-merge": "^3.6.0",
-    "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "motion": "^12.43.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.4",
+    "tsx": "^4.23.15",
+    "typescript": "~5.8.3",
+    "vite": "^6.4.5"
   }
 }

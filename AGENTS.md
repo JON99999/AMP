@@ -21,9 +21,10 @@
   - Ensure any native modules cross-compile cleanly for `arm64` and `x64`.
 - **Electron Packaging & GitHub Actions**:
   - Maintain `dmg`/`zip` (Mac) and `nsis`/`portable` (Windows) targets in `package.json`.
-  - **Unified Mac Build**: In `scripts/build-apps.cjs`, always run a single pass: `npx electron-builder --mac --x64 --arm64`. Never split Mac builds into sequential runs or staging/backup workarounds.
+  - **Unified Mac Build**: In `scripts/build-apps.cjs`, always run a single Universal pass: `npx electron-builder --mac --universal` (producing a single `-Mac.dmg` per mode that runs natively on both `arm64` Apple Silicon and `x64` Intel Macs). Never split Mac builds into sequential runs or staging/backup workarounds.
   - **Headless CI Readiness**: Assume builds run on virtualized GitHub Actions runners. Preemptively verify case-sensitive imports, explicit types, and runner-agnostic Node scripts before concluding changes.
   - **Mandatory Symbol & Import Verification (`lint_applet` / `tsc --noEmit`)**: Because `vite build` (`compile_applet`) strips TypeScript types without checking undeclared identifiers (allowing missing imports to pass build and fail at runtime with `ReferenceError`), always run `lint_applet` (`npm run lint` / `tsc --noEmit`) alongside `compile_applet` after any code edit.
+  - **AI Studio GitHub Push Batch Limit (~200–250 Files)**: AI Studio's single-commit GitHub REST export fails with `"Failed to push commit to GitHub"` when a commit exceeds ~200–250 changed files (typically when multiple uncompressed `dev/archives/archive_v*` folders accumulate between pushes). Resolve by temporarily ignoring newer `dev/archives/archive_v*` folders in `.gitignore` and un-ignoring them in ~200-file rolling batches.
 - **Lockfile Sync**: Whenever `package.json` changes, immediately run `npm install` followed by `npm ci --dry-run` to guarantee GitHub Actions `npm ci` integrity.
 
 ## 3. UI Styling, Naming & Scope Discipline

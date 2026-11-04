@@ -559,11 +559,12 @@ CONFIGURATION & PERSISTENCE:
       pkg.build.nsis.uninstallDisplayName = `AMP ${mode}`;
 
       if (!pkg.build.dmg) pkg.build.dmg = {};
+      pkg.build.dmg.artifactName = "${productName}-${version}-Mac.${ext}";
 
       if (!pkg.build.portable) pkg.build.portable = {};
       pkg.build.portable.artifactName = "${productName}-${version}-Windows-Portable.${ext}";
 
-      // Register custom afterAllArtifactBuild hook for renaming Mac artifacts dynamically
+      // Register custom afterAllArtifactBuild hook for normalizing Mac artifact names dynamically
       pkg.build.afterAllArtifactBuild = "./scripts/afterAllArtifactBuild.cjs";
 
       console.log(`Packaging Electron app for mode: ${mode}...`);
@@ -571,10 +572,10 @@ CONFIGURATION & PERSISTENCE:
       const publishFlag = '--publish never';
 
       if (process.platform === 'darwin') {
-        console.log(`Packaging Electron app for Mac...`);
+        console.log(`Packaging Electron Universal app for Mac (arm64 + x64)...`);
         fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 
-        execSync(`npx electron-builder --mac --x64 --arm64 ${publishFlag}`, {
+        execSync(`npx electron-builder --mac --universal ${publishFlag}`, {
           cwd: rootDir,
           stdio: 'inherit',
           env: { ...process.env }

@@ -31,5 +31,7 @@
 - **10/29/2026 Batch (Item 1 — Duplicate Promo in Export Show Plan)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` as **Item #29** and resolved/archived to `dev/docs/ROADMAP_HISTORY.md` on 10/29/2026.
 - **11/03/2026 Direct Chat Prompt (Weekly Announcement Grid Removing Scheduled Days Hides Prior Calendar Events)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` as **Item #42** on 11/03/2026.
 - **11/03/2026 Direct Chat Prompt (Evaluate Historical Rotating Media Track Placement Tracking)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Future / Deferred / Low Priority`) as **Item #43** on 11/03/2026.
+- **11/04/2026 Direct Chat Prompt (Single macOS Universal Executable & OS/Module Compatibility Audit)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Item #44** on 11/04/2026.
+
 
 

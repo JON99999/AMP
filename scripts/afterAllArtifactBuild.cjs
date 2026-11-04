@@ -34,10 +34,10 @@ module.exports = async function (context) {
     const basename = path.basename(artifactPath);
 
     if (ext === '.dmg') {
-      let suffix = '';
+      let suffix = 'Mac';
       if (basename.includes('arm64')) {
         suffix = 'Mac-Silicon-new';
-      } else {
+      } else if (basename.includes('x64')) {
         suffix = 'Mac-Intel-legacy';
       }
 
@@ -45,7 +45,9 @@ module.exports = async function (context) {
       const parentDir = path.dirname(artifactPath);
       const newPath = path.join(parentDir, newBasename);
 
-      if (fs.existsSync(artifactPath)) {
+      if (basename === newBasename) {
+        finalPaths.push(artifactPath);
+      } else if (fs.existsSync(artifactPath)) {
         console.log(`[afterAllArtifactBuild] Renaming DMG: ${basename} -> ${newBasename}`);
         fs.renameSync(artifactPath, newPath);
         renameMap.set(basename, newBasename);
@@ -76,10 +78,10 @@ module.exports = async function (context) {
     if (basename.endsWith('.dmg.blockmap')) {
       let mappedName = renameMap.get(basename);
       if (!mappedName) {
-        let suffix = '';
+        let suffix = 'Mac';
         if (basename.includes('arm64')) {
           suffix = 'Mac-Silicon-new';
-        } else {
+        } else if (basename.includes('x64')) {
           suffix = 'Mac-Intel-legacy';
         }
 
