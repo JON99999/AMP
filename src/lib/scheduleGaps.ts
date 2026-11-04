@@ -3,6 +3,8 @@ import {
   formatToDatetimeLocal,
   sortMp3sByStartDate,
   validateTimeGatedMp3s,
+  getGateEffectiveEndIso,
+  isGateExpiredOrInactivated,
   getActiveMp3ForSlot,
   getMP3Status,
   isContiguousMidnightTransition,
@@ -44,10 +46,13 @@ export function getAnnouncementGaps(announcementsList: Announcement[], now: Date
     if (timeGated.length > 0) {
       const validation = validateTimeGatedMp3s(timeGated, nowIso, s.endDate);
       const sorted = validation.sorted || sortMp3sByStartDate(timeGated);
+      const activeSorted = sorted.filter(
+        m => !isGateExpiredOrInactivated(m, nowIso)
+      );
 
-      // 1. Leading Gap: first item starts in future
-      if (sorted.length > 0 && sorted[0].startDate) {
-        const firstStart = formatToDatetimeLocal(sorted[0].startDate);
+      // 1. Leading Gap: first active/upcoming item starts in future
+      if (activeSorted.length > 0 && activeSorted[0].startDate) {
+        const firstStart = formatToDatetimeLocal(activeSorted[0].startDate);
         if (firstStart && firstStart > nowIso) {
           const formattedDate = formatIsoDateTime12(firstStart);
           gaps.push({
@@ -62,11 +67,11 @@ export function getAnnouncementGaps(announcementsList: Announcement[], now: Date
         }
       }
 
-      // 2. Schedule Gaps between adjacent items
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const a = sorted[i];
-        const b = sorted[i + 1];
-        const aEnd = a.endDate ? formatToDatetimeLocal(a.endDate) : null;
+      // 2. Schedule Gaps between adjacent active/upcoming items
+      for (let i = 0; i < activeSorted.length - 1; i++) {
+        const a = activeSorted[i];
+        const b = activeSorted[i + 1];
+        const aEnd = getGateEffectiveEndIso(a) || null;
         const bStart = b.startDate ? formatToDatetimeLocal(b.startDate) : null;
 
         if (aEnd && bStart && aEnd < bStart && !isContiguousMidnightTransition(aEnd, bStart)) {
@@ -86,9 +91,9 @@ export function getAnnouncementGaps(announcementsList: Announcement[], now: Date
 
       // 3. Trailing Gap: last item has an endDate, but schedule is open-ended or extends beyond
       if (sorted.length > 0) {
-        const lastItem = sorted[sorted.length - 1];
-        if (lastItem.endDate && lastItem.endDate.trim()) {
-          const lastEnd = formatToDatetimeLocal(lastItem.endDate);
+        const lastItem = activeSorted.length > 0 ? activeSorted[activeSorted.length - 1] : sorted[sorted.length - 1];
+        const lastEnd = getGateEffectiveEndIso(lastItem);
+        if (lastEnd) {
           const parentEnd = s.endDate ? formatToDatetimeLocal(s.endDate) : null;
           if (!parentEnd || (parentEnd > lastEnd && !isContiguousMidnightTransition(lastEnd, parentEnd))) {
             const endFormatted = formatIsoDateTime12(lastEnd);
@@ -176,7 +181,7 @@ export function getShowGaps(showsList: Show[]): ShowGap[] {
 
   const intervals: { s: number; e: number }[] = [];
   for (const show of active) {
-    const dayIdx = daysOrderList.indexOf(show.day as any);
+    const dayIdx = daysOrderList.indexOf(show.day);
     if (dayIdx === -1) continue;
 
     const start = dayIdx * 1440 + (show.startHour || 0) * 60 + (show.startMinute || 0);

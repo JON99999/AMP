@@ -16,19 +16,97 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Clock,
+  Lock,
 } from 'lucide-react';
+import {
+  STATION_TIMEZONE_OPTIONS,
+  getStationTimezone,
+  setStationTimezone,
+  getStationTimezoneOption,
+  getAdminContactInfo,
+  setAdminContactInfo,
+  UpNextPromoSettings,
+  getUpNextPromoConfig,
+  setUpNextPromoConfig,
+  ScheduleWindowConfig,
+  getScheduleWindowConfig,
+  setScheduleWindowConfig,
+} from '../lib/compatibility';
 
 interface LocalHelpModalProps {
   isOpen: boolean;
   onClose: () => void;
+  isAdmin?: boolean;
+  stationTimezone?: string;
+  onSaveStationTimezone?: (newTimezone: string) => Promise<boolean | void> | void;
+  adminContactInfo?: string;
+  onSaveAdminContactInfo?: (newContact: string) => Promise<boolean | void> | void;
+  upNextPromoConfig?: UpNextPromoSettings;
+  onSaveUpNextPromoConfig?: (newConfig: UpNextPromoSettings) => Promise<boolean | void> | void;
+  scheduleWindowConfig?: ScheduleWindowConfig;
+  onSaveScheduleWindowConfig?: (newConfig: ScheduleWindowConfig) => Promise<boolean | void> | void;
 }
 
-export default function LocalHelpModal({ isOpen, onClose }: LocalHelpModalProps) {
+export default function LocalHelpModal({
+  isOpen,
+  onClose,
+  isAdmin = false,
+  stationTimezone,
+  onSaveStationTimezone,
+  adminContactInfo,
+  onSaveAdminContactInfo,
+  upNextPromoConfig,
+  onSaveUpNextPromoConfig,
+  scheduleWindowConfig,
+  onSaveScheduleWindowConfig,
+}: LocalHelpModalProps) {
   const [confirmAction, setConfirmAction] = useState<'keep_folders' | 'full' | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [tzEditStage, setTzEditStage] = useState<'locked' | 'confirm_unlock' | 'editing' | 'confirm_save'>('locked');
+  const [draftTimezone, setDraftTimezone] = useState<string>(() => stationTimezone || getStationTimezone());
+  const [isSavingTz, setIsSavingTz] = useState(false);
+  const [tzStatusMessage, setTzStatusMessage] = useState<string | null>(null);
+
+  const [contactEditStage, setContactEditStage] = useState<'locked' | 'editing'>('locked');
+  const [draftAdminContact, setDraftAdminContact] = useState<string>(() =>
+    adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo()
+  );
+  const [isSavingContact, setIsSavingContact] = useState(false);
+  const [contactStatusMessage, setContactStatusMessage] = useState<string | null>(null);
+
+  const [upNextEditStage, setUpNextEditStage] = useState<'locked' | 'editing'>('locked');
+  const [draftUpNextEnabled, setDraftUpNextEnabled] = useState<boolean>(() =>
+    (upNextPromoConfig || getUpNextPromoConfig()).enabled
+  );
+  const [draftUpNextMinutes, setDraftUpNextMinutes] = useState<number>(() =>
+    (upNextPromoConfig || getUpNextPromoConfig()).minutesBefore
+  );
+  const [isSavingUpNext, setIsSavingUpNext] = useState(false);
+  const [upNextStatusMessage, setUpNextStatusMessage] = useState<string | null>(null);
+
+  const [windowEditStage, setWindowEditStage] = useState<'locked' | 'editing'>('locked');
+  const [draftWindowBefore, setDraftWindowBefore] = useState<number>(() =>
+    (scheduleWindowConfig || getScheduleWindowConfig()).windowBeforeMinutes
+  );
+  const [draftWindowAfter, setDraftWindowAfter] = useState<number>(() =>
+    (scheduleWindowConfig || getScheduleWindowConfig()).windowAfterMinutes
+  );
+  const [draftShowLookaround, setDraftShowLookaround] = useState<number>(() =>
+    (scheduleWindowConfig || getScheduleWindowConfig()).showLookaroundHours
+  );
+  const [isSavingWindow, setIsSavingWindow] = useState(false);
+  const [windowStatusMessage, setWindowStatusMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const activeTz = stationTimezone || getStationTimezone();
+  const activeTzOption = getStationTimezoneOption(activeTz);
+  const draftTzOption = getStationTimezoneOption(draftTimezone);
+  const activeAdminContact = adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo();
+  const activeUpNext = upNextPromoConfig || getUpNextPromoConfig();
+  const activeScheduleWindow = scheduleWindowConfig || getScheduleWindowConfig();
 
   const handleExecuteReset = async (keepFolders: boolean) => {
     setIsProcessing(true);
@@ -325,8 +403,609 @@ export default function LocalHelpModal({ isOpen, onClose }: LocalHelpModalProps)
               <span>System Maintenance &amp; Reset</span>
             </h3>
             <p className="text-slate-600">
-              Restore default interface configurations or perform a complete clean-slate reinstall. Select an option below:
+              Manage station-wide broadcast timezone settings, restore default interface configurations, or perform a clean-slate reset:
             </p>
+
+            {/* Station Timezone Maintenance Card (Admin Only) */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-left space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-blue-600 shrink-0" />
+                  <strong className="text-slate-900 font-bold text-sm">
+                    Station Timezone (Broadcast Origin)
+                  </strong>
+                </div>
+                <span className="px-2 py-0.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800">
+                  {activeTzOption.label}
+                </span>
+              </div>
+
+              {tzStatusMessage && (
+                <div className="text-xs font-bold flex items-center gap-1.5 text-emerald-800 bg-emerald-50 p-2 rounded border border-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{tzStatusMessage}</span>
+                </div>
+              )}
+
+              {!isAdmin ? (
+                <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-100/80 p-2.5 rounded border border-slate-200">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>
+                    Station Timezone is read-only in Live / Non-Admin mode. Switch to <strong>Admin Mode</strong> to modify the broadcast timezone.
+                  </span>
+                </div>
+              ) : tzEditStage === 'locked' ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-0.5">
+                  <span className="text-xs text-slate-600 leading-relaxed">
+                    Defines the wall-clock timezone where the broadcast originates. Used across all schedules, Live clocks, Prerecord/Export slots, and Calendar audits.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftTimezone(activeTz);
+                      setTzStatusMessage(null);
+                      setTzEditStage('confirm_unlock');
+                    }}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+                  >
+                    Edit Station Timezone...
+                  </button>
+                </div>
+              ) : tzEditStage === 'confirm_unlock' ? (
+                <div className="p-3.5 bg-amber-50/95 border border-amber-300 rounded-lg space-y-2.5 text-amber-950">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span className="text-xs font-black uppercase tracking-tight">
+                      Are You Sure You Want to Edit the Station Timezone?
+                    </span>
+                  </div>
+                  <ul className="list-disc list-inside text-xs space-y-1 leading-relaxed text-amber-900">
+                    <li>
+                      <strong>Broadcast Origin Requirement:</strong> This setting must be set to the timezone where the broadcast originates from. Users working remotely in other timezones should not change this to their personal timezone.
+                    </li>
+                    <li>
+                      <strong>What Will Not Be Changed:</strong> Existing Show start hours, Announcement grid rules, and naive start/end dates are not rewritten when you change the timezone.
+                    </li>
+                    <li>
+                      <strong>Historical Log Alignment Warning:</strong> Because playout history in <code className="font-mono font-bold">logs.json</code> is stored in UTC, changing the station timezone shifts which wall-clock hour slots historical logs map into on the Calendar and Audit views.
+                    </li>
+                  </ul>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setTzEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraftTimezone(activeTz);
+                        setTzEditStage('editing');
+                      }}
+                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all"
+                    >
+                      Yes, Unlock Timezone Editor
+                    </button>
+                  </div>
+                </div>
+              ) : tzEditStage === 'editing' ? (
+                <div className="p-3.5 bg-white border border-blue-200 rounded-lg space-y-3">
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="maintenance-station-timezone-select"
+                      className="text-xs font-black uppercase tracking-wider text-slate-700 block"
+                    >
+                      Select Broadcast Origin Timezone
+                    </label>
+                    <select
+                      id="maintenance-station-timezone-select"
+                      value={draftTimezone}
+                      onChange={(e) => setDraftTimezone(e.target.value)}
+                      className="w-full px-2.5 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                    >
+                      {STATION_TIMEZONE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-slate-500 pt-0.5">
+                      Set strictly to the timezone where the station broadcast originates.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTzEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={draftTimezone === activeTz}
+                      onClick={() => setTzEditStage('confirm_save')}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Review &amp; Save Change...
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-rose-50/95 border border-rose-300 rounded-lg space-y-2.5 text-rose-950">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span className="text-xs font-black uppercase tracking-tight">
+                      Are You Sure You Want to Save This Timezone Change?
+                    </span>
+                  </div>
+                  <div className="text-xs space-y-1.5 leading-relaxed text-rose-900">
+                    <p>
+                      <strong>From:</strong> {activeTzOption.label}
+                      <br />
+                      <strong>To:</strong> {draftTzOption.label}
+                    </p>
+                    <p>
+                      <strong>Broadcast Origin Warning:</strong> Confirm that <strong>{draftTzOption.label}</strong> is the timezone where your broadcast originates. Every workstation sharing this station folder will adopt this timezone.
+                    </p>
+                    <p>
+                      <strong>Schedule &amp; Log Impact:</strong> Show start hours and Announcement slot hours will stay at their current wall-clock numbers (they are not shifted), while existing UTC play records in <code className="font-mono font-bold">logs.json</code> will now be interpreted in {draftTzOption.offsetLabel} (which may shift how prior plays align with past calendar slots).
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={isSavingTz}
+                      onClick={() => setTzEditStage('editing')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingTz}
+                      onClick={() => setTzEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingTz}
+                      onClick={async () => {
+                        setIsSavingTz(true);
+                        try {
+                          setStationTimezone(draftTimezone);
+                          if (onSaveStationTimezone) {
+                            await onSaveStationTimezone(draftTimezone);
+                          }
+                          setTzEditStage('locked');
+                          setTzStatusMessage(`Station timezone updated to ${draftTzOption.label}.`);
+                        } finally {
+                          setIsSavingTz(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isSavingTz ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <span>Confirm &amp; Save Timezone</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Admin Contact Information Card (Admin Only) */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-left space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0" />
+                  <strong className="text-slate-900 font-bold text-sm">
+                    Admin Contact Information
+                  </strong>
+                </div>
+                <span className="px-2 py-0.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 max-w-[260px] truncate">
+                  {activeAdminContact || 'Not configured'}
+                </span>
+              </div>
+
+              {contactStatusMessage && (
+                <div className="text-xs font-bold flex items-center gap-1.5 text-emerald-800 bg-emerald-50 p-2 rounded border border-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{contactStatusMessage}</span>
+                </div>
+              )}
+
+              {!isAdmin ? (
+                <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-100/80 p-2.5 rounded border border-slate-200">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>
+                    Admin Contact Information is read-only in Live / Non-Admin mode. Switch to <strong>Admin Mode</strong> to edit contact details.
+                  </span>
+                </div>
+              ) : contactEditStage === 'locked' ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-0.5">
+                  <span className="text-xs text-slate-600 leading-relaxed">
+                    Displayed on the Calendar Admin warning screen and in the &quot;Get Help&quot; tooltip and pop-up when a card has a missing or invalid file.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftAdminContact(activeAdminContact);
+                      setContactStatusMessage(null);
+                      setContactEditStage('editing');
+                    }}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+                  >
+                    Edit Admin Contact...
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-white border border-purple-200 rounded-lg space-y-3">
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="maintenance-admin-contact-input"
+                      className="text-xs font-black uppercase tracking-wider text-slate-700 block"
+                    >
+                      Admin Contact Details
+                    </label>
+                    <textarea
+                      id="maintenance-admin-contact-input"
+                      rows={2}
+                      value={draftAdminContact}
+                      onChange={(e) => setDraftAdminContact(e.target.value)}
+                      placeholder="e.g., Admin: Kate — kate@station.org / (555) 019-2834"
+                      className="w-full px-2.5 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isSavingContact}
+                      onClick={() => setContactEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingContact}
+                      onClick={async () => {
+                        setIsSavingContact(true);
+                        try {
+                          const cleaned = setAdminContactInfo(draftAdminContact);
+                          if (onSaveAdminContactInfo) {
+                            await onSaveAdminContactInfo(cleaned);
+                          }
+                          setContactEditStage('locked');
+                          setContactStatusMessage(
+                            cleaned
+                              ? 'Admin contact information saved.'
+                              : 'Admin contact information cleared.'
+                          );
+                        } finally {
+                          setIsSavingContact(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isSavingContact ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <span>Save Contact Info</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* "Up Next" Auto-Seeded Show Promo Cards Configuration */}
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-left space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-purple-600 shrink-0" />
+                  <strong className="text-slate-900 font-bold text-sm">
+                    &ldquo;Up Next&rdquo; Auto-Seeded Show Promo Cards
+                  </strong>
+                </div>
+                <span className="px-2 py-0.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800">
+                  {activeUpNext.enabled
+                    ? `Enabled — ${activeUpNext.minutesBefore} mins before each show`
+                    : 'Disabled'}
+                </span>
+              </div>
+
+              {upNextStatusMessage && (
+                <div className="text-xs font-bold flex items-center gap-1.5 text-emerald-800 bg-emerald-50 p-2 rounded border border-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{upNextStatusMessage}</span>
+                </div>
+              )}
+
+              {!isAdmin ? (
+                <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-100/80 p-2.5 rounded border border-slate-200">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>
+                    &ldquo;Up Next&rdquo; Promo Settings are read-only in Live / Non-Admin mode. Switch to <strong>Admin Mode</strong> to edit promo settings.
+                  </span>
+                </div>
+              ) : upNextEditStage === 'locked' ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-0.5">
+                  <span className="text-xs text-slate-600 leading-relaxed">
+                    Automatically seeds a Live Read promo card on the schedule timeline before each upcoming show (included across Live, Prerecord, Export, Playlist, and Calendar).
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftUpNextEnabled(activeUpNext.enabled);
+                      setDraftUpNextMinutes(activeUpNext.minutesBefore);
+                      setUpNextStatusMessage(null);
+                      setUpNextEditStage('editing');
+                    }}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+                  >
+                    Edit Up Next Settings...
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-white border border-purple-200 rounded-lg space-y-3">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={draftUpNextEnabled}
+                      onChange={(e) => setDraftUpNextEnabled(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                    />
+                    <span className="text-xs font-bold text-slate-900">
+                      Enable Auto-Seeded &ldquo;Up Next&rdquo; Show Promo Cards
+                    </span>
+                  </label>
+
+                  <div className="space-y-1">
+                    <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                      Minutes Before Next Show (1–120 mins)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        max={120}
+                        value={draftUpNextMinutes}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setDraftUpNextMinutes(isNaN(val) ? 20 : Math.max(1, Math.min(120, val)));
+                        }}
+                        className="w-24 px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <span className="text-xs text-slate-600">
+                        minutes before show start (default <code className="font-mono font-bold">20</code> mins, e.g. <code className="font-mono font-bold">:40</code> for shows starting on the hour)
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 pt-0.5">
+                      Individual shows can also be included or excluded using the checkbox in the Show Editor.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isSavingUpNext}
+                      onClick={() => setUpNextEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingUpNext}
+                      onClick={async () => {
+                        setIsSavingUpNext(true);
+                        try {
+                          const updated = setUpNextPromoConfig({
+                            enabled: draftUpNextEnabled,
+                            minutesBefore: draftUpNextMinutes,
+                          });
+                          if (onSaveUpNextPromoConfig) {
+                            await onSaveUpNextPromoConfig(updated);
+                          }
+                          setUpNextEditStage('locked');
+                          setUpNextStatusMessage(
+                            updated.enabled
+                              ? `Up Next promos enabled (${updated.minutesBefore} mins before each show).`
+                              : 'Up Next promos disabled.'
+                          );
+                        } finally {
+                          setIsSavingUpNext(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isSavingUpNext ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <span>Save Up Next Settings</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Live Schedule Window (-x / +y mins & Show Lookaround) */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-left">
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-purple-600 shrink-0" />
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-900">
+                      Live Schedule Window (&ldquo;Now&rdquo; Window &amp; Show Lookaround)
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Controls the active <strong className="text-slate-900">&ldquo;Now&rdquo;</strong> broadcast window (<code className="font-mono font-bold">-x</code> mins grace before Missed, <code className="font-mono font-bold">+y</code> mins early lookahead) and how many hours before/after the current show remain visible in the Live timeline.
+                  </p>
+                </div>
+              </div>
+
+              {windowStatusMessage && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{windowStatusMessage}</span>
+                </div>
+              )}
+
+              {windowEditStage === 'locked' ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-lg">
+                  <div className="flex items-start gap-2 min-w-0">
+                    <Lock className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+                        Current Live Schedule Window
+                      </span>
+                      <span className="text-xs font-bold text-slate-900 block">
+                        -{activeScheduleWindow.windowBeforeMinutes}m grace / +{activeScheduleWindow.windowAfterMinutes}m early · {activeScheduleWindow.showLookaroundHours}h show lookaround
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftWindowBefore(activeScheduleWindow.windowBeforeMinutes);
+                      setDraftWindowAfter(activeScheduleWindow.windowAfterMinutes);
+                      setDraftShowLookaround(activeScheduleWindow.showLookaroundHours);
+                      setWindowStatusMessage(null);
+                      setWindowEditStage('editing');
+                    }}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+                  >
+                    Edit Schedule Window...
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-white border border-purple-200 rounded-lg space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                        Grace Window (-x mins)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={draftWindowBefore}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setDraftWindowBefore(isNaN(val) ? 5 : Math.max(1, Math.min(60, val)));
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        Mins after slot before Missed (default <code className="font-mono font-bold">5</code>m).
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                        Early Window (+y mins)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={draftWindowAfter}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setDraftWindowAfter(isNaN(val) ? 5 : Math.max(1, Math.min(60, val)));
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        Mins before slot to enter Now (default <code className="font-mono font-bold">5</code>m).
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                        Show Lookaround (Hours)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={6}
+                        value={draftShowLookaround}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setDraftShowLookaround(isNaN(val) ? 1 : Math.max(0, Math.min(6, val)));
+                        }}
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        Adjacent hours shown around show (default <code className="font-mono font-bold">1</code>h).
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isSavingWindow}
+                      onClick={() => setWindowEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingWindow}
+                      onClick={async () => {
+                        setIsSavingWindow(true);
+                        try {
+                          const updated = setScheduleWindowConfig({
+                            windowBeforeMinutes: draftWindowBefore,
+                            windowAfterMinutes: draftWindowAfter,
+                            showLookaroundHours: draftShowLookaround,
+                          });
+                          if (onSaveScheduleWindowConfig) {
+                            await onSaveScheduleWindowConfig(updated);
+                          }
+                          setWindowEditStage('locked');
+                          setWindowStatusMessage(
+                            `Live Schedule Window saved (-${updated.windowBeforeMinutes}m / +${updated.windowAfterMinutes}m · ${updated.showLookaroundHours}h lookaround).`
+                          );
+                        } finally {
+                          setIsSavingWindow(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isSavingWindow ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <span>Save Schedule Window</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* In-Modal Confirmation Panel */}
             {confirmAction && (

@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { getStationNow } from '../lib/compatibility';
 
 export type SleepStatus = 'active' | 'status1' | 'status2';
 
@@ -33,7 +34,7 @@ export function useAppClock({
   onCountdownExpired,
   token,
 }: UseAppClockOptions) {
-  const [now, setNow] = useState<Date>(() => new Date());
+  const [now, setNow] = useState<Date>(() => getStationNow());
   const [sleepStatus, setSleepStatus] = useState<SleepStatus>('active');
   const [countdown, setCountdown] = useState(300);
   const lastActiveTimeRef = useRef<number>(Date.now());
@@ -49,7 +50,7 @@ export function useAppClock({
   const wakeUp = useCallback(() => {
     lastActiveTimeRef.current = Date.now();
     setSleepStatus('active');
-    setNow(new Date());
+    setNow(getStationNow());
   }, []);
 
   const setIsAsleep = useCallback((val: boolean) => {
@@ -69,7 +70,7 @@ export function useAppClock({
       if (sleepStatus === 'status1') {
         lastActiveTimeRef.current = nowMs;
         setSleepStatus('active');
-        setNow(new Date());
+        setNow(getStationNow());
         return;
       }
       // Active state: throttle updating lastActiveTimeRef to once every 10 seconds
@@ -101,7 +102,15 @@ export function useAppClock({
     let fallbackTimer: NodeJS.Timeout | null = null;
 
     const handleTick = () => {
-      const current = new Date();
+      if (
+        typeof window !== "undefined" &&
+        typeof (window as any).ampHasUnsavedChanges === "function" &&
+        (window as any).ampHasUnsavedChanges()
+      ) {
+        return;
+      }
+
+      const current = getStationNow();
       setNow(current);
 
       const elapsedInactivity = Date.now() - lastActiveTimeRef.current;

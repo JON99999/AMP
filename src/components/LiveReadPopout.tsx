@@ -29,10 +29,13 @@ import {
   Eye,
   Play,
   Square,
-  Ear
+  Ear,
+  Edit3,
+  Copy
 } from 'lucide-react';
 import { LogEntry } from '../types';
-import { getPlayableUrl } from '../lib/driveService';
+import { getPlayableUrl, getSavedSettings, getStorageApiHeaders } from '../lib/driveService';
+import { renderFormattedTxtContent, stripHtmlComments } from '../lib/liveReadFormatting';
 
 interface LiveReadPopoutProps {
   initialFileName?: string;
@@ -49,8 +52,12 @@ interface LiveReadPopoutProps {
   onClose?: () => void;
   onLogCommit?: (entry: LogEntry) => void;
   onPlayBackupMp3?: (backupMp3Url: string) => void;
+  onEditScript?: (fileName: string) => void;
+  onCopyScript?: (fileName: string) => void;
   isOverlay?: boolean;
   isPreview?: boolean;
+  isTestPopup?: boolean;
+  initialContent?: string;
   isReadOnly?: boolean;
 }
 
@@ -103,8 +110,12 @@ export default function LiveReadPopout({
   onClose,
   onLogCommit,
   onPlayBackupMp3,
+  onEditScript,
+  onCopyScript,
   isOverlay = false,
   isPreview = false,
+  isTestPopup: initialIsTestPopup = false,
+  initialContent,
   isReadOnly = false
 }: LiveReadPopoutProps) {
   // Configured file & schedule states
@@ -120,6 +131,7 @@ export default function LiveReadPopout({
   const [backupMp3Url, setBackupMp3Url] = useState(initialBackupMp3Url);
   const [playMode, setPlayMode] = useState<'Live' | 'Prerecord' | 'Playlist' | 'Export'>(initialPlayMode);
   const [isPreviewMode, setIsPreviewMode] = useState(isPreview);
+  const [isTestPopupMode, setIsTestPopupMode] = useState(initialIsTestPopup);
 
   // Sync theme with main app settings
   useEffect(() => {
@@ -235,7 +247,7 @@ export default function LiveReadPopout({
   const handlePlayBackupMp3Action = async () => {
     if (!backupMp3Url) return;
 
-    if (isPreviewMode) {
+    if (isPreviewMode || isTestPopupMode) {
       handleTogglePreviewBackupMp3();
       return;
     }
@@ -249,14 +261,17 @@ export default function LiveReadPopout({
       }
     }
 
+    const scheduledSlotIso = announcementTime || commitTimestamp;
     const logEntry: LogEntry = {
-      timestamp: commitTimestamp,
-      announcementTime: announcementTime || commitTimestamp,
+      timestamp: scheduledSlotIso,
+      announcementTime: scheduledSlotIso,
+      scheduledFor: scheduledSlotIso,
+      executedAt: commitTimestamp,
       mp3Name: backupMp3Url,
       announcementName: announcementName || fileName || 'Live Read (Backup MP3)',
       announcementId: announcementId,
       status: 'backup play',
-      playMode: (playMode as any) || 'Live',
+      playMode: playMode || 'Live',
       logTimeStamp: commitTimestamp,
       assetType: 'audio',
       ...(showId ? { showId } : {}),
@@ -266,13 +281,13 @@ export default function LiveReadPopout({
     };
 
     if (!isReadOnly) {
-      if ((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) {
-        await (window as any).electronAPI.logLiveReadCommit(logEntry);
+      if (window.electronAPI && window.electronAPI.logLiveReadCommit) {
+        await window.electronAPI.logLiveReadCommit(logEntry);
       }
 
       if (onLogCommit) {
         onLogCommit(logEntry);
-      } else if (!((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) && !isPreviewMode) {
+      } else if (!(window.electronAPI && window.electronAPI.logLiveReadCommit) && !isPreviewMode) {
         try {
           await fetch('/api/logs', {
             method: 'POST',
@@ -293,8 +308,8 @@ export default function LiveReadPopout({
 
     if (onClose) {
       onClose();
-    } else if ((window as any).electronAPI && (window as any).electronAPI.closeLiveReadWindow) {
-      await (window as any).electronAPI.closeLiveReadWindow();
+    } else if (window.electronAPI && window.electronAPI.closeLiveReadWindow) {
+      await window.electronAPI.closeLiveReadWindow();
     }
   };
 
@@ -355,9 +370,9 @@ export default function LiveReadPopout({
   useEffect(() => {
     async function loadInitialData() {
       // Try Electron IPC first
-      if (!isOverlay && (window as any).electronAPI && (window as any).electronAPI.getLiveReadData) {
+      if (!isOverlay && window.electronAPI && window.electronAPI.getLiveReadData) {
         try {
-          const ipcData = await (window as any).electronAPI.getLiveReadData();
+          const ipcData = await window.electronAPI.getLiveReadData();
           if (ipcData) {
             setFileName(ipcData.name || ipcData.fileName || '');
             setAnnouncementId(ipcData.announcementId || ipcData.scheduleId || '');
@@ -372,17 +387,33 @@ export default function LiveReadPopout({
             if (ipcData.playMode) {
               setPlayMode(ipcData.playMode);
             }
+            if (ipcData.isTestPopup) {
+              setIsTestPopupMode(true);
+            }
             if (ipcData.isPreview || ipcData.playMode === 'Export') {
               setIsPreviewMode(true);
             }
-            if (ipcData.name || ipcData.fileName) {
-              fetchFileContent(ipcData.name || ipcData.fileName);
+            if (typeof ipcData.content === 'string') {
+              setFileContent(ipcData.content);
+              setFileUrl('');
+              setExtension('.txt');
+              setLoading(false);
+            } else if (ipcData.name || ipcData.fileName) {
+              fetchFileContent(ipcData.name || ipcData.fileName || '');
             }
             return;
           }
         } catch (err) {
           console.error("Failed to get live read data via IPC:", err);
         }
+      }
+
+      if (typeof initialContent === 'string') {
+        setFileContent(initialContent);
+        setFileUrl('');
+        setExtension('.txt');
+        setLoading(false);
+        return;
       }
 
       // Fallback to URL query params
@@ -405,8 +436,8 @@ export default function LiveReadPopout({
       if (qHostName) setHostName(qHostName);
       if (qShowDateTime) setShowDateTime(qShowDateTime);
 
-      if (pMode && (pMode === 'Live' || pMode === 'Prerecord' || pMode === 'Playlist' || pMode === 'Export')) {
-        setPlayMode(pMode as any);
+      if (pMode === 'Live' || pMode === 'Prerecord' || pMode === 'Playlist' || pMode === 'Export') {
+        setPlayMode(pMode);
       }
 
       if (isPrev) {
@@ -427,15 +458,41 @@ export default function LiveReadPopout({
     }
 
     loadInitialData();
-  }, [initialFileName, isOverlay]);
+  }, [initialFileName, initialContent, isOverlay]);
 
   // Fetch script file details and raw content from server
   const fetchFileContent = async (name: string) => {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(name)}`);
+      if (name && name.startsWith('__up_next_promo__:')) {
+        const rawEncoded = name.replace(/^__up_next_promo__:/, '').replace(/\.txt$/i, '');
+        let decodedText = rawEncoded;
+        try {
+          decodedText = decodeURIComponent(rawEncoded);
+        } catch (_) {}
+        setFileContent(decodedText);
+        setFileUrl('');
+        setExtension('.txt');
+        setNativePath('Auto-Seeded Up Next Promo');
+        setLoading(false);
+        return;
+      }
+      const headers = await getStorageApiHeaders();
+      const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(name)}`, { headers });
       if (!res.ok) {
+        const extLower = name.includes('.') ? `.${name.split('.').pop()?.toLowerCase()}` : '.txt';
+        if (extLower !== '.txt' && extLower !== '.md') {
+          const playable = getPlayableUrl(name);
+          if (playable && playable !== name) {
+            setFileContent('');
+            setFileUrl(playable);
+            setExtension(extLower);
+            setNativePath(`Google Drive / media_announcements / ${name}`);
+            setLoading(false);
+            return;
+          }
+        }
         throw new Error(`Failed to load file info: ${res.statusText}`);
       }
       const data = await res.json();
@@ -512,11 +569,11 @@ export default function LiveReadPopout({
 
   // Commit Log as Read
   const handleLogAsRead = async () => {
-    if (isPreviewMode) {
+    if (isPreviewMode || isTestPopupMode) {
       if (onClose) {
         onClose();
-      } else if ((window as any).electronAPI && (window as any).electronAPI.closeLiveReadWindow) {
-        await (window as any).electronAPI.closeLiveReadWindow();
+      } else if (window.electronAPI && window.electronAPI.closeLiveReadWindow) {
+        await window.electronAPI.closeLiveReadWindow();
       }
       return;
     }
@@ -531,14 +588,21 @@ export default function LiveReadPopout({
       }
     }
 
+    const scheduledSlotIso = announcementTime || finalTimestamp;
+    const cleanScriptName =
+      fileName && fileName.startsWith('__up_next_promo__:')
+        ? `${announcementName || 'Up Next Promo'}.txt`
+        : fileName || 'Unknown Script';
     const logEntry: LogEntry = {
-      timestamp: finalTimestamp,
-      announcementTime: announcementTime || new Date().toISOString(),
-      mp3Name: fileName || 'Unknown Script',
+      timestamp: scheduledSlotIso,
+      announcementTime: scheduledSlotIso,
+      scheduledFor: scheduledSlotIso,
+      executedAt: finalTimestamp,
+      mp3Name: cleanScriptName,
       announcementName: announcementName || 'Live Read Announcement',
       announcementId: announcementId || 'manual',
       status: 'played',
-      playMode: (playMode as any) || 'Live',
+      playMode: playMode || 'Live',
       logTimeStamp: finalTimestamp,
       assetType: 'script',
       ...(showId ? { showId } : {}),
@@ -549,13 +613,13 @@ export default function LiveReadPopout({
 
     // Forward to main window via IPC if running inside Electron, or trigger callback
     if (!isReadOnly) {
-      if ((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) {
-        await (window as any).electronAPI.logLiveReadCommit(logEntry);
+      if (window.electronAPI && window.electronAPI.logLiveReadCommit) {
+        await window.electronAPI.logLiveReadCommit(logEntry);
       }
       
       if (onLogCommit) {
         onLogCommit(logEntry);
-      } else if (!((window as any).electronAPI && (window as any).electronAPI.logLiveReadCommit) && !isPreviewMode) {
+      } else if (!(window.electronAPI && window.electronAPI.logLiveReadCommit) && !isPreviewMode) {
         try {
           await fetch('/api/logs', {
             method: 'POST',
@@ -573,8 +637,8 @@ export default function LiveReadPopout({
     // Close window if running inside Electron, or trigger callback
     if (onClose) {
       onClose();
-    } else if ((window as any).electronAPI && (window as any).electronAPI.closeLiveReadWindow) {
-      await (window as any).electronAPI.closeLiveReadWindow();
+    } else if (window.electronAPI && window.electronAPI.closeLiveReadWindow) {
+      await window.electronAPI.closeLiveReadWindow();
     }
   };
 
@@ -582,8 +646,8 @@ export default function LiveReadPopout({
   const handleCloseNotRead = async () => {
     if (onClose) {
       onClose();
-    } else if ((window as any).electronAPI && (window as any).electronAPI.closeLiveReadWindow) {
-      await (window as any).electronAPI.closeLiveReadWindow();
+    } else if (window.electronAPI && window.electronAPI.closeLiveReadWindow) {
+      await window.electronAPI.closeLiveReadWindow();
     }
   };
 
@@ -594,18 +658,19 @@ export default function LiveReadPopout({
 
   // Announcer-friendly lightweight markdown parser
   const renderMarkdownContent = (content: string) => {
-    if (!content) {
+    const cleanedContent = stripHtmlComments(content || '');
+    if (!cleanedContent) {
       return <p className="text-slate-400 italic font-medium text-center py-20">Script content is empty.</p>;
     }
 
-    const lines = content.split(/\r?\n/);
+    const lines = cleanedContent.split(/\r?\n/);
     const elements: React.ReactNode[] = [];
     let currentList: React.ReactNode[] = [];
 
     const parseInline = (text: string): React.ReactNode[] => {
-      // Split by bold (**text**), italic (*text*), code (`code`)
+      // Split by bold (**text**), underline (__text__ or <u>text</u>), italic (*text*), code (`code`)
       const parts: React.ReactNode[] = [];
-      const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+      const regex = /(\*\*[^*]+\*\*|__[^_]+__|<u>[\s\S]+?<\/u>|\*[^*]+\*|`[^`]+`)/gi;
       let lastIndex = 0;
       let match: RegExpExecArray | null;
 
@@ -616,6 +681,10 @@ export default function LiveReadPopout({
         const token = match[0];
         if (token.startsWith('**') && token.endsWith('**')) {
           parts.push(<strong key={match.index} className="font-black text-slate-900 dark:text-white">{token.slice(2, -2)}</strong>);
+        } else if (token.startsWith('__') && token.endsWith('__')) {
+          parts.push(<u key={match.index} className="underline decoration-2 underline-offset-4">{token.slice(2, -2)}</u>);
+        } else if (/^<u>[\s\S]+<\/u>$/i.test(token)) {
+          parts.push(<u key={match.index} className="underline decoration-2 underline-offset-4">{token.slice(3, -4)}</u>);
         } else if (token.startsWith('*') && token.endsWith('*')) {
           parts.push(<em key={match.index} className="italic text-slate-700 dark:text-slate-300">{token.slice(1, -1)}</em>);
         } else if (token.startsWith('`') && token.endsWith('`')) {
@@ -711,7 +780,9 @@ export default function LiveReadPopout({
   return (
     <div className={cn(
       "flex flex-col h-screen select-none font-sans text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-950",
-      isOverlay ? "rounded-xl border border-slate-300 dark:border-slate-800 shadow-2xl max-w-3xl w-full max-h-[85vh] h-full overflow-hidden" : ""
+      isOverlay
+        ? "rounded-xl border border-slate-300 dark:border-slate-800 shadow-2xl w-[720px] h-[620px] max-w-[95vw] max-h-[88vh] overflow-hidden"
+        : ""
     )}>
       {/* HEADER SECTION (MINIMAL BORDERS) */}
       <div className={cn(
@@ -823,15 +894,13 @@ export default function LiveReadPopout({
               </div>
             )}
 
-            {/* Plain Text Display */}
+            {/* Plain Text Display (with universal Bold/Italic/Underline inline rendering and comment stripping) */}
             {isText && (
               <div 
                 className="flex-1 w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 overflow-y-auto font-sans leading-relaxed select-text cursor-text text-slate-800 dark:text-slate-100 shadow-inner whitespace-pre-wrap"
                 style={{ fontSize: `${zoomLevel}px`, lineHeight: 1.6 }}
               >
-                {fileContent || (
-                  <p className="text-slate-400 italic font-medium text-center py-20">Script content is empty.</p>
-                )}
+                {renderFormattedTxtContent(fileContent)}
               </div>
             )}
 
@@ -904,6 +973,48 @@ export default function LiveReadPopout({
                       <span>Preview mp3</span>
                     </>
                   )}
+                </button>
+              )}
+
+              {(isText || isMarkdown) && !fileName.startsWith('__up_next_promo__:') && onEditScript && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (backupAudioRef.current) {
+                      backupAudioRef.current.pause();
+                      backupAudioRef.current.src = "";
+                      backupAudioRef.current = null;
+                    }
+                    const target = fileName;
+                    if (onClose) onClose();
+                    onEditScript(target);
+                  }}
+                  className="h-full px-3 bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-r border-slate-300 dark:border-slate-700 font-black text-xs uppercase flex items-center gap-1.5 select-none cursor-pointer leading-none shrink-0 transition-colors"
+                  title="Close preview and edit this live read"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Edit</span>
+                </button>
+              )}
+
+              {(isText || isMarkdown) && !fileName.startsWith('__up_next_promo__:') && onCopyScript && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (backupAudioRef.current) {
+                      backupAudioRef.current.pause();
+                      backupAudioRef.current.src = "";
+                      backupAudioRef.current = null;
+                    }
+                    const target = fileName;
+                    if (onClose) onClose();
+                    onCopyScript(target);
+                  }}
+                  className="h-full px-3 bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border-r border-slate-300 dark:border-slate-700 font-black text-xs uppercase flex items-center gap-1.5 select-none cursor-pointer leading-none shrink-0 transition-colors"
+                  title="Close preview and copy this live read"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy</span>
                 </button>
               )}
 

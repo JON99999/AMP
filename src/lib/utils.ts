@@ -1,7 +1,8 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { driveFileNameCache, availableFilesCache, rawBlobCache, mp3MetadataCache, cacheMP3 } from './driveService';
-import { Announcement, TimeGatedMp3 } from '../types';
+import { Announcement, AnnouncementRevision, AnnouncementType, ResolvedTimeGatedMp3, Show, TimeGatedMediaItem, TimeGatedMp3, UpNextPromoConfig } from '../types';
+import { getStationTimezone, getStationNow, toStationDateParts, stationSlotDateToUtcIso, getUpNextPromoConfig, estimateWpmReadTimeFromText, isMissingApproxReadTime } from './compatibility';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -81,12 +82,39 @@ export function isAudioFile(filenameOrUrl: string | undefined | null): boolean {
   if (!filenameOrUrl) return false;
   const str = String(filenameOrUrl).trim();
   if (str.startsWith('blob:') || str.includes('/api/media/stream') || str.includes('/api/shows/playlist/stream-file') || str.startsWith('mock-')) return true;
-  const clean = getCleanFilename(str).toLowerCase();
+  const mappedName = driveFileNameCache.get(str);
+  if (mappedName && mappedName !== str) {
+    return isAudioFile(mappedName);
+  }
+  const rawClean = getCleanFilename(str);
+  const clean = rawClean.toLowerCase();
   const ext = getFileExtension(clean);
   if ((AUDIO_EXTENSIONS as readonly string[]).includes(ext)) return true;
-  // Support 25-50 char alphanumeric Google Drive IDs (e.g. 11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch)
-  if (/^[a-zA-Z0-9_-]{25,50}$/.test(str)) return true;
+  if ((SCRIPT_EXTENSIONS as readonly string[]).includes(ext)) return false;
+  // Support 25-50 char alphanumeric Google Drive IDs (e.g. 11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch) or Drive media URLs
+  if (/^[a-zA-Z0-9_-]{25,50}$/.test(str) || /^[a-zA-Z0-9_-]{25,50}$/.test(rawClean)) return true;
+  if (str.includes('googleapis.com/drive') || str.includes('drive.google.com')) return true;
   return false;
+}
+
+export const UP_NEXT_PROMO_URL_PREFIX = '__up_next_promo__:';
+
+export function isUpNextPromoUrl(filenameOrUrl: string | undefined | null): boolean {
+  if (!filenameOrUrl) return false;
+  return String(filenameOrUrl).trim().startsWith(UP_NEXT_PROMO_URL_PREFIX);
+}
+
+export function decodeUpNextPromoText(filenameOrUrl: string | undefined | null): string {
+  if (!filenameOrUrl || !isUpNextPromoUrl(filenameOrUrl)) return '';
+  const raw = String(filenameOrUrl)
+    .trim()
+    .slice(UP_NEXT_PROMO_URL_PREFIX.length)
+    .replace(/\.txt$/i, '');
+  try {
+    return decodeURIComponent(raw);
+  } catch (_) {
+    return raw;
+  }
 }
 
 /**
@@ -94,6 +122,7 @@ export function isAudioFile(filenameOrUrl: string | undefined | null): boolean {
  */
 export function isScriptFile(filenameOrUrl: string | undefined | null): boolean {
   if (!filenameOrUrl) return false;
+  if (isUpNextPromoUrl(filenameOrUrl)) return true;
   const ext = getFileExtension(filenameOrUrl);
   return (SCRIPT_EXTENSIONS as readonly string[]).includes(ext);
 }
@@ -137,6 +166,13 @@ export function classifyMediaAsset(
 
 export const getMP3Status = (url: string | undefined) => {
   if (!url) return { exists: false, valid: false, filename: 'None selected' };
+  if (isUpNextPromoUrl(url)) {
+    return {
+      exists: true,
+      valid: true,
+      filename: 'Up Next Promo (Auto-Seeded)'
+    };
+  }
 
   // 1. Direct match by raw url in availableFilesCache
   let fileInCache = availableFilesCache.get(url);
@@ -982,7 +1018,7 @@ export function formatHourShort12(hour: number): string {
  * e.g. "2026-09-10T00:00" -> "2026-09-10 12:00 AM"
  */
 export function formatDatetime12(dateStr?: string | null, padHour = false): string {
-  if (!dateStr || !dateStr.trim()) return '';
+  if (!dateStr || typeof dateStr !== 'string' || !dateStr.trim()) return '';
   const trimmed = dateStr.trim();
   const dateOnly = getDatePart(trimmed);
   const timeOnly = getTimePart(trimmed);
@@ -1013,7 +1049,7 @@ export function formatDatetime12(dateStr?: string | null, padHour = false): stri
  * into a standard 24-hour "HH:mm" string (e.g. "14:30" or "09:30").
  */
 export function parseTo24HourTime(input: string | null | undefined): string {
-  if (!input) return '';
+  if (!input || typeof input !== 'string') return '';
   const trimmed = input.trim();
   if (!trimmed) return '';
 
@@ -1022,7 +1058,7 @@ export function parseTo24HourTime(input: string | null | undefined): string {
   if (ampmMatch) {
     let hrs = parseInt(ampmMatch[1], 10) || 0;
     const mins = ampmMatch[2] ? parseInt(ampmMatch[2], 10) : 0;
-    const isPm = ampmMatch[3].toLowerCase().startsWith('p');
+    const isPm = ampmMatch[3].toUpperCase().startsWith('P');
 
     if (isPm && hrs < 12) hrs += 12;
     if (!isPm && hrs === 12) hrs = 0;
@@ -1061,7 +1097,7 @@ export function parseTo24HourTime(input: string | null | undefined): string {
 }
 
 export function parseCustomTimeText(text: string, baseDate: Date = new Date()): Date | null {
-  if (!text) return null;
+  if (!text || typeof text !== 'string') return null;
   const cleaned = text.trim();
   
   // 1. Check for AM/PM formats (e.g. "12:04:15 PM" or "12:04 PM")
@@ -1100,266 +1136,26 @@ export function parseCustomTimeText(text: string, baseDate: Date = new Date()): 
 }
 
 export function getParsedCustomTimeISO(customTime: string | undefined, baseDate: Date): string {
-  if (!customTime) return baseDate.toISOString();
+  if (!customTime) return stationSlotDateToUtcIso(baseDate);
   const parsed = parseCustomTimeText(customTime, baseDate);
-  return parsed ? parsed.toISOString() : baseDate.toISOString();
-}
-
-interface SimpleShow {
-  day: 'Sunday' | 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday';
-  startHour: number;
-  startMinute: number;
-  durationHours: number;
-  durationMinutes: number;
-  name: string;
-}
-
-export interface BaseShow {
-  id: string;
-  day: 'Sunday' | 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday';
-  startHour: number;
-  startMinute: number;
-  durationHours: number;
-  durationMinutes: number;
-  name: string;
-}
-
-export function getSortedShows(showsList: BaseShow[]): BaseShow[] {
-  const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  return [...showsList].sort((a, b) => {
-    const aMin = daysOrder.indexOf(a.day) * 1440 + a.startHour * 60 + a.startMinute;
-    const bMin = daysOrder.indexOf(b.day) * 1440 + b.startHour * 60 + b.startMinute;
-    return aMin - bMin;
-  });
-}
-
-export function getShowShade(show: BaseShow, sortedShows: BaseShow[]): { bg: string; border: string; title: string } {
-  const index = sortedShows && sortedShows.length > 0 
-    ? sortedShows.findIndex(s => s.id === show.id) 
-    : -1;
-  
-  // Use index-based alternating colors supporting light and dark theme CSS variables
-  if (index !== -1 && index % 2 !== 0) {
-    return {
-      bg: 'var(--show-shade-odd-bg)',
-      border: 'var(--show-shade-odd-border)',
-      title: `Active during show: ${show.name}`
-    };
-  }
-
-  return {
-    bg: 'var(--show-shade-even-bg)',
-    border: 'var(--show-shade-even-border)',
-    title: `Active during show: ${show.name}`
-  };
-}
-
-export function isTimeInShow(
-  show: SimpleShow,
-  dayName: 'Sunday' | 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday',
-  hour: number,
-  minute: number = 0
-): boolean {
-  const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const showDayIdx = daysOrder.indexOf(show.day);
-  const targetDayIdx = daysOrder.indexOf(dayName);
-  
-  if (showDayIdx === -1 || targetDayIdx === -1) return false;
-  
-  const startMin = showDayIdx * 1440 + show.startHour * 60 + show.startMinute;
-  const durationMin = show.durationHours * 60 + show.durationMinutes;
-  const endMin = startMin + durationMin;
-  
-  const targetMin = targetDayIdx * 1440 + hour * 60 + minute;
-  
-  if (endMin <= 10080) {
-    return targetMin >= startMin && targetMin < endMin;
-  } else {
-    // wraps around
-    return targetMin >= startMin || targetMin < (endMin % 10080);
-  }
-}
-
-export function getActualShowStart(
-  show: { day?: string; startHour: number; startMinute: number; durationHours: number; durationMinutes?: number },
-  referenceTime: Date
-): Date {
-  const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const durationMin = (show.durationHours * 60) + (show.durationMinutes || 0);
-
-  if (show.day && daysOrder.includes(show.day)) {
-    const showDayIdx = daysOrder.indexOf(show.day);
-    const targetDayIdx = referenceTime.getDay();
-    const showStartMinInWeek = showDayIdx * 1440 + show.startHour * 60 + show.startMinute;
-    const targetMinInWeek = targetDayIdx * 1440 + referenceTime.getHours() * 60 + referenceTime.getMinutes();
-    
-    // Minutes since the show started in a circular weekly calendar
-    const diffMin = (targetMinInWeek - showStartMinInWeek + 10080) % 10080;
-    if (diffMin < durationMin) {
-      const showStartDate = new Date(referenceTime.getTime() - (diffMin * 60 * 1000) - (referenceTime.getSeconds() * 1000) - referenceTime.getMilliseconds());
-      return showStartDate;
-    }
-  }
-
-  const start = new Date(referenceTime);
-  start.setHours(show.startHour, show.startMinute, 0, 0);
-  const end = new Date(start.getTime() + durationMin * 60 * 1000);
-
-  if (referenceTime.getTime() < start.getTime()) {
-    const yesterdayStart = new Date(start.getTime() - 24 * 60 * 60 * 1000);
-    const yesterdayEnd = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-    if (referenceTime.getTime() >= yesterdayStart.getTime() && referenceTime.getTime() < yesterdayEnd.getTime()) {
-      return yesterdayStart;
-    }
-  }
-  return start;
-}
-
-export function getGatedAssetType(
-  item?: Partial<TimeGatedMp3> | null
-): 'audio' | 'script' {
-  return classifyMediaAsset(item?.mp3Url, item?.assetType);
-}
-
-export function getAnnouncementAssetType(
-  announcement?: Partial<Announcement> | null,
-  slotTime?: Date | string | number
-): 'audio' | 'script' {
-  if (!announcement) return 'audio';
-  const activeMp3 = getActiveMp3ForSlot(announcement as Announcement, slotTime);
-  return getGatedAssetType(activeMp3);
-}
-
-export function normalizeAnnouncement(item: Announcement): Announcement {
-  if (!item) return item;
-
-  const rawMp3s: any[] = Array.isArray(item.timeGatedMp3s) ? item.timeGatedMp3s : [];
-
-  const normalizedTimeGated: TimeGatedMp3[] = rawMp3s.map(m => {
-    const derivedAssetType = getGatedAssetType(m);
-    return {
-      id: m.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`),
-      mp3Url: m.mp3Url || '',
-      startDate: m.startDate || '',
-      endDate: m.endDate || undefined,
-      assetType: derivedAssetType,
-      approximateReadTime: derivedAssetType === 'script' ? m.approximateReadTime : undefined,
-      backupMp3Url: derivedAssetType === 'script' ? m.backupMp3Url : undefined,
-      duration: derivedAssetType === 'audio' ? m.duration : undefined,
-      fileSize: m.fileSize || undefined
-    };
-  });
-
-  const base: any = {
-    ...item,
-    timeGatedMp3s: normalizedTimeGated
-  };
-
-  delete base.mp3Url;
-  delete base.assetType;
-  delete base.duration;
-  delete base.backupMp3Url;
-  delete base.approximateReadTime;
-
-  return base as Announcement;
-}
-
-export function normalizeAnnouncements(items: Announcement[]): Announcement[] {
-  if (!Array.isArray(items)) return [];
-  return items.map(normalizeAnnouncement);
-}
-
-export function getActiveMp3ForSlot(
-  announcement: Announcement | undefined | null,
-  slotTime?: Date | string | number
-): TimeGatedMp3 | null {
-  if (!announcement) return null;
-  if (announcement.enabled === false) return null;
-
-  let targetMs: number;
-  if (!slotTime) {
-    targetMs = Date.now();
-  } else if (slotTime instanceof Date) {
-    targetMs = slotTime.getTime();
-  } else if (typeof slotTime === 'number') {
-    targetMs = slotTime;
-  } else {
-    const parsed = new Date(slotTime).getTime();
-    targetMs = isNaN(parsed) ? Date.now() : parsed;
-  }
-
-  // Check parent Announcement date envelope
-  if (announcement.startDate) {
-    const parentStartMs = new Date(formatToDatetimeLocal(announcement.startDate)).getTime();
-    if (!isNaN(parentStartMs) && targetMs < parentStartMs) {
-      return null;
-    }
-  }
-  if (announcement.endDate) {
-    const parentEndMs = new Date(formatToDatetimeLocal(announcement.endDate)).getTime();
-    if (!isNaN(parentEndMs) && targetMs >= parentEndMs) {
-      return null;
-    }
-  }
-
-  const mp3s = announcement.timeGatedMp3s || [];
-  if (mp3s.length === 0) return null;
-
-  const sorted = sortMp3sByStartDate(mp3s);
-
-  // Step 1: Check for currently active window
-  for (const item of sorted) {
-    const startMs = item.startDate ? new Date(formatToDatetimeLocal(item.startDate)).getTime() : 0;
-    const endMs = item.endDate ? new Date(formatToDatetimeLocal(item.endDate)).getTime() : Infinity;
-
-    if (!isNaN(startMs) && targetMs >= startMs) {
-      if (isNaN(endMs) || targetMs <= endMs) {
-        return item;
-      }
-    }
-  }
-
-  // Step 2: Check for earliest forward-looking (future) window
-  for (const item of sorted) {
-    const startMs = item.startDate ? new Date(formatToDatetimeLocal(item.startDate)).getTime() : 0;
-    if (!isNaN(startMs) && startMs > targetMs) {
-      return item;
-    }
-  }
-
-  // Step 3: All entries are in the past and no future entries exist
-  return null;
-}
-
-export function getAllRequiredMp3Urls(announcements: Announcement[]): string[] {
-  if (!Array.isArray(announcements)) return [];
-  const urls = new Set<string>();
-
-  announcements.forEach(item => {
-    if (!item || !item.enabled) return;
-    if (Array.isArray(item.timeGatedMp3s)) {
-      item.timeGatedMp3s.forEach(m => {
-        if (m.mp3Url && m.mp3Url.trim()) {
-          urls.add(m.mp3Url.trim());
-        }
-        if (m.backupMp3Url && m.backupMp3Url.trim()) {
-          urls.add(m.backupMp3Url.trim());
-        }
-      });
-    }
-  });
-
-  return Array.from(urls);
+  return parsed ? stationSlotDateToUtcIso(parsed) : stationSlotDateToUtcIso(baseDate);
 }
 
 export function formatToDatetimeLocal(dateStr?: string): string {
-  if (!dateStr) return '';
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateStr)) return dateStr;
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(dateStr)) return dateStr.substring(0, 16);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return `${dateStr}T00:00`;
+  if (!dateStr || typeof dateStr !== 'string') return '';
+  const trimmed = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(trimmed) && !trimmed.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(trimmed)) {
+    return trimmed.substring(0, 16);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return `${trimmed}T00:00`;
   try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
+    const parts = toStationDateParts(trimmed, getStationTimezone());
+    if (parts) {
+      return `${parts.dateStr}T${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
+    }
+    const d = new Date(trimmed);
+    if (isNaN(d.getTime())) return trimmed;
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
@@ -1372,7 +1168,7 @@ export function formatToDatetimeLocal(dateStr?: string): string {
 }
 
 export function getCurrentDatetimeLocal(): string {
-  const d = new Date();
+  const d = getStationNow();
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -1394,269 +1190,6 @@ export function getTimePart(dateStr?: string): string {
   if (!formatted) return '';
   const parts = formatted.split('T');
   return parts[1] ? parts[1].substring(0, 5) : '';
-}
-
-/**
- * Checks if an end datetime (e.g. 2026-08-30T23:59) and a start datetime (e.g. 2026-08-31T00:00)
- * represent a contiguous transition across midnight (Prior Day 23:59 to Next Day 00:00),
- * which is treated as seamless continuous coverage (not a gap).
- */
-export function isContiguousMidnightTransition(endStr?: string, startStr?: string): boolean {
-  if (!endStr || !startStr) return false;
-  const endFormatted = formatToDatetimeLocal(endStr);
-  const startFormatted = formatToDatetimeLocal(startStr);
-  if (!endFormatted || !startFormatted) return false;
-
-  const endDate = getDatePart(endFormatted);
-  const endTime = getTimePart(endFormatted);
-  const startDate = getDatePart(startFormatted);
-  const startTime = getTimePart(startFormatted);
-
-  if (endTime === '23:59' && startTime === '00:00') {
-    const [ey, em, ed] = endDate.split('-').map(Number);
-    const [sy, sm, sd] = startDate.split('-').map(Number);
-    if (!isNaN(ey) && !isNaN(em) && !isNaN(ed) && !isNaN(sy) && !isNaN(sm) && !isNaN(sd)) {
-      const nextDayOfEnd = new Date(ey, em - 1, ed + 1);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const expectedStartDate = `${nextDayOfEnd.getFullYear()}-${pad(nextDayOfEnd.getMonth() + 1)}-${pad(nextDayOfEnd.getDate())}`;
-      if (startDate === expectedStartDate) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-/**
- * Given a new start datetime ISO (e.g. 2026-09-08T00:00),
- * computes the backfilled end datetime for a preceding open-ended or abutting slot.
- * If the new start is at 00:00, the preceding slot ends at Prior Day 23:59 (e.g. 2026-09-07T23:59).
- * Otherwise, it matches the start datetime.
- */
-export function computeBackfilledEndTime(newStartIso: string): string {
-  if (!newStartIso) return '';
-  const timePart = getTimePart(newStartIso) || '00:00';
-  if (timePart === '00:00') {
-    const datePart = getDatePart(newStartIso);
-    const [y, m, d] = datePart.split('-').map(Number);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-      const prevDate = new Date(y, m - 1, d - 1);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      return `${prevDate.getFullYear()}-${pad(prevDate.getMonth() + 1)}-${pad(prevDate.getDate())}T23:59`;
-    }
-  }
-  return newStartIso;
-}
-
-/**
- * Given a preceding slot's end datetime ISO or (date, time) pair,
- * computes the starting datetime for the next announcement gap auto-fill.
- * If the preceding stop time ends in 23:59 (e.g. 2026-09-07T23:59),
- * applies the 00:00 next day rule so the next announcement starts at Next Day 00:00 (e.g. 2026-09-08T00:00).
- */
-export function getNextGapAutoFillStart(endIsoOrDate: string, endTime?: string): { startDate: string; startTime: string; startIso: string } {
-  let eDate = '';
-  let eTime = '';
-  if (endTime !== undefined) {
-    eDate = endIsoOrDate;
-    eTime = endTime;
-  } else {
-    const formatted = formatToDatetimeLocal(endIsoOrDate);
-    eDate = getDatePart(formatted);
-    eTime = getTimePart(formatted) || '00:00';
-  }
-
-  if (eTime === '23:59') {
-    const [y, m, d] = eDate.split('-').map(Number);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-      const nextDay = new Date(y, m - 1, d + 1);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const nextDateStr = `${nextDay.getFullYear()}-${pad(nextDay.getMonth() + 1)}-${pad(nextDay.getDate())}`;
-      return {
-        startDate: nextDateStr,
-        startTime: '00:00',
-        startIso: `${nextDateStr}T00:00`
-      };
-    }
-  }
-
-  return {
-    startDate: eDate,
-    startTime: eTime || '00:00',
-    startIso: `${eDate}T${eTime || '00:00'}`
-  };
-}
-
-export function sortMp3sByStartDate(mp3s: TimeGatedMp3[]): TimeGatedMp3[] {
-  if (!Array.isArray(mp3s)) return [];
-  return [...mp3s].sort((a, b) => {
-    const aStart = formatToDatetimeLocal(a.startDate) || '';
-    const bStart = formatToDatetimeLocal(b.startDate) || '';
-    if (aStart < bStart) return -1;
-    if (aStart > bStart) return 1;
-    return 0;
-  });
-}
-
-export function findFirstGapOrEnd(mp3s: TimeGatedMp3[], fallbackDate?: string): { startDate: string; endDate?: string } {
-  const sorted = sortMp3sByStartDate(mp3s);
-  
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const currEnd = sorted[i].endDate ? formatToDatetimeLocal(sorted[i].endDate) : null;
-    const nextStart = sorted[i + 1].startDate ? formatToDatetimeLocal(sorted[i + 1].startDate) : null;
-    
-    if (currEnd && nextStart && currEnd < nextStart && !isContiguousMidnightTransition(currEnd, nextStart)) {
-      const autoFillStart = getNextGapAutoFillStart(currEnd);
-      const autoFillEnd = computeBackfilledEndTime(nextStart);
-      return { startDate: autoFillStart.startIso, endDate: autoFillEnd };
-    }
-  }
-
-  if (sorted.length > 0) {
-    const last = sorted[sorted.length - 1];
-    if (last.endDate) {
-      const autoFillStart = getNextGapAutoFillStart(formatToDatetimeLocal(last.endDate));
-      return { startDate: autoFillStart.startIso };
-    }
-  }
-
-  const fallback = fallbackDate ? formatToDatetimeLocal(fallbackDate) : getCurrentDatetimeLocal();
-  return { startDate: fallback };
-}
-
-export function validateTimeGatedMp3s(mp3s: TimeGatedMp3[], nowIso?: string, parentProfileEndDate?: string) {
-  const sorted = sortMp3sByStartDate(mp3s);
-  const errors: { [id: string]: string[] } = {};
-  const warnings: { [id: string]: string[] } = {};
-  const gapStartIds = new Set<string>();
-  const gapEndIds = new Set<string>();
-  const overlapStartIds = new Set<string>();
-  const overlapEndIds = new Set<string>();
-  const missingStartIds = new Set<string>();
-  const missingFileIds = new Set<string>();
-  let hasErrors = false;
-
-  sorted.forEach((item) => {
-    errors[item.id] = [];
-    warnings[item.id] = [];
-  });
-
-  sorted.forEach((item) => {
-    if (!item.startDate || item.startDate.trim() === '') {
-      warnings[item.id].push('Start date & time is missing.');
-      missingStartIds.add(item.id);
-    }
-    if (!item.mp3Url || item.mp3Url.trim() === '') {
-      warnings[item.id].push('File attachment selection is missing.');
-      missingFileIds.add(item.id);
-    }
-  });
-
-  for (let i = 0; i < sorted.length; i++) {
-    const a = sorted[i];
-    const aStart = formatToDatetimeLocal(a.startDate);
-    const aEnd = a.endDate ? formatToDatetimeLocal(a.endDate) : null;
-
-    if (!aStart) continue;
-
-    for (let j = i + 1; j < sorted.length; j++) {
-      const b = sorted[j];
-      const bStart = formatToDatetimeLocal(b.startDate);
-      const bEnd = b.endDate ? formatToDatetimeLocal(b.endDate) : null;
-
-      if (!bStart) continue;
-
-      let overlap = false;
-      if (aEnd === null) {
-        if (bStart >= aStart) {
-          overlap = true;
-        }
-      } else {
-        if (bEnd === null) {
-          if (bStart < aEnd) {
-            overlap = true;
-          }
-        } else {
-          if (aStart < bEnd && bStart < aEnd) {
-            overlap = true;
-          }
-        }
-      }
-
-      if (overlap) {
-        warnings[a.id].push(`Time range overlaps with Announcement #${j + 1}`);
-        warnings[b.id].push(`Time range overlaps with Announcement #${i + 1}`);
-
-        // Flag specific Start and End boundaries that contribute to the overlap
-        if (aStart === bStart) {
-          overlapStartIds.add(a.id);
-          overlapStartIds.add(b.id);
-        } else {
-          // Since sorted by start, aStart < bStart
-          overlapEndIds.add(a.id);
-          overlapStartIds.add(b.id);
-        }
-
-        if (aEnd === null) {
-          overlapEndIds.add(a.id);
-          if (bEnd !== null) {
-            overlapEndIds.add(b.id);
-          } else {
-            overlapEndIds.add(b.id);
-          }
-        } else {
-          if (bEnd !== null && bEnd <= aEnd) {
-            overlapEndIds.add(b.id);
-            overlapEndIds.add(a.id);
-          }
-        }
-      }
-    }
-  }
-
-  // 1. Check for leading gap from now() to first forward-looking startDate
-  const currentNow = nowIso || getCurrentDatetimeLocal();
-  if (sorted.length > 0 && sorted[0].startDate) {
-    const firstStart = formatToDatetimeLocal(sorted[0].startDate);
-    if (firstStart && firstStart > currentNow && !isContiguousMidnightTransition(currentNow, firstStart)) {
-      warnings[sorted[0].id].push(`Gap detected: ${formatDatetime12(currentNow)} (now) to ${formatDatetime12(firstStart)}`);
-      gapStartIds.add(sorted[0].id);
-    }
-  }
-
-  // 2. Check for subsequent gaps between announcements
-  // Note: To prevent redundant/duplicate warning boxes across adjacent cards,
-  // we record the gap warning on the incoming item (b) so it renders once above Start on item b,
-  // while keeping gapEndIds on item a to preserve color highlighting on item a's End inputs.
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const a = sorted[i];
-    const b = sorted[i + 1];
-    const aEnd = a.endDate ? formatToDatetimeLocal(a.endDate) : null;
-    const bStart = b.startDate ? formatToDatetimeLocal(b.startDate) : null;
-
-    if (aEnd && bStart && aEnd < bStart && !isContiguousMidnightTransition(aEnd, bStart)) {
-      warnings[b.id].push(`Gap detected: ${formatDatetime12(aEnd)} to ${formatDatetime12(bStart)}`);
-      gapEndIds.add(a.id);
-      gapStartIds.add(b.id);
-    }
-  }
-
-  // 3. Check for trailing post-expiration gap after the last gated item
-  // If the last item has an endDate and either the parent announcement has no endDate or an endDate beyond the last item's endDate
-  if (sorted.length > 0) {
-    const lastItem = sorted[sorted.length - 1];
-    if (lastItem.endDate && lastItem.endDate.trim()) {
-      const lastEnd = formatToDatetimeLocal(lastItem.endDate);
-      const parentEnd = parentProfileEndDate ? formatToDatetimeLocal(parentProfileEndDate) : null;
-      if (!parentEnd || (parentEnd > lastEnd && !isContiguousMidnightTransition(lastEnd, parentEnd))) {
-        gapEndIds.add(lastItem.id);
-        const gapTargetText = parentEnd ? formatDatetime12(parentEnd) : 'the future';
-        warnings[lastItem.id].push(`Gap detected: ${formatDatetime12(lastEnd)} to ${gapTargetText}`);
-      }
-    }
-  }
-
-  return { errors, warnings, gapStartIds, gapEndIds, overlapStartIds, overlapEndIds, missingStartIds, missingFileIds, hasErrors, sorted };
 }
 
 /**
@@ -1682,5 +1215,56 @@ export function generateBackupFilename(
 
   return `${type}_backup_${yyyy}${mm}${dd}_${hh}${min}${ss}_${mode}_${salt}.json`;
 }
+
+export type {
+  DayName,
+  SimpleShow,
+  BaseShow,
+  FileScheduleUsageEntry,
+  FileScheduleUsageSummary,
+} from './scheduleEngine';
+
+export {
+  DAYS_ORDER,
+  parseLocalTargetDate,
+  toCanonicalDateString,
+  normalizeToLocalDateTimePrefix,
+  toSlotLocalComponents,
+  isAnnouncementWithinDateBounds,
+  isAnnouncementRuleMatch,
+  isAnnouncementActiveInHour,
+  isAnnouncementScheduledAtSlot,
+  getAnnouncementsForSlot,
+  getGateMediaItems,
+  formatRotatedAnnouncementName,
+  formatRotatedFileName,
+  getGatedAssetType,
+  getAnnouncementAssetType,
+  normalizeAnnouncement,
+  normalizeAnnouncements,
+  computeScheduledOccurrenceCount,
+  buildResolvedGateMp3,
+  getGateEffectiveEndIso,
+  isGateExpiredOrInactivated,
+  getActiveMp3ForSlot,
+  getMatchingMp3sForSlot,
+  getAllRequiredMp3Urls,
+  isContiguousMidnightTransition,
+  computeBackfilledEndTime,
+  getNextGapAutoFillStart,
+  sortMp3sByStartDate,
+  findFirstGapOrEnd,
+  validateTimeGatedMp3s,
+  getSortedShows,
+  getShowShade,
+  isTimeInShow,
+  getShowsForSlot,
+  getActualShowStart,
+  formatUpNextPromoCopy,
+  buildUpNextPromoAnnouncements,
+  formatShortDateMDY,
+  computeFileScheduleUsageMap,
+} from './scheduleEngine';
+
 
 

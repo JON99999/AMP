@@ -1,8 +1,9 @@
 import React from 'react';
-import { Trash2, AlertCircle, RefreshCw, Calendar, User, FileText } from 'lucide-react';
+import { Trash2, AlertCircle, RefreshCw, Calendar, User, FileText, Clock } from 'lucide-react';
 import { Show, Announcement } from '../types';
 import { cn, formatTime12 } from '../lib/utils';
 import { AnnouncementConflict, ShowConflict } from './CalendarTab';
+import { MilitaryTimeInput } from './MilitaryTimeInput';
 
 interface DeleteAnnouncementModalProps {
   isOpen: boolean;
@@ -306,11 +307,19 @@ export function ShowDetailsModal({
                 {show.day} at {formatTime12(`${show.startHour.toString().padStart(2, '0')}:${(show.startMinute || 0).toString().padStart(2, '0')}`)}
               </span>
             </div>
-            <div className="col-span-2 border-t border-slate-200/50 pt-2">
-              <span className="text-slate-400 uppercase font-bold block mb-0.5 text-xs">Duration</span>
-              <span className="font-bold text-slate-755 block">
-                {show.durationHours}h {show.durationMinutes}m
-              </span>
+            <div className="col-span-2 border-t border-slate-200/50 pt-2 flex items-center justify-between">
+              <div>
+                <span className="text-slate-400 uppercase font-bold block mb-0.5 text-xs">Duration</span>
+                <span className="font-bold text-slate-755 block">
+                  {show.durationHours}h {show.durationMinutes}m
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-slate-400 uppercase font-bold block mb-0.5 text-xs">Up Next Promo</span>
+                <span className={cn("font-bold", show.includeInUpNext !== false ? "text-teal-700" : "text-slate-400")}>
+                  {show.includeInUpNext !== false ? "Included" : "Excluded"}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -359,3 +368,97 @@ export function ShowDetailsModal({
     </div>
   );
 }
+
+interface InactivateEndDateModalProps {
+  modalState: { endDate: string; endTime: string } | null;
+  isSaving: boolean;
+  onUpdate: (updates: { endDate?: string; endTime?: string }) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}
+
+export function InactivateEndDateModal({
+  modalState,
+  isSaving,
+  onUpdate,
+  onCancel,
+  onSave,
+}: InactivateEndDateModalProps) {
+  if (!modalState) return null;
+
+  const canSave = Boolean(modalState.endDate && modalState.endDate.trim() && !isSaving);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+        <div className="p-4 bg-orange-50 border-b border-orange-200 flex items-center gap-3">
+          <div className="bg-orange-600 p-2 rounded shrink-0">
+            <Clock className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <h3 className="text-xs font-black text-orange-900 uppercase tracking-widest leading-none">
+              Set End Date &amp; Time
+            </h3>
+            <p className="text-[10px] font-bold text-orange-700 mt-1 uppercase tracking-tight">
+              Required when suspending an announcement
+            </p>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4 text-xs font-bold text-slate-650">
+          <p className="leading-relaxed">
+            Suspending this announcement requires an effective end date and time. Prior slots before this point remain on the calendar as scheduled history.
+          </p>
+
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2">
+            <label className="text-[11px] font-black text-slate-700 uppercase tracking-wider block select-none">
+              Effective End Date &amp; Time
+            </label>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-black text-slate-600 uppercase tracking-wider w-11 shrink-0 select-none">
+                End:
+              </label>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="date"
+                  value={modalState.endDate}
+                  onChange={(e) => onUpdate({ endDate: e.target.value })}
+                  className="w-[120px] px-1.5 py-1 border border-slate-300 rounded text-xs font-bold font-sans tabular-nums outline-none bg-white text-slate-800 focus:border-blue-500 h-7 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0"
+                />
+                <div className="shrink-0">
+                  <MilitaryTimeInput
+                    value={modalState.endTime}
+                    onChange={(t) => onUpdate({ endTime: t })}
+                    className="h-7 px-1.5 py-1 border border-slate-300 rounded text-xs font-bold bg-white text-slate-800 focus:border-blue-500"
+                    placeholder="hh:mm AM"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={onCancel}
+            className="px-4 py-2 border border-slate-300 rounded text-xs font-black text-slate-600 hover:bg-slate-100 uppercase tracking-widest transition-all cursor-pointer bg-white disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canSave}
+            onClick={onSave}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-widest transition-all shadow-md shadow-blue-100 cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {isSaving && <RefreshCw className="w-3 h-3 animate-spin" />}
+            <span>{isSaving ? 'Saving...' : 'Save'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

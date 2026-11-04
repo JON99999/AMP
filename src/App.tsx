@@ -30,6 +30,8 @@ import {
   NotebookPen,
   Zap,
   Square,
+  X,
+  Download,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -39,64 +41,40 @@ import {
   isBefore,
   parseISO,
 } from "date-fns";
-import { Announcement, AnnouncementType, LogEntry, Show } from "./types";
+import { Announcement, AnnouncementType, LiveReadPayload, LogEntry, MediaAssetFile, Show } from "./types";
 import PlayerTab from "./components/PlayerTab";
 import CalendarTab from "./components/CalendarTab";
 import LogTab from "./components/LogTab";
 import LiveDevTab from "./components/LiveDevTab";
 import LiveReadPopout from "./components/LiveReadPopout";
-import LocalHelpModal from "./components/LocalHelpModal";
-import { SaveRecoveryModal, SaveRecoveryInfo } from "./components/SaveRecoveryModal";
-import { PlaylistSelectModal } from "./components/PlaylistSelectModal";
-import { PrerecordModal } from "./components/PrerecordModal";
-import { LocationsModal } from "./components/LocationsModal";
-import { ExportModal } from "./components/ExportModal";
-import { DataUpgradeRequiredModal } from "./components/DataUpgradeRequiredModal";
-import { NewerVersionDetectedModal } from "./components/NewerVersionDetectedModal";
 import { ReadOnlyCompatibilityBanner } from "./components/ReadOnlyCompatibilityBanner";
-import { assessDataCompatibility, CompatibilityReport, CURRENT_APP_VERSION } from "./lib/compatibility";
+import { AppOverlays, OptimizationConfig } from "./components/app/AppOverlays";
+import { assessDataCompatibility, CompatibilityReport, getStationNow, getAdminContactInfo } from "./lib/compatibility";
 import { getInitialTheme, applyTheme, ThemeId } from "./lib/theme";
-import { cn, extractFolderId, getSortedShows, getShowShade, isTimeInShow, getActualShowStart, normalizeAnnouncements, getAllRequiredMp3Urls, getActiveMp3ForSlot, formatExportTimeAmPm } from "./lib/utils";
+import { cn, getSortedShows, getShowShade, isTimeInShow, normalizeAnnouncements, getActiveMp3ForSlot, formatExportTimeAmPm, buildUpNextPromoAnnouncements, getAnnouncementsForSlot } from "./lib/utils";
 import {
   initAuth,
   googleSignIn,
   handleLogout,
   getAccessToken,
   setOverrideAccessToken,
-  loadCalendarFromDrive,
-  saveCalendarToDrive,
-  loadShowsFromDrive,
-  saveShowsToDrive,
-  loadLogsFromDrive,
-  appendLogToDrive,
-  listMP3sFromDrive,
-  updateAudioCache,
-  updateAudioCacheWithProgress,
+  getStorageApiHeaders,
   prepareShowContext,
   clearShowContext,
-  getPlayableUrl,
-  CachingProgressReport,
   DRIVE_FOLDERS,
-  mp3BlobCache,
   validateGoogleDriveAccess,
-  verifyGoogleDriveDetails,
   getSavedSettings,
-  saveSettings,
   DEFAULT_SETTINGS,
-  driveFileNameCache,
-  availableFilesCache,
-  triggerDriveBackup,
-  checkPlaylistShowFilesOnDrive,
-  getOrCreateDrivePreferencesFolder,
-  getOrCreateDriveLogsFolder,
-  getOrCreateDrivePlaylistsFolder,
-  getOrCreateDriveEvergreensFolder,
-  getOrCreateDriveAnnouncementsFolder,
-  upgradeDriveDataSchema,
+  resolveEffectiveLocalPaths,
 } from "./lib/driveService";
+import {
+  syncMediaCatalogFiles,
+} from "./lib/audioCache";
 import { useStartupGate } from "./hooks/useStartupGate";
 import { useAppClock } from "./hooks/useAppClock";
 import { useScheduleManager } from "./hooks/useScheduleManager";
+import { useAudioCacheController } from "./hooks/useAudioCacheController";
+import { useLocationsController } from "./hooks/useLocationsController";
 
 const getFutureDatesForShow = (
   showDay: string,
@@ -116,8 +94,8 @@ const getFutureDatesForShow = (
   if (targetDayIndex === -1) return [];
 
   const occurrences: Date[] = [];
-  const now = new Date();
-  const start = new Date();
+  const now = getStationNow();
+  const start = getStationNow();
   for (let i = 0; i < 62; i++) {
     const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
     if (d.getDay() === targetDayIndex) {
@@ -148,10 +126,10 @@ export default function App() {
     return <LiveReadPopout />;
   }
 
-  const isElectron = typeof window !== "undefined" && (!!(window as any).electronAPI || (navigator && navigator.userAgent && navigator.userAgent.includes("Electron")));
+  const isElectron = typeof window !== "undefined" && (!!window.electronAPI || (navigator && navigator.userAgent && navigator.userAgent.includes("Electron")));
   const isAiStudio = !isElectron;
 
-  const appModeEnv = (import.meta as any).env?.VITE_APP_MODE || "Admin";
+  const appModeEnv = import.meta.env?.VITE_APP_MODE || "Admin";
   const isLiveApp = appModeEnv === "Live";
   const isStudioApp = appModeEnv === "Studio";
   const isAdminApp = appModeEnv === "Admin" || (!isLiveApp && !isStudioApp);
@@ -211,14 +189,14 @@ export default function App() {
   useEffect(() => {
     const handleOpened = () => {
       setIsLiveReadActive(true);
-      if ((window as any).electronAPI?.setLiveReadActive) {
-        (window as any).electronAPI.setLiveReadActive(true);
+      if (window.electronAPI?.setLiveReadActive) {
+        window.electronAPI.setLiveReadActive(true);
       }
     };
     const handleClosed = () => {
       setIsLiveReadActive(false);
-      if ((window as any).electronAPI?.setLiveReadActive) {
-        (window as any).electronAPI.setLiveReadActive(false);
+      if (window.electronAPI?.setLiveReadActive) {
+        window.electronAPI.setLiveReadActive(false);
       }
       triggerFocusRefresh("live-read-closed");
     };
@@ -233,62 +211,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if ((window as any).electronAPI?.setActiveTabMenu) {
-      (window as any).electronAPI.setActiveTabMenu(activeTab, calendarSubTab);
+    if (window.electronAPI?.setActiveTabMenu) {
+      window.electronAPI.setActiveTabMenu(activeTab, calendarSubTab);
     }
     triggerFocusRefresh("tab-switch");
   }, [activeTab, calendarSubTab]);
   const [durationUpdates, setDurationUpdates] = useState(0);
-
-  // Fetch folder name/descriptor helper
-  const fetchDriveFolderDescriptor = async (
-    folderId: string,
-    currentToken: string | null,
-  ): Promise<string> => {
-    if (!folderId) return "Not Configured";
-    let defaultName = "";
-    if (folderId === "1EkEdj1gvA0_MtMNfnj5KNCPdxcRFO_ED")
-      defaultName = "calendar";
-    else if (folderId === "11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch")
-      defaultName = "medialibrary";
-    else if (folderId === "1pvc7gdLktrqbZ4A9X6OT_CkasSLbembx")
-      defaultName = "logs";
-
-    if (!currentToken)
-      return (
-        defaultName || `Google Drive Folder [${folderId.substring(0, 6)}...]`
-      );
-    try {
-      const res = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=name,owners(displayName,emailAddress)&supportsAllDrives=true`,
-        {
-          headers: {
-            Authorization: `Bearer ${currentToken}`,
-          },
-        },
-      );
-      if (res.ok) {
-        const data = await res.json();
-        const folderName = data.name || defaultName || "Unnamed Folder";
-        const ownerName = data.owners?.[0]?.displayName || "";
-        const ownerEmail = data.owners?.[0]?.emailAddress || "";
-        const ownerStr =
-          ownerName && ownerEmail
-            ? ` (${ownerName}, ${ownerEmail})`
-            : ownerName
-              ? ` (${ownerName})`
-              : ownerEmail
-                ? ` (${ownerEmail})`
-                : "";
-        return `${folderName}${ownerStr}`;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch name for drive folder ID:", folderId, e);
-    }
-    return (
-      defaultName || `Google Drive Folder [${folderId.substring(0, 6)}...]`
-    );
-  };
 
   // Archiving/backup implementation
   const runArchiving = async (mode: "Local" | "Drive" | "Demo") => {
@@ -300,17 +228,15 @@ export default function App() {
     }
     const workstationMode = isLiveApp ? "LIVE" : isStudioApp ? "STUDIO" : "ADMIN";
     try {
-      if (mode === "Local") {
-        const res = await fetch("/api/trigger-backup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workstationMode }),
-        });
-        if (!res.ok) {
-          throw new Error("Local archiving failed");
-        }
-      } else if (mode === "Drive" || mode === "Demo") {
-        await triggerDriveBackup(workstationMode);
+      const headers = await getStorageApiHeaders();
+      const res = await fetch("/api/trigger-backup", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ workstationMode }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Archiving failed");
       }
       console.log("Archiving of announcements and logs completed successfully");
       hasBackedUpThisSessionRef.current = true;
@@ -336,6 +262,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const handleTokenRefreshed = (e: Event) => {
+      const customEvt = e as CustomEvent<{ token?: string }>;
+      if (customEvt.detail?.token) {
+        setToken(customEvt.detail.token);
+      }
+    };
+    window.addEventListener("amp-token-refreshed", handleTokenRefreshed);
+    return () => window.removeEventListener("amp-token-refreshed", handleTokenRefreshed);
+  }, []);
+
+  useEffect(() => {
     document.title = isLiveApp
       ? "AMP Live"
       : isStudioApp
@@ -345,19 +282,9 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
 
   // === DEBUG ANIMATION SWITCH START ===
-  interface OptimizationConfig {
-    cssAnimations: boolean;
-    hoverTransitions: boolean;
-    hoverTransforms: boolean;
-    hoverShadowsFilters: boolean;
-    backdropBlurs: boolean;
-    webWorkers: boolean;
-    pointerEventsNeutralization: boolean;
-    gpuCompositingLayering: boolean;
-  }
-
   const DEFAULT_OPTIMIZATIONS: OptimizationConfig = {
     cssAnimations: true,
+    blinkOnlyUrgency: false,
     hoverTransitions: false,
     hoverTransforms: false,
     hoverShadowsFilters: false,
@@ -387,96 +314,6 @@ export default function App() {
 
   const [isOptimizationConfigOpen, setIsOptimizationConfigOpen] = useState(false);
   const [tempOptimizations, setTempOptimizations] = useState<OptimizationConfig>(DEFAULT_OPTIMIZATIONS);
-
-  // Caching Progress Modal State
-  const [showCachingModal, setShowCachingModal] = useState(false);
-  const [cachingTargetMode, setCachingTargetMode] = useState<"Live" | "Prerecord" | "Export" | "Playlist" | null>(null);
-  const [currentPlaylistTrackUrls, setCurrentPlaylistTrackUrls] = useState<string[]>([]);
-  const [cachingProgress, setCachingProgress] = useState<CachingProgressReport>({
-    total: 0,
-    completed: 0,
-    failed: 0,
-    errors: [],
-    isComplete: false
-  });
-
-  const triggerCachingForMode = async (
-    targetMode: "Live" | "Prerecord" | "Export" | "Playlist",
-    additionalUrls?: string[]
-  ) => {
-    if (additionalUrls) {
-      setCurrentPlaylistTrackUrls(additionalUrls);
-    }
-
-    const announcementUrls = getAllRequiredMp3Urls(announcements);
-
-    const playlistUrls = additionalUrls !== undefined
-      ? additionalUrls
-      : currentPlaylistTrackUrls;
-
-    let activeUrls: string[] = [];
-    if (targetMode === "Playlist" || targetMode === "Prerecord" || targetMode === "Export" || (playlistUrls && playlistUrls.length > 0)) {
-      activeUrls = Array.from(new Set([...announcementUrls, ...playlistUrls]));
-    } else {
-      activeUrls = Array.from(new Set(announcementUrls));
-    }
-
-    activeUrls = activeUrls.filter(Boolean);
-
-    setCachingTargetMode(targetMode);
-
-    // If additionalUrls has not been supplied yet for dynamic modes ("Playlist", "Prerecord", "Export"),
-    // PlayerTab is still fetching tracks asynchronously from Drive. Keep modal open & background blurred.
-    if (additionalUrls === undefined && (targetMode === "Playlist" || targetMode === "Prerecord" || targetMode === "Export")) {
-      setShowCachingModal(true);
-      setCachingProgress({
-        total: 0,
-        completed: 0,
-        failed: 0,
-        errors: [],
-        isComplete: false
-      });
-      return;
-    }
-
-    // Check which active URLs are not cached yet
-    const uncachedUrls = activeUrls.filter(url => {
-      const fileInCache = availableFilesCache.get(url);
-      const resolvedUrl = fileInCache ? fileInCache.path : url;
-      return !mp3BlobCache.has(resolvedUrl) && !mp3BlobCache.has(url) && !getPlayableUrl(url).startsWith('blob:');
-    });
-
-    if (uncachedUrls.length === 0) {
-      // If no caching is needed, close the modal ASAP
-      setShowCachingModal(false);
-      return;
-    }
-
-    // Uncached files exist -> show caching modal with background blurred immediately
-    setShowCachingModal(true);
-    setCachingProgress({
-      total: activeUrls.length,
-      completed: activeUrls.length - uncachedUrls.length,
-      failed: 0,
-      errors: [],
-      isComplete: false
-    });
-
-    const report = await updateAudioCacheWithProgress(
-      activeUrls,
-      getAccessToken() || token,
-      (currentReport) => {
-        setCachingProgress(currentReport);
-      }
-    );
-
-    if (report.isComplete) {
-      if (report.failed === 0) {
-        // Close card ASAP (no delay)
-        setShowCachingModal(false);
-      }
-    }
-  };
 
   useEffect(() => {
     if (isOptimizationConfigOpen) {
@@ -514,8 +351,8 @@ export default function App() {
 
     // 1. Check if there are active editing windows / unsaved changes
     if (
-      typeof (window as any).ampHasUnsavedChanges === "function" &&
-      (window as any).ampHasUnsavedChanges()
+      typeof window.ampHasUnsavedChanges === "function" &&
+      window.ampHasUnsavedChanges()
     ) {
       pendingNavActionRef.current = action;
       setShowUnsavedChangesNavModal(true);
@@ -524,8 +361,8 @@ export default function App() {
 
     // 2. Check if audio is currently playing
     if (
-      typeof (window as any).ampIsAudioPlaying === "function" &&
-      (window as any).ampIsAudioPlaying()
+      typeof window.ampIsAudioPlaying === "function" &&
+      window.ampIsAudioPlaying()
     ) {
       pendingNavActionRef.current = action;
       setShowAudioPlayingNavModal(true);
@@ -545,8 +382,8 @@ export default function App() {
   const triggerFocusRefresh = (reason?: string) => {
     // 1. Never overwrite active editing sessions or unsaved modifications
     if (
-      typeof (window as any).ampHasUnsavedChanges === "function" &&
-      (window as any).ampHasUnsavedChanges()
+      typeof window.ampHasUnsavedChanges === "function" &&
+      window.ampHasUnsavedChanges()
     ) {
       return;
     }
@@ -556,11 +393,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    (window as any).ampTriggerFocusRefresh = (reason?: string) => {
+    window.ampTriggerFocusRefresh = (reason?: string) => {
       triggerFocusRefresh(reason);
     };
     return () => {
-      (window as any).ampTriggerFocusRefresh = undefined;
+      window.ampTriggerFocusRefresh = undefined;
     };
   }, []);
 
@@ -588,7 +425,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   // Prerecord & Playlist States
-  const [playMode, setPlayMode] = useState<"Live" | "Prerecord" | "Export" | "Playlist">(
+  const [playMode, setPlayMode] = useState<"Live" | "Prerecord" | "Playlist">(
     isStudioApp ? "Prerecord" : "Live",
   );
   const [selectedPlaylistShow, setSelectedPlaylistShow] = useState<Show | null>(null);
@@ -599,6 +436,29 @@ export default function App() {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showNewerVersionModal, setShowNewerVersionModal] = useState(false);
   const isReadOnlyCompatibility = compatibilityReport?.status === 'NEWER_VERSION_DETECTED' || (!isAdminApp && compatibilityReport?.status === 'OLDER_VERSION_DETECTED');
+
+  // Google Drive & Auth States
+  const [user, setUser] = useState<any>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isDriveActive, setIsDriveActive] = useState(false);
+  const [isDriveValidated, setIsDriveValidated] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [isValidatingDrive, setIsValidatingDrive] = useState(false);
+  const [driveValidationError, setDriveValidationError] = useState<
+    string | null
+  >(null);
+  const [googleClientId, setGoogleClientId] = useState(
+    () =>
+      localStorage.getItem("amp_google_client_id") ||
+      "776109899422-4ui9sqip5tvjarmcmrmnb4p3pdni0b2n.apps.googleusercontent.com",
+  );
+  const [isPollingExternal, setIsPollingExternal] = useState(false);
+  const [driveMP3s, setDriveMP3s] = useState<MediaAssetFile[]>([]);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const fetchInProgressRef = useRef(false);
+  const hasBackedUpThisSessionRef = useRef(false);
+  const [showLocalHelp, setShowLocalHelp] = useState(false);
+  const openLocationsModalRef = useRef<() => void>(() => {});
 
   const {
     announcements,
@@ -613,19 +473,153 @@ export default function App() {
     setSaveRecoveryModal,
     loadShows,
     saveShows,
+    stationTimezone,
+    saveStationTimezone,
+    adminContactInfo,
+    hasSavedAdminContact,
+    saveAdminContactInfo,
+    upNextPromoConfig,
+    saveUpNextPromoConfig,
+    scheduleWindowConfig,
+    saveScheduleWindowConfig,
     saveAnnouncements,
     addLog,
   } = useScheduleManager({
     token: null, // Initialized with token dynamically updated via ref/effect
-    now: new Date(),
+    now: getStationNow(),
     playMode,
     selectedPrerecordShowId,
     selectedPlaylistShow,
-    onShowLocationsModal: () => setShowLocationsModal(true),
+    onShowLocationsModal: () => openLocationsModalRef.current(),
     isReadOnly: isReadOnlyCompatibility,
   });
+
+  const {
+    showLocationsModal,
+    setShowLocationsModal,
+    locationMode,
+    setLocationMode,
+    localPathAmp,
+    setLocalPathAmp,
+    localPathMP3s,
+    setLocalPathMP3s,
+    localPathMediaAnnouncements,
+    setLocalPathMediaAnnouncements,
+    localPathMediaEvergreens,
+    setLocalPathMediaEvergreens,
+    localPathMediaShows,
+    setLocalPathMediaShows,
+    localPathLogs,
+    setLocalPathLogs,
+    localPathCalendar,
+    setLocalPathCalendar,
+    driveFolderAmp,
+    setDriveFolderAmp,
+    driveFolderLogs,
+    setDriveFolderLogs,
+    driveFolderMP3s,
+    setDriveFolderMP3s,
+    driveFolderAnnouncements,
+    setDriveFolderAnnouncements,
+    driveFolderEvergreens,
+    setDriveFolderEvergreens,
+    driveFolderShows,
+    setDriveFolderShows,
+    driveFolderPreferences,
+    setDriveFolderPreferences,
+    draftLocalPathAmp,
+    setDraftLocalPathAmp,
+    draftLocalPathMP3s,
+    setDraftLocalPathMP3s,
+    draftLocalPathMediaAnnouncements,
+    setDraftLocalPathMediaAnnouncements,
+    draftLocalPathMediaEvergreens,
+    setDraftLocalPathMediaEvergreens,
+    draftLocalPathMediaShows,
+    setDraftLocalPathMediaShows,
+    draftLocalPathLogs,
+    setDraftLocalPathLogs,
+    draftLocalPathCalendar,
+    setDraftLocalPathCalendar,
+    draftDriveFolderAmp,
+    setDraftDriveFolderAmp,
+    draftDriveFolderLogs,
+    setDraftDriveFolderLogs,
+    draftDriveFolderMP3s,
+    setDraftDriveFolderMP3s,
+    draftDriveFolderAnnouncements,
+    setDraftDriveFolderAnnouncements,
+    draftDriveFolderEvergreens,
+    setDraftDriveFolderEvergreens,
+    draftDriveFolderShows,
+    setDraftDriveFolderShows,
+    draftDriveFolderPreferences,
+    setDraftDriveFolderPreferences,
+    localPathsUnavailable,
+    setLocalPathsUnavailable,
+    announcementsReadOnlyError,
+    setAnnouncementsReadOnlyError,
+    locationsError,
+    locationsSuccess,
+    driveFolderDescMap,
+    setDriveFolderDescMap,
+    editingDriveField,
+    setEditingDriveField,
+    tempPasteLink,
+    setTempPasteLink,
+    fetchDriveFolderDescriptor,
+    handleBrowseNative,
+    handleOpenLocalPath,
+    handleOpenDriveFolder,
+    handleSaveLocations,
+    handleSelectMode,
+  } = useLocationsController({
+    token,
+    shows,
+    verifyStartup,
+    fetchDataForMode: (s) => fetchDataForMode(s),
+    setIsDriveActive,
+    setIsDriveValidated,
+    setIsValidatingDrive,
+    setDriveValidationError,
+    hasBackedUpThisSessionRef,
+    customFetch: fetch,
+  });
+  openLocationsModalRef.current = () => setShowLocationsModal(true);
+
+  const {
+    showCachingModal,
+    setShowCachingModal,
+    cachingTargetMode,
+    setCachingTargetMode,
+    cachingProgress,
+    setCachingProgress,
+    triggerCachingForMode,
+  } = useAudioCacheController({
+    announcements,
+    driveMP3s,
+    token,
+    isDriveValidated,
+    localPathsUnavailable,
+    locationMode,
+    isStartupReady,
+    activeTab,
+    playMode,
+    setScrollTrigger,
+  });
+
+  const effectiveAnnouncements = React.useMemo(
+    () => [...announcements, ...buildUpNextPromoAnnouncements(shows, upNextPromoConfig)],
+    [announcements, shows, upNextPromoConfig]
+  );
+  const [showAdminContactPopup, setShowAdminContactPopup] = useState(false);
+  const resolvedAdminContact =
+    (adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo()).trim() ||
+    "No admin contact info configured yet (set in Admin Mode > Folders > Help).";
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [isFolderChooserOpen, setIsFolderChooserOpen] = useState(false);
+  const [isPrerecordExportOpen, setIsPrerecordExportOpen] = useState(false);
+  const [prerecordHasPlaylistItems, setPrerecordHasPlaylistItems] = useState(false);
   const [playlistModalLoading, setPlaylistModalLoading] = useState(false);
   const [playlistModalNow, setPlaylistModalNow] = useState<Date>(new Date());
   const [playlistShowOptions, setPlaylistShowOptions] = useState<{
@@ -640,9 +634,7 @@ export default function App() {
   const playlistShowOptionsRef = useRef<typeof playlistShowOptions>(null);
   playlistShowOptionsRef.current = playlistShowOptions;
   const [chosenPlaylistShowId, setChosenPlaylistShowId] = useState<string>("");
-  const [prerecordModalTarget, setPrerecordModalTarget] = useState<
-    "Prerecord" | "Export"
-  >("Prerecord");
+  const [prerecordModalTarget, setPrerecordModalTarget] = useState<"Prerecord">("Prerecord");
   const [prerecordDate, setPrerecordDate] = useState<Date | null>(null);
   const [showPrerecordModal, setShowPrerecordModal] = useState(false);
   const [prerecordDateInput, setPrerecordDateInput] = useState("");
@@ -657,34 +649,25 @@ export default function App() {
 
   const handleConfirmUpgrade = async () => {
     try {
-      const activeSettings = getSavedSettings();
-      if (activeSettings.mode === "Local") {
-        const resp = await fetch("/api/compatibility/upgrade", { method: "POST" });
-        const resData = await resp.json();
-        if (resData && resData.success) {
-          if (Array.isArray(resData.announcements)) {
-            setAnnouncements(normalizeAnnouncements(resData.announcements));
-          }
-          if (Array.isArray(resData.shows)) {
-            setShows(resData.shows);
-          }
-          setCompatibilityReport(assessDataCompatibility(resData.meta));
-        } else {
-          throw new Error(resData?.error || "Upgrade endpoint returned unsuccessful status");
+      const headers = await getStorageApiHeaders();
+      const resp = await fetch("/api/compatibility/upgrade", {
+        method: "POST",
+        headers,
+      });
+      const resData = await resp.json();
+      if (resData && resData.success) {
+        if (Array.isArray(resData.announcements)) {
+          setAnnouncements(normalizeAnnouncements(resData.announcements));
         }
+        if (Array.isArray(resData.shows)) {
+          setShows(resData.shows);
+        }
+        if (Array.isArray(resData.logs)) {
+          setLogs(resData.logs);
+        }
+        setCompatibilityReport(assessDataCompatibility(resData.meta));
       } else {
-        const driveUpgradeRes = await upgradeDriveDataSchema();
-        if (driveUpgradeRes && driveUpgradeRes.success) {
-          if (Array.isArray(driveUpgradeRes.announcements)) {
-            setAnnouncements(normalizeAnnouncements(driveUpgradeRes.announcements));
-          }
-          if (Array.isArray(driveUpgradeRes.shows)) {
-            setShows(driveUpgradeRes.shows);
-          }
-          setCompatibilityReport(assessDataCompatibility(driveUpgradeRes.meta));
-        } else {
-          throw new Error("Google Drive schema upgrade failed");
-        }
+        throw new Error(resData?.error || "Upgrade endpoint returned unsuccessful status");
       }
       setShowUpgradeModal(false);
     } catch (e) {
@@ -730,11 +713,6 @@ export default function App() {
     "Show",
   );
 
-  // Custom Folder Location settings matching multi modes: Local, Drive, Demo
-  const [locationMode, setLocationMode] = useState<"Local" | "Drive" | "Demo">(
-    "Demo",
-  );
-
   const formatVerifyAirDate = (dateStr: string) => {
     if (!dateStr) return "";
     const parts = dateStr.split("-");
@@ -743,67 +721,6 @@ export default function App() {
     }
     return dateStr;
   };
-  const [localPathAmp, setLocalPathAmp] = useState("");
-  const [localPathMP3s, setLocalPathMP3s] = useState("");
-  const [localPathMediaAnnouncements, setLocalPathMediaAnnouncements] = useState("");
-  const [localPathMediaEvergreens, setLocalPathMediaEvergreens] = useState("");
-  const [localPathMediaShows, setLocalPathMediaShows] = useState("");
-  const [localPathLogs, setLocalPathLogs] = useState("");
-  const [localPathCalendar, setLocalPathCalendar] = useState("");
-
-  const [driveFolderAmp, setDriveFolderAmp] = useState("");
-  const [driveFolderLogs, setDriveFolderLogs] = useState("");
-  const [driveFolderMP3s, setDriveFolderMP3s] = useState("");
-  const [driveFolderAnnouncements, setDriveFolderAnnouncements] = useState("");
-  const [driveFolderEvergreens, setDriveFolderEvergreens] = useState("");
-  const [driveFolderShows, setDriveFolderShows] = useState("");
-  const [driveFolderPreferences, setDriveFolderPreferences] = useState("");
-
-  // Draft States for Folder Configuration Form inputs
-  const [draftLocalPathAmp, setDraftLocalPathAmp] = useState("");
-  const [draftLocalPathMP3s, setDraftLocalPathMP3s] = useState("");
-  const [draftLocalPathMediaAnnouncements, setDraftLocalPathMediaAnnouncements] = useState("");
-  const [draftLocalPathMediaEvergreens, setDraftLocalPathMediaEvergreens] = useState("");
-  const [draftLocalPathMediaShows, setDraftLocalPathMediaShows] = useState("");
-  const [draftLocalPathLogs, setDraftLocalPathLogs] = useState("");
-  const [draftLocalPathCalendar, setDraftLocalPathCalendar] = useState("");
-
-  const [draftDriveFolderAmp, setDraftDriveFolderAmp] = useState("");
-  const [draftDriveFolderLogs, setDraftDriveFolderLogs] = useState("");
-  const [draftDriveFolderMP3s, setDraftDriveFolderMP3s] = useState("");
-  const [draftDriveFolderAnnouncements, setDraftDriveFolderAnnouncements] = useState("");
-  const [draftDriveFolderEvergreens, setDraftDriveFolderEvergreens] = useState("");
-  const [draftDriveFolderShows, setDraftDriveFolderShows] = useState("");
-  const [draftDriveFolderPreferences, setDraftDriveFolderPreferences] =
-    useState("");
-
-  const [localPathsUnavailable, setLocalPathsUnavailable] = useState(false);
-  const [announcementsReadOnlyError, setAnnouncementsReadOnlyError] = useState<string | null>(null);
-  const [locationsError, setLocationsError] = useState<string | null>(null);
-  const [locationsSuccess, setLocationsSuccess] = useState<string | null>(null);
-
-  // Google Drive & Auth States
-  const [user, setUser] = useState<any>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [isDriveActive, setIsDriveActive] = useState(false);
-  const [isDriveValidated, setIsDriveValidated] = useState(false);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [isValidatingDrive, setIsValidatingDrive] = useState(false);
-  const [driveValidationError, setDriveValidationError] = useState<
-    string | null
-  >(null);
-  const [googleClientId, setGoogleClientId] = useState(
-    () =>
-      localStorage.getItem("amp_google_client_id") ||
-      "776109899422-4ui9sqip5tvjarmcmrmnb4p3pdni0b2n.apps.googleusercontent.com",
-  );
-  const [isPollingExternal, setIsPollingExternal] = useState(false);
-  const [driveMP3s, setDriveMP3s] = useState<any[]>([]);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const fetchInProgressRef = useRef(false);
-  const hasBackedUpThisSessionRef = useRef(false);
-  const [showLocationsModal, setShowLocationsModal] = useState(false);
-  const [showLocalHelp, setShowLocalHelp] = useState(false);
 
   // Trigger focus refresh when overlay modals close returning focus to view below
   const prevAnyModalOpenRef = useRef(false);
@@ -843,125 +760,13 @@ export default function App() {
     totalMinutes: number;
   } | null>(null);
 
-  // Google Drive folder descriptors and edit fields
-  const [driveFolderDescMap, setDriveFolderDescMap] = useState<
-    Record<string, string>
-  >({
-    "1EkEdj1gvA0_MtMNfnj5KNCPdxcRFO_ED": "calendar",
-    "11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch": "medialibrary",
-    "1pvc7gdLktrqbZ4A9X6OT_CkasSLbembx": "logs",
-  });
-  const [editingDriveField, setEditingDriveField] = useState<
-    "amp" | "preferences" | "mp3s" | "announcements" | "evergreens" | "shows" | "logs" | null
-  >(null);
-  const [tempPasteLink, setTempPasteLink] = useState("");
-
-  // Sync map descriptors for drive folders when authenticated
-  useEffect(() => {
-    const fetchNames = async () => {
-      const currentToken = getAccessToken() || token;
-      if (!currentToken) return;
-
-      const idsToFetch = [
-        driveFolderAmp,
-        driveFolderPreferences,
-        driveFolderMP3s,
-        driveFolderAnnouncements,
-        driveFolderEvergreens,
-        driveFolderShows,
-        driveFolderLogs,
-        ...(locationMode === "Demo"
-          ? [
-              "1EkEdj1gvA0_MtMNfnj5KNCPdxcRFO_ED",
-              "11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch",
-              "1pvc7gdLktrqbZ4A9X6OT_CkasSLbembx",
-            ]
-          : []),
-      ].filter(
-        (id) =>
-          id &&
-          (!driveFolderDescMap[id] || !driveFolderDescMap[id].includes("(")),
-      );
-
-      if (idsToFetch.length === 0) return;
-
-      const newMap = { ...driveFolderDescMap };
-      let changed = false;
-      for (const id of idsToFetch) {
-        try {
-          const desc = await fetchDriveFolderDescriptor(id, currentToken);
-          newMap[id] = desc;
-          changed = true;
-        } catch (e) {}
-      }
-      if (changed) {
-        setDriveFolderDescMap(newMap);
-      }
-    };
-    fetchNames();
-  }, [token, driveFolderAmp, driveFolderPreferences, driveFolderMP3s, driveFolderAnnouncements, driveFolderEvergreens, driveFolderShows, driveFolderLogs]);
-
-  // Sync map descriptors for draft states as well
-  useEffect(() => {
-    const fetchDraftNames = async () => {
-      const currentToken = getAccessToken() || token;
-      if (!currentToken) return;
-
-      const idsToFetch = [
-        draftDriveFolderAmp,
-        draftDriveFolderPreferences,
-        draftDriveFolderMP3s,
-        draftDriveFolderAnnouncements,
-        draftDriveFolderEvergreens,
-        draftDriveFolderShows,
-        draftDriveFolderLogs,
-        ...(locationMode === "Demo"
-          ? [
-              "1EkEdj1gvA0_MtMNfnj5KNCPdxcRFO_ED",
-              "11Ii8Wf_mjeysdIsQxeBd4iA3aNHqt9Ch",
-              "1pvc7gdLktrqbZ4A9X6OT_CkasSLbembx",
-            ]
-          : []),
-      ].filter(
-        (id) =>
-          id &&
-          (!driveFolderDescMap[id] || !driveFolderDescMap[id].includes("(")),
-      );
-
-      if (idsToFetch.length === 0) return;
-
-      const newMap = { ...driveFolderDescMap };
-      let changed = false;
-      for (const id of idsToFetch) {
-        try {
-          const desc = await fetchDriveFolderDescriptor(id, currentToken);
-          newMap[id] = desc;
-          changed = true;
-        } catch (e) {}
-      }
-      if (changed) {
-        setDriveFolderDescMap(newMap);
-      }
-    };
-    fetchDraftNames();
-  }, [
-    token,
-    draftDriveFolderAmp,
-    draftDriveFolderPreferences,
-    draftDriveFolderMP3s,
-    draftDriveFolderAnnouncements,
-    draftDriveFolderEvergreens,
-    draftDriveFolderShows,
-    draftDriveFolderLogs,
-  ]);
-
   // Application Theme State
   const [currentTheme, setCurrentTheme] = useState<ThemeId>(() => getInitialTheme());
   const [mobileThemeExpanded, setMobileThemeExpanded] = useState(false);
   const [mobileModeExpanded, setMobileModeExpanded] = useState(false);
 
-  const getModeTextHideClass = (mode: "Live" | "Prerecord" | "Export" | "Playlist") => {
-    const defaultOrder: ("Live" | "Prerecord" | "Export" | "Playlist")[] = ["Playlist", "Export", "Prerecord", "Live"];
+  const getModeTextHideClass = (mode: "Live" | "Prerecord" | "Playlist") => {
+    const defaultOrder: ("Live" | "Prerecord" | "Playlist")[] = ["Playlist", "Prerecord", "Live"];
     if (playMode === mode) {
       return "hide-mode-text-tier-4";
     }
@@ -998,70 +803,6 @@ export default function App() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
-  // Saving state for Folders Modal to prevent button flickering
-  const [isSavingAndVerifying, setIsSavingAndVerifying] = useState(false);
-
-  const checkLocalPathsSafely = async (
-    amp: string,
-    mp3s: string,
-    logs: string,
-    calendar: string,
-    createMissing: boolean = false,
-  ): Promise<boolean> => {
-    try {
-      const gate = await verifyStartup({
-        localPathAmp: amp,
-        localPathMP3s: mp3s,
-        localPathLogs: logs,
-        localPathCalendar: calendar,
-        localPathMediaAnnouncements: draftLocalPathMediaAnnouncements,
-        localPathMediaEvergreens: draftLocalPathMediaEvergreens,
-        localPathMediaShows: draftLocalPathMediaShows,
-        createMissing,
-        mode: "Local",
-      });
-      return !!gate.ready;
-    } catch {
-      return false;
-    }
-  };
-
-  // Synchronization hook to update editable drafts when location settings modal opens
-  useEffect(() => {
-    if (showLocationsModal) {
-      setDraftLocalPathAmp(localPathAmp || "");
-      setDraftLocalPathMP3s(localPathMP3s || localPathMediaAnnouncements || "");
-      setDraftLocalPathMediaAnnouncements(localPathMediaAnnouncements || localPathMP3s || "");
-      setDraftLocalPathMediaEvergreens(localPathMediaEvergreens || "");
-      setDraftLocalPathMediaShows(localPathMediaShows || "");
-      setDraftLocalPathLogs(localPathLogs || "");
-      setDraftLocalPathCalendar(localPathCalendar || "");
-      setDraftDriveFolderAmp(driveFolderAmp || "");
-      setDraftDriveFolderLogs(driveFolderLogs || "");
-      setDraftDriveFolderMP3s(driveFolderMP3s || driveFolderAnnouncements || "");
-      setDraftDriveFolderAnnouncements(driveFolderAnnouncements || driveFolderMP3s || "");
-      setDraftDriveFolderEvergreens(driveFolderEvergreens || "");
-      setDraftDriveFolderShows(driveFolderShows || "");
-      setDraftDriveFolderPreferences(driveFolderPreferences || "");
-    }
-  }, [
-    showLocationsModal,
-    localPathAmp,
-    localPathMP3s,
-    localPathMediaAnnouncements,
-    localPathMediaEvergreens,
-    localPathMediaShows,
-    localPathLogs,
-    localPathCalendar,
-    driveFolderAmp,
-    driveFolderLogs,
-    driveFolderMP3s,
-    driveFolderAnnouncements,
-    driveFolderEvergreens,
-    driveFolderShows,
-    driveFolderPreferences,
-  ]);
-
   // Google Auth initialization with Validation
   useEffect(() => {
     const initSettings = async () => {
@@ -1100,15 +841,15 @@ export default function App() {
         JSON.stringify(settings),
       );
 
+      const effectiveLocal = resolveEffectiveLocalPaths(settings);
       setLocationMode(settings.mode);
-      setLocalPathAmp(settings.localPathAmp || "");
-      const localAnnouncements = settings.paths?.media_announcements || settings.localPathMP3s || "";
-      setLocalPathMP3s(localAnnouncements);
-      setLocalPathMediaAnnouncements(localAnnouncements);
-      setLocalPathMediaEvergreens(settings.paths?.media_evergreens || "");
-      setLocalPathMediaShows(settings.paths?.media_shows || "");
-      setLocalPathLogs(settings.localPathLogs || settings.paths?.logs || "");
-      setLocalPathCalendar(settings.localPathCalendar || settings.paths?.settings || "");
+      setLocalPathAmp(effectiveLocal.localPathAmp);
+      setLocalPathMP3s(effectiveLocal.mediaAnnouncements);
+      setLocalPathMediaAnnouncements(effectiveLocal.mediaAnnouncements);
+      setLocalPathMediaEvergreens(effectiveLocal.mediaEvergreens);
+      setLocalPathMediaShows(effectiveLocal.mediaShows);
+      setLocalPathLogs(effectiveLocal.logsDir);
+      setLocalPathCalendar(effectiveLocal.settingsDir);
       setDriveFolderAmp(settings.driveFolderAmp || "");
       setDriveFolderLogs(settings.driveFolderLogs || "");
       const driveAnnouncements = settings.driveFolderAnnouncements || settings.driveFolderMP3s || "";
@@ -1126,7 +867,7 @@ export default function App() {
       }).catch(() => {});
 
       if (isElectron || settings.mode === "Local") {
-        const hasValidLocalConfig = !!settings.localPathAmp || (!!settings.localPathMP3s && !!settings.localPathLogs && !!settings.localPathCalendar);
+        const hasValidLocalConfig = effectiveLocal.hasValidLocalConfig;
         if (!hasValidLocalConfig) {
           setIsDriveActive(true);
           setIsDriveValidated(false);
@@ -1228,7 +969,7 @@ export default function App() {
       );
       return;
     }
-    const hasValidLocalConfig = !!settings.localPathAmp || (!!settings.localPathMP3s && !!settings.localPathCalendar && !!settings.localPathLogs);
+    const hasValidLocalConfig = resolveEffectiveLocalPaths(settings).hasValidLocalConfig;
     if (settings.mode === "Local" && !hasValidLocalConfig) {
       setLoading(false);
       setIsSyncing(false);
@@ -1256,23 +997,15 @@ export default function App() {
           setAnnouncements(normalizeAnnouncements(localAnnouncements || []));
           setLogs(localLogs || []);
 
-          availableFilesCache.clear();
-          const mappedMP3s = (localMP3s || []).map((file: any) => {
-            if (file.path && file.name) {
-              driveFileNameCache.set(file.path, file.name);
-              availableFilesCache.set(file.name, {
-                path: file.path,
-                size: file.size,
-                duration: file.duration || "",
-              });
-            }
-            return {
-              name: file.name,
-              size: file.size,
-              duration: file.duration || "",
-              path: file.path,
-            };
-          });
+          const mappedMP3s: MediaAssetFile[] = (localMP3s || []).map((file: MediaAssetFile) => ({
+            name: file.name,
+            size: file.size,
+            duration: file.duration || "",
+            path: file.path,
+            approximateReadTime: file.approximateReadTime,
+            assetType: file.assetType,
+          }));
+          syncMediaCatalogFiles(mappedMP3s, { clearExisting: true });
           setDriveMP3s(mappedMP3s);
           setSyncTime(new Date());
           setScrollTrigger((prev) => prev + 1);
@@ -1328,7 +1061,7 @@ export default function App() {
         }
 
         // Validate Google Drive (or Demo mode virtual folders) prior to any file read
-        const isValid = await validateGoogleDriveAccess();
+        const isValid = await validateGoogleDriveAccess(settings);
         if (!isValid) {
           setIsDriveValidated(false);
           setConnectionError(
@@ -1341,19 +1074,24 @@ export default function App() {
 
         setIsDriveValidated(true);
 
-        const hasPreferencesFolder = !!(DRIVE_FOLDERS.preferences || DRIVE_FOLDERS.amp);
-        const hasLogsFolder = !!(DRIVE_FOLDERS.logs || DRIVE_FOLDERS.amp);
-        const hasMP3Folder = !!(DRIVE_FOLDERS.announcements || DRIVE_FOLDERS.mp3s || DRIVE_FOLDERS.amp);
+        const headers = await getStorageApiHeaders();
+        const hasPreferencesFolder = !!(settings.driveFolderPreferences || settings.driveFolderAmp || DRIVE_FOLDERS.preferences || DRIVE_FOLDERS.amp);
+        const hasLogsFolder = !!(settings.driveFolderLogs || settings.driveFolderAmp || DRIVE_FOLDERS.logs || DRIVE_FOLDERS.amp);
+        const hasMP3Folder = !!(settings.driveFolderAnnouncements || settings.driveFolderMP3s || settings.driveFolderAmp || DRIVE_FOLDERS.announcements || DRIVE_FOLDERS.mp3s || DRIVE_FOLDERS.amp);
 
         let driveAnnouncements: Announcement[] | null = null;
         let driveLogsStr: LogEntry[] | null = null;
-        let mp3Files: any[] | null = null;
+        let mp3Files: MediaAssetFile[] | null = null;
 
         let hasFetchError = false;
 
         if (hasPreferencesFolder) {
           try {
-            driveAnnouncements = await loadCalendarFromDrive();
+            const res = await fetch("/api/announcements?withEnvelope=true", { headers });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const payload = await res.json();
+            const items = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+            driveAnnouncements = normalizeAnnouncements(items);
           } catch (e) {
             console.warn("Announcements Folder not set or inaccessible.", e);
             hasFetchError = true;
@@ -1361,7 +1099,10 @@ export default function App() {
         }
         if (hasLogsFolder) {
           try {
-            driveLogsStr = await loadLogsFromDrive();
+            const res = await fetch("/api/logs", { headers });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const payload = await res.json();
+            driveLogsStr = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
           } catch (e) {
             console.warn("Logs Folder not set or inaccessible.", e);
             hasFetchError = true;
@@ -1369,7 +1110,10 @@ export default function App() {
         }
         if (hasMP3Folder) {
           try {
-            mp3Files = await listMP3sFromDrive();
+            const res = await fetch("/api/local-mp3s", { headers });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const payload = await res.json();
+            mp3Files = Array.isArray(payload) ? payload : [];
           } catch (e) {
             console.warn("MP3s Folder not set or inaccessible.", e);
             hasFetchError = true;
@@ -1392,19 +1136,26 @@ export default function App() {
         }
 
         if (mp3Files !== null) {
-          availableFilesCache.clear();
-          (mp3Files || []).forEach((file: any) => {
-            if (file.path && file.name) {
-              availableFilesCache.set(file.name, {
-                path: file.path,
-                size: file.size,
-                duration: file.duration || "",
-              });
-            }
-          });
-
+          syncMediaCatalogFiles(mp3Files || [], { clearExisting: true });
           setDriveMP3s(mp3Files || []);
         }
+
+        fetch("/api/compatibility/inspect", { headers })
+          .then((r) => r.json())
+          .then((resData) => {
+            if (resData && resData.success && resData.meta) {
+              const report = assessDataCompatibility(resData.meta);
+              setCompatibilityReport(report);
+              if (report.status === 'OLDER_VERSION_DETECTED') {
+                if (isAdminApp) {
+                  setShowUpgradeModal(true);
+                }
+              } else if (report.status === 'NEWER_VERSION_DETECTED') {
+                setShowNewerVersionModal(true);
+              }
+            }
+          })
+          .catch((e) => console.error("Compatibility inspect check failed:", e));
 
         setSyncTime(new Date());
         setScrollTrigger((prev) => prev + 1);
@@ -1448,7 +1199,15 @@ export default function App() {
     localPathsUnavailable,
     locationMode,
     isStartupReady,
-    onCountdownExpired: fetchData,
+    onCountdownExpired: () => {
+      if (
+        typeof window.ampHasUnsavedChanges === "function" &&
+        window.ampHasUnsavedChanges()
+      ) {
+        return;
+      }
+      fetchData();
+    },
     token,
   });
 
@@ -1463,6 +1222,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!token || isValidatingDrive || fetchInProgressRef.current) return;
     const settings = getSavedSettings();
     if (settings.mode === "Drive" || settings.mode === "Demo") {
       fetchData();
@@ -1483,56 +1243,31 @@ export default function App() {
     };
   }, []);
 
-  // Background Cache Synchronization Logic (Pre-loading Audio into memory)
-  useEffect(() => {
-    const syncCache = async () => {
-      if (!isDriveValidated || localPathsUnavailable || (locationMode === "Local" && !isStartupReady)) {
-        return;
-      }
-      // Find all MP3 files used in active announcements and loaded playlist tracks
-      const announcementUrls = getAllRequiredMp3Urls(announcements);
-
-      const activeUrls = Array.from(new Set([...announcementUrls, ...currentPlaylistTrackUrls])).filter(Boolean);
-
-      try {
-        await updateAudioCache(activeUrls, getAccessToken() || token);
-        // Force-refresh status representation to trigger card border transitions
-        setScrollTrigger((prev) => prev + 1);
-      } catch (err) {
-        console.error("Failed to sync audio cache:", err);
-      }
-    };
-
-    if (announcements.length > 0 || currentPlaylistTrackUrls.length > 0) {
-      syncCache();
-    }
-  }, [announcements, currentPlaylistTrackUrls, token]);
-
   const addLogRef = useRef(addLog);
   addLogRef.current = addLog;
 
   useEffect(() => {
-    if ((window as any).electronAPI) {
-      if ((window as any).electronAPI.onLiveReadLogged) {
-        (window as any).electronAPI.onLiveReadLogged((logEntry: LogEntry) => {
+    if (window.electronAPI) {
+      if (window.electronAPI.onLiveReadLogged) {
+        window.electronAPI.onLiveReadLogged((logEntry: LogEntry) => {
           if (addLogRef.current) {
             addLogRef.current(logEntry);
           }
           window.dispatchEvent(new CustomEvent('live-read-logged', { detail: logEntry }));
         });
       }
-      if ((window as any).electronAPI.onLiveReadOpened) {
-        (window as any).electronAPI.onLiveReadOpened((payload: any) => {
+      if (window.electronAPI.onLiveReadOpened) {
+        window.electronAPI.onLiveReadOpened((payload: LiveReadPayload) => {
           window.dispatchEvent(new CustomEvent('live-read-opened', { detail: payload }));
         });
       }
-      if ((window as any).electronAPI.onLiveReadClosed) {
-        (window as any).electronAPI.onLiveReadClosed(() => {
+      if (window.electronAPI.onLiveReadClosed) {
+        window.electronAPI.onLiveReadClosed(() => {
           window.dispatchEvent(new CustomEvent('live-read-closed'));
         });
       }
-      if ((window as any).electronAPI.onNavigate) {
-        (window as any).electronAPI.onNavigate(({ tab, subTab }: { tab: string; subTab?: string }) => {
+      if (window.electronAPI.onNavigate) {
+        window.electronAPI.onNavigate(({ tab, subTab }: { tab: string; subTab?: string }) => {
           if (isLiveReadActiveRef.current) return;
           if (tab === "folders") {
             setShowLocationsModal(true);
@@ -1591,7 +1326,7 @@ export default function App() {
 
   const initialStudioPromptRef = useRef(false);
 
-  const handleOpenTimeframeModal = (target: "Prerecord" | "Export", showList: Show[] = shows) => {
+  const handleOpenTimeframeModal = (target: "Prerecord" = "Prerecord", showList: Show[] = shows) => {
     setPrerecordModalTarget(target);
     setSelectedPrerecordShowId("");
     setShowFilterText("");
@@ -1681,34 +1416,19 @@ export default function App() {
     let nextShowFolderCount = (playlistShowOptionsRef.current as any)?.nextShowFolderCount || 0;
 
     try {
-      const settings = getSavedSettings();
-      if (settings.mode === 'Local') {
-        const resp = await fetch("/api/shows/playlist/check-show-files", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            currentShowNameShort: currentShow?.nameShort || "",
-            currentShowName: currentShow?.name || "",
-            nextShowNameShort: nextShow?.nameShort || "",
-            nextShowName: nextShow?.name || ""
-          })
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          currentShowFileCount = data.currentShowFileCount || 0;
-          currentShowFolderCount = data.currentShowFolderCount || 0;
-          nextShowFileCount = data.nextShowFileCount || 0;
-          nextShowFolderCount = data.nextShowFolderCount || 0;
-        }
-      } else {
-        // 'Drive' or 'Demo' mode
-        const data = await checkPlaylistShowFilesOnDrive(
-          currentShow?.nameShort,
-          currentShow?.name,
-          nextShow?.nameShort,
-          nextShow?.name,
-          settings.mode
-        );
+      const headers = await getStorageApiHeaders();
+      const resp = await fetch("/api/shows/playlist/check-show-files", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          currentShowNameShort: currentShow?.nameShort || "",
+          currentShowName: currentShow?.name || "",
+          nextShowNameShort: nextShow?.nameShort || "",
+          nextShowName: nextShow?.name || ""
+        })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
         currentShowFileCount = data.currentShowFileCount || 0;
         currentShowFolderCount = data.currentShowFolderCount || 0;
         nextShowFileCount = data.nextShowFileCount || 0;
@@ -1794,7 +1514,7 @@ export default function App() {
   };
 
   const handleEditTimeframeModal = () => {
-    handleOpenTimeframeModal(playMode === "Export" ? "Export" : "Prerecord");
+    handleOpenTimeframeModal("Prerecord");
   };
 
   const getPrerecord12HrDisplay = (timeStr: string) => {
@@ -1901,19 +1621,14 @@ export default function App() {
         }
       }
 
-      setShowCachingModal(true);
-      setCachingTargetMode(prerecordModalTarget);
-      setCachingProgress({
-        total: 0,
-        completed: 0,
-        failed: 0,
-        errors: [],
-        isComplete: false,
-      });
       setPlayMode(prerecordModalTarget);
       setShowPrerecordConfirmStep(false);
       setShowPrerecordModal(false);
       setPrerecordConfirmDetails(null);
+      void triggerCachingForMode(
+        prerecordModalTarget,
+        prerecordModalTarget === "Prerecord" ? [] : undefined,
+      );
       handleRefresh();
     } catch (err: any) {
       setPrerecordError(
@@ -1965,6 +1680,10 @@ export default function App() {
       setShowPrerecordConfirmStep(false);
       setShowPrerecordModal(false);
       setPrerecordConfirmDetails(null);
+      void triggerCachingForMode(
+        targetMode,
+        targetMode === "Prerecord" ? [] : undefined,
+      );
       handleRefresh();
     }
   };
@@ -2004,7 +1723,7 @@ export default function App() {
     const textFilename = `${tPrefix} - Plan - ${dateStr} at ${timeStr} - ${durationStr}.txt`;
     const playlistFilename = `${pPrefix} - Playlist - ${dateStr} at ${timeStr} - ${durationStr}.m3u`;
 
-    const activeSpecials = announcements.filter(s => s.enabled);
+    const activeSpecials = effectiveAnnouncements.filter(s => s.enabled);
     const firstScheduleName = activeSpecials.length > 0 ? activeSpecials[0].name : "Hourly Announcement";
     const safeScheduleName = firstScheduleName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
     const safeSlotTime = formatExportTimeAmPm(hours, 0);
@@ -2110,49 +1829,10 @@ export default function App() {
         }
 
         slots.forEach((slot) => {
-          const day = slot.getDay();
-          const hour = slot.getHours();
-          const minute = slot.getMinutes();
-          const dateStr = format(slot, "yyyy-MM-dd");
-
-          const activeAnnouncements = announcements.filter((s) => {
-            if (!s.enabled) return false;
-            if (s.type === AnnouncementType.ONE_TIME) {
-              const hourStr = format(slot, "HH");
-              return (
-                s.date === dateStr && s.minute === minute && s.time === hourStr
-              );
-            }
-            if (s.type === AnnouncementType.BASIC_HOURLY) {
-              const afterStart = s.startDate
-                ? !isBefore(slot, parseISO(s.startDate))
-                : true;
-              const beforeEnd = s.endDate
-                ? !isAfter(slot, parseISO(s.endDate))
-                : true;
-              return s.minute === minute && afterStart && beforeEnd;
-            }
-            if (s.type === AnnouncementType.ADVANCED) {
-              const afterStart = s.startDate
-                ? !isBefore(slot, parseISO(s.startDate))
-                : true;
-              const beforeEnd = s.endDate
-                ? !isAfter(slot, parseISO(s.endDate))
-                : true;
-
-              let ruleMatch = false;
-              if (s.gridRules && s.gridRules.length > 0) {
-                ruleMatch = s.gridRules.includes(`${day}-${hour}`);
-              } else {
-                const dayMatch = s.days?.includes(day);
-                const hourMatch = s.hours?.includes(hour);
-                ruleMatch = !!(dayMatch && hourMatch);
-              }
-
-              return s.minute === minute && ruleMatch && afterStart && beforeEnd;
-            }
-            return false;
-          });
+          const activeAnnouncements = getAnnouncementsForSlot(
+            effectiveAnnouncements,
+            slot,
+          );
 
           activeAnnouncements.forEach((s) => {
             const activeMp3 = getActiveMp3ForSlot(s, slot);
@@ -2226,8 +1906,8 @@ export default function App() {
 
   const handleOpenExportFolder = async (folderPath: string) => {
     try {
-      if ((window as any).electronAPI && (window as any).electronAPI.openPath) {
-        const res = await (window as any).electronAPI.openPath(folderPath);
+      if (window.electronAPI && window.electronAPI.openPath) {
+        const res = await window.electronAPI.openPath(folderPath);
         if (res && res.success) return;
       }
       await fetch("/api/open-local-folder", {
@@ -2240,115 +1920,6 @@ export default function App() {
     } catch (e) {
       console.error("Error opening folder:", e);
     }
-  };
-
-  const handleBrowseNative = async (
-    targetField:
-      | "amp"
-      | "calendar"
-      | "mp3s"
-      | "announcements"
-      | "evergreens"
-      | "shows"
-      | "logs",
-  ): Promise<string | null> => {
-    try {
-      let defaultPath: string | undefined;
-      if (targetField === "amp") defaultPath = draftLocalPathAmp || localPathAmp;
-      else if (targetField === "calendar") defaultPath = draftLocalPathCalendar || localPathCalendar;
-      else if (targetField === "mp3s" || targetField === "announcements")
-        defaultPath =
-          draftLocalPathMediaAnnouncements ||
-          draftLocalPathMP3s ||
-          localPathMediaAnnouncements ||
-          localPathMP3s;
-      else if (targetField === "evergreens")
-        defaultPath = draftLocalPathMediaEvergreens || localPathMediaEvergreens;
-      else if (targetField === "shows")
-        defaultPath = draftLocalPathMediaShows || localPathMediaShows;
-      else if (targetField === "logs") defaultPath = draftLocalPathLogs || localPathLogs;
-
-      // Primary desktop IPC bridge path (asynchronous & non-blocking)
-      if ((window as any).electronAPI && (window as any).electronAPI.browseFolder) {
-        const data = await (window as any).electronAPI.browseFolder(defaultPath);
-        if (data && data.success && data.path) {
-          if (targetField === "amp") setDraftLocalPathAmp(data.path);
-          else if (targetField === "calendar") setDraftLocalPathCalendar(data.path);
-          else if (targetField === "mp3s" || targetField === "announcements") {
-            setDraftLocalPathMediaAnnouncements(data.path);
-            setDraftLocalPathMP3s(data.path);
-          } else if (targetField === "evergreens") setDraftLocalPathMediaEvergreens(data.path);
-          else if (targetField === "shows") setDraftLocalPathMediaShows(data.path);
-          else if (targetField === "logs") setDraftLocalPathLogs(data.path);
-          return data.path;
-        } else if (data && data.cancelled) {
-          return null;
-        } else if (data && data.error) {
-          alert(data.error);
-          return null;
-        }
-      }
-
-      // Backend HTTP fallback
-      const res = await fetch("/api/browse-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ defaultPath }),
-      });
-      const data = await res.json();
-      if (data.success && data.path) {
-        if (targetField === "amp") setDraftLocalPathAmp(data.path);
-        else if (targetField === "calendar") setDraftLocalPathCalendar(data.path);
-        else if (targetField === "mp3s" || targetField === "announcements") {
-          setDraftLocalPathMediaAnnouncements(data.path);
-          setDraftLocalPathMP3s(data.path);
-        } else if (targetField === "evergreens") setDraftLocalPathMediaEvergreens(data.path);
-        else if (targetField === "shows") setDraftLocalPathMediaShows(data.path);
-        else if (targetField === "logs") setDraftLocalPathLogs(data.path);
-        return data.path;
-      } else if (data.error) {
-        alert(data.error);
-        return null;
-      }
-      return null;
-    } catch (err: any) {
-      alert(err.message || "Failed to open folder selection window.");
-      return null;
-    }
-  };
-
-  const handleOpenLocalPath = async (dirPath: string) => {
-    if (!dirPath) return;
-
-    try {
-      // Primary desktop IPC bridge path
-      if ((window as any).electronAPI && (window as any).electronAPI.openPath) {
-        const ipcRes = await (window as any).electronAPI.openPath(dirPath);
-        if (ipcRes && ipcRes.success) return;
-      }
-
-      // Backend HTTP fallback
-      const res = await fetch("/api/open-local-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: dirPath }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        console.warn(
-          "Could not open folder natively:",
-          err.error || "Server error",
-        );
-      }
-    } catch (e) {
-      console.warn("Network error opening local folder:", e);
-    }
-  };
-
-  const handleOpenDriveFolder = async (folderId: string) => {
-    if (!folderId) return;
-    const url = `https://drive.google.com/drive/folders/${folderId}`;
-    window.open(url, "_blank");
   };
 
   const handleAuthSignIn = async () => {
@@ -2543,242 +2114,6 @@ export default function App() {
     }
   };
 
-  const handleSaveLocations = async (e?: React.FormEvent, options?: { createMissing?: boolean }) => {
-    if (e && e.preventDefault) e.preventDefault();
-    setLocationsError(null);
-    setLocationsSuccess(null);
-    setIsSavingAndVerifying(true);
-    try {
-      const current = getSavedSettings();
-      let updatedSettings = { ...current, mode: locationMode };
-
-      if (locationMode === "Local") {
-        const announcementsPath = draftLocalPathMediaAnnouncements || draftLocalPathMP3s;
-        updatedSettings = {
-          ...updatedSettings,
-          localPathAmp: draftLocalPathAmp,
-          localPathMP3s: announcementsPath,
-          localPathLogs: draftLocalPathLogs,
-          localPathCalendar: draftLocalPathCalendar,
-          paths: {
-            settings: draftLocalPathCalendar || null,
-            media_announcements: announcementsPath || null,
-            media_evergreens: draftLocalPathMediaEvergreens || null,
-            media_shows: draftLocalPathMediaShows || null,
-            logs: draftLocalPathLogs || null,
-          },
-        };
-      } else if (locationMode === "Drive") {
-        const announcementsFolder = draftDriveFolderAnnouncements || draftDriveFolderMP3s;
-        updatedSettings = {
-          ...updatedSettings,
-          driveFolderAmp: draftDriveFolderAmp,
-          driveFolderLogs: draftDriveFolderLogs,
-          driveFolderMP3s: announcementsFolder,
-          driveFolderAnnouncements: announcementsFolder,
-          driveFolderEvergreens: draftDriveFolderEvergreens,
-          driveFolderShows: draftDriveFolderShows,
-          driveFolderPreferences: draftDriveFolderPreferences,
-        };
-      }
-
-      // Detect mode or log/schedule folder mapping changes to reset backup flag
-      const modeChanged = current.mode !== updatedSettings.mode;
-      const announcementsChanged =
-        updatedSettings.mode === "Local"
-          ? (current.localPathAmp !== updatedSettings.localPathAmp || current.localPathCalendar !== updatedSettings.localPathCalendar)
-          : updatedSettings.mode === "Drive"
-            ? (current.driveFolderAmp !== updatedSettings.driveFolderAmp || current.driveFolderPreferences !== updatedSettings.driveFolderPreferences)
-            : false;
-      const logsChanged =
-        updatedSettings.mode === "Local"
-          ? (current.localPathAmp !== updatedSettings.localPathAmp || current.localPathLogs !== updatedSettings.localPathLogs)
-          : updatedSettings.mode === "Drive"
-            ? (current.driveFolderAmp !== updatedSettings.driveFolderAmp || current.driveFolderLogs !== updatedSettings.driveFolderLogs)
-            : false;
-
-      if (modeChanged || announcementsChanged || logsChanged) {
-        console.log(
-          "Resetting backup flag due to updated folder mode or mapping",
-        );
-        hasBackedUpThisSessionRef.current = false;
-      }
-
-      // Save locally (localStorage)
-      saveSettings(updatedSettings);
-
-      // Save variables to main state
-      if (locationMode === "Local") {
-        const announcementsPath = draftLocalPathMediaAnnouncements || draftLocalPathMP3s;
-        setLocalPathAmp(draftLocalPathAmp);
-        setLocalPathMP3s(announcementsPath);
-        setLocalPathMediaAnnouncements(announcementsPath);
-        setLocalPathMediaEvergreens(draftLocalPathMediaEvergreens);
-        setLocalPathMediaShows(draftLocalPathMediaShows);
-        setLocalPathLogs(draftLocalPathLogs);
-        setLocalPathCalendar(draftLocalPathCalendar);
-      } else if (locationMode === "Drive") {
-        setDriveFolderAmp(draftDriveFolderAmp);
-        setDriveFolderLogs(draftDriveFolderLogs);
-        const announcementsFolder = draftDriveFolderAnnouncements || draftDriveFolderMP3s;
-        setDriveFolderMP3s(announcementsFolder);
-        setDriveFolderAnnouncements(announcementsFolder);
-        setDriveFolderEvergreens(draftDriveFolderEvergreens);
-        setDriveFolderShows(draftDriveFolderShows);
-        setDriveFolderPreferences(draftDriveFolderPreferences);
-      }
-
-      // Notify server
-      const settingsRes = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...updatedSettings, createMissing: options?.createMissing === true }),
-      }).catch(() => null);
-      if (settingsRes && !settingsRes.ok) {
-        const errData = await settingsRes.json().catch(() => ({}));
-        console.warn("Settings write warning:", errData);
-      }
-
-      // For Local mode, run the verify API on back-end
-      if (locationMode === "Local") {
-        const createMissing = options?.createMissing === true;
-        const exists = await checkLocalPathsSafely(
-          draftLocalPathAmp,
-          draftLocalPathMediaAnnouncements || draftLocalPathMP3s,
-          draftLocalPathLogs,
-          draftLocalPathCalendar,
-          createMissing,
-        );
-
-        setLocalPathsUnavailable(!exists);
-        await fetchDataForMode(updatedSettings);
-        setLocationsSuccess("Local storage configurations updated.");
-      } else if (locationMode === "Drive") {
-        setIsValidatingDrive(true);
-        // Is there any folder setting change?
-        const hasFolderChanges =
-          draftDriveFolderAmp !== driveFolderAmp ||
-          draftDriveFolderLogs !== driveFolderLogs ||
-          draftDriveFolderMP3s !== driveFolderMP3s ||
-          draftDriveFolderAnnouncements !== driveFolderAnnouncements ||
-          draftDriveFolderEvergreens !== driveFolderEvergreens ||
-          draftDriveFolderShows !== driveFolderShows ||
-          draftDriveFolderPreferences !== driveFolderPreferences;
-
-        let success = true;
-        if (hasFolderChanges) {
-          const currentToken = getAccessToken() || token;
-          if (!currentToken) {
-            success = false;
-            setLocationsError(
-              "Authentication is required when changing Google Drive folder settings. Please connect your Google account below.",
-            );
-          }
-        }
-
-        if (success) {
-          const currentToken = getAccessToken() || token;
-          if (options?.createMissing === true) {
-            try {
-              await getOrCreateDrivePreferencesFolder();
-              await getOrCreateDriveLogsFolder();
-              await getOrCreateDrivePlaylistsFolder();
-              await getOrCreateDriveEvergreensFolder();
-              await getOrCreateDriveAnnouncementsFolder();
-            } catch (createErr) {
-              console.warn("Drive folder auto-creation warning:", createErr);
-            }
-          }
-          const validationResult = await verifyGoogleDriveDetails(updatedSettings, currentToken);
-          if (validationResult.valid) {
-            setIsDriveValidated(true);
-            setDriveValidationError(null);
-            await fetchDataForMode(updatedSettings);
-            setLocationsSuccess(
-              "Google Drive directory IDs updated and validated.",
-            );
-          } else {
-            setIsDriveValidated(false);
-            const err = validationResult.errorMessage ||
-              "Associated account does not have authorization/access on newly specified directory folder IDs.";
-            setDriveValidationError(err);
-            setLocationsError(err);
-          }
-        }
-        setIsValidatingDrive(false);
-      } else if (locationMode === "Demo") {
-        setIsDriveValidated(true);
-        setDriveValidationError(null);
-        await fetchDataForMode(updatedSettings);
-        setLocationsSuccess("Workspace mode switched to Demo.");
-      }
-
-      setTimeout(() => {
-        setLocationsSuccess(null);
-        setShowLocationsModal(false);
-        setIsSavingAndVerifying(false);
-      }, 1500);
-    } catch (err: any) {
-      setLocationsError(err.message || "Failed to save configure locations.");
-      setIsSavingAndVerifying(false);
-    }
-  };
-
-  const handleSelectMode = async (mode: "Local" | "Drive" | "Demo") => {
-    try {
-      const current = getSavedSettings();
-      if (current.mode !== mode) {
-        console.log(`Resetting backup flag: Mode changed to ${mode}`);
-        hasBackedUpThisSessionRef.current = false;
-      }
-      const updatedSettings = {
-        ...current,
-        mode,
-      };
-      saveSettings(updatedSettings);
-      setLocationMode(mode);
-
-      // Notify backend
-      await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updatedSettings),
-      }).catch(() => {});
-
-      if (mode === "Local") {
-        const exists = await checkLocalPathsSafely(
-          updatedSettings.localPathAmp || "",
-          updatedSettings.localPathMP3s || "",
-          updatedSettings.localPathLogs || "",
-          updatedSettings.localPathCalendar || "",
-        );
-
-        setIsDriveActive(true);
-        setIsDriveValidated(true);
-        setLocalPathsUnavailable(!exists);
-        await fetchDataForMode(updatedSettings);
-
-        // Open location selector for Local Mode
-        setShowLocationsModal(true);
-      } else if (mode === "Drive") {
-        setIsDriveActive(true);
-        setIsDriveValidated(true);
-        setDriveValidationError(null);
-        await fetchDataForMode(updatedSettings);
-
-        // Open location selector for Drive Mode
-        setShowLocationsModal(true);
-      } else if (mode === "Demo") {
-        setIsDriveActive(true);
-        setIsDriveValidated(true);
-        setDriveValidationError(null);
-        await fetchDataForMode(updatedSettings);
-      }
-    } catch (err) {
-      console.error("Failed to select mode:", err);
-    }
-  };
-
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 gap-4">
@@ -2804,13 +2139,15 @@ export default function App() {
   const showBackdropOverride = isAsleep || !isWindowFocused || (animationsDisabled && activeOptimizations.backdropBlurs);
   const showPointerEventsOverride = isAsleep || !isWindowFocused || (animationsDisabled && activeOptimizations.pointerEventsNeutralization);
   const showGpuLayeringOverride = isAsleep || !isWindowFocused || (animationsDisabled && activeOptimizations.gpuCompositingLayering);
+  const showBlinkOnlyOverride = isAsleep || !isWindowFocused || (animationsDisabled && activeOptimizations.blinkOnlyUrgency);
   
-  const anyOverrideActive = showCssAnimOverride || showHoverTransOverride || showHoverTransfOverride || showHoverShadowOverride || showBackdropOverride || showPointerEventsOverride || showGpuLayeringOverride;
+  const anyOverrideActive = showCssAnimOverride || showBlinkOnlyOverride || showHoverTransOverride || showHoverTransfOverride || showHoverShadowOverride || showBackdropOverride || showPointerEventsOverride || showGpuLayeringOverride;
 
   return (
     <div className={cn(
       "flex flex-col h-screen bg-[#F8FAFC] font-sans overflow-hidden layout-wrapper",
       anyOverrideActive && "disable-animations",
+      showBlinkOnlyOverride && "amp-blink-only-mode",
       showCssAnimOverride && "opt-css-animations",
       showHoverTransOverride && "opt-hover-transitions",
       showHoverTransfOverride && "opt-hover-transforms",
@@ -2941,36 +2278,25 @@ export default function App() {
       {/* Control Strip - Time & Refresh (Collapsed) */}
       {activeTab === "player" && (
         <div className="bg-white border-b border-slate-200 py-1.5 px-2 shrink-0 shadow-sm z-10">
-          <div className="max-w-[400px] mx-auto flex items-center justify-between gap-4">
-            {playMode === "Export" ? (
-              <div className="flex flex-col py-0.5">
-                <p className="text-xs uppercase text-blue-600 font-black tracking-widest leading-none flex items-center gap-1.5">
-                  <ListOrdered className="w-3.5 h-3.5" />
-                  Playlist Export
+          <div className="max-w-[400px] mx-auto flex items-center justify-between gap-2">
+            {isPre ? (
+              <div className="flex flex-col py-0.5 min-w-0">
+                <p className="text-xs uppercase text-emerald-600 font-black tracking-widest leading-none flex items-center gap-1.5 mb-1">
+                  <CassetteTape className="w-3.5 h-3.5 shrink-0" />
+                  Prerecord
                 </p>
-                <p className="text-xs font-sans font-black text-slate-900 tabular-nums mt-1 leading-none">
-                  {prerecordDate
-                    ? `${format(prerecordDate, "MM/dd/yyyy h:mm a")} to ${format(
+                {prerecordDate ? (
+                  <div className="text-xs font-sans font-black text-slate-900 tabular-nums mt-0.5 leading-tight">
+                    <div>{format(prerecordDate, "MM/dd/yyyy")}</div>
+                    <div>
+                      {format(prerecordDate, "h:mm a")} to{" "}
+                      {format(
                         addMinutes(prerecordDate, prerecordLengthMinutes),
                         "h:mm a",
-                      )}`
-                    : ""}
-                </p>
-              </div>
-            ) : isPre ? (
-              <div className="flex flex-col py-0.5">
-                <p className="text-xs uppercase text-emerald-600 font-black tracking-widest leading-none flex items-center gap-1.5">
-                  <CassetteTape className="w-3.5 h-3.5" />
-                  Prerecord time and date
-                </p>
-                <p className="text-xs font-sans font-black text-slate-900 tabular-nums mt-1 leading-none">
-                  {prerecordDate
-                    ? `${format(prerecordDate, "MM/dd/yyyy h:mm a")} to ${format(
-                        addMinutes(prerecordDate, prerecordLengthMinutes),
-                        "h:mm a",
-                      )}`
-                    : ""}
-                </p>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : playMode === "Playlist" ? (
               <div className="flex flex-col py-0.5">
@@ -3004,8 +2330,7 @@ export default function App() {
               </div>
             )}
 
-            <div className="flex items-center gap-2 font-sans">
-
+            <div className="flex items-center gap-2 font-sans shrink-0">
               {playMode === "Live" && (
                 <div className="flex items-center gap-2 live-refresh-container">
                   <p className="text-xs uppercase text-purple-600 font-black tracking-tight leading-none whitespace-nowrap">
@@ -3023,33 +2348,65 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <div className="flex flex-col min-[520px]:flex-row items-center gap-1.5">
-                {(isPre || playMode === "Export" || playMode === "Playlist") && (
+
+              {isPre && (
+                <div className="flex flex-col items-stretch gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => confirmNavAction(() => handleEditTimeframeModal())}
+                    className="flex items-center justify-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded border border-slate-200 transition-colors cursor-pointer shrink-0 text-center"
+                    title="Choose Show"
+                  >
+                    <NotebookPen className="w-3 h-3 font-bold shrink-0 text-slate-500" />
+                    <span className="text-xs font-black uppercase tracking-tighter leading-tight flex flex-col text-center items-center">
+                      <span>Choose</span>
+                      <span>Show</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsPrerecordExportOpen((prev) => !prev)}
+                    className="flex items-center justify-center gap-1 px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded border border-blue-700 border-b-2 border-b-blue-800 transition-colors cursor-pointer shrink-0 text-center shadow-2xs"
+                    title="Open Export Show pop-up"
+                  >
+                    <Download className="w-3 h-3 font-bold shrink-0 text-white" />
+                    <span className="text-xs font-black uppercase tracking-tighter leading-none">
+                      Export
+                    </span>
+                  </button>
+                  {prerecordHasPlaylistItems && (
+                    <button
+                      type="button"
+                      onClick={() => confirmNavAction(() => setIsFolderChooserOpen(true))}
+                      className="flex items-center justify-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded border border-slate-200 transition-colors cursor-pointer shrink-0 text-center"
+                      title="Playlist"
+                    >
+                      <ListMusic className="w-3 h-3 font-bold shrink-0 text-slate-500" />
+                      <span className="text-xs font-black uppercase tracking-tighter leading-none">
+                        Playlist
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {playMode === "Playlist" && (
+                <div className="flex flex-col min-[520px]:flex-row items-center gap-1.5">
                   <button
                     type="button"
                     onClick={() => confirmNavAction(() => setIsFolderChooserOpen(true))}
                     className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded border border-slate-200 transition-colors group cursor-pointer active:translate-y-px shrink-0 text-center"
-                    title={playMode === "Export" ? "Pick Evergreen" : "Pick Playlist"}
+                    title="Pick Playlist"
                   >
                     <ListMusic className="w-3 h-3 font-bold shrink-0 text-slate-500" />
                     <span className="text-xs font-black uppercase tracking-tighter leading-tight flex flex-col min-[380px]:flex-row min-[380px]:gap-0.5 text-center items-center">
                       <span>Pick</span>
-                      <span>{playMode === "Export" ? "Evergreen" : "Playlist"}</span>
+                      <span>Playlist</span>
                     </span>
                   </button>
-                )}
-                {(isPre || playMode === "Export" || playMode === "Playlist") && (
                   <button
                     type="button"
-                    onClick={() => {
-                      confirmNavAction(() => {
-                        if (playMode === "Playlist") {
-                          handleOpenPlaylistModal();
-                        } else {
-                          handleEditTimeframeModal();
-                        }
-                      });
-                    }}
+                    onClick={() => confirmNavAction(() => handleOpenPlaylistModal())}
                     className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded border border-slate-200 transition-colors group cursor-pointer active:translate-y-px shrink-0 text-center"
                     title="Pick Show"
                   >
@@ -3059,8 +2416,8 @@ export default function App() {
                       <span>Show</span>
                     </span>
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -3069,8 +2426,8 @@ export default function App() {
       {/* Main Content Area */}
       <main
         className={cn(
-          "flex-1 bg-[#F8FAFC] pb-2 flex flex-col min-h-0",
-          activeTab === "player" ? "overflow-y-auto" : "overflow-hidden",
+          "flex-1 bg-[#F8FAFC] flex flex-col min-h-0",
+          activeTab === "player" ? "overflow-hidden pb-0" : "overflow-hidden pb-2",
         )}
       >
         {/* Connection Error Warning Banner */}
@@ -3241,12 +2598,12 @@ export default function App() {
         ) : (
           <div
             className={cn(
-              "w-full mx-auto pt-3 h-full transition-all flex flex-col min-h-0 pb-1",
+              "w-full mx-auto h-full transition-all flex flex-col min-h-0",
               activeTab === "player"
-                ? "max-w-[200px] px-1"
+                ? "max-w-[250px] flex-1 overflow-hidden"
                 : activeTab === "live_dev"
-                ? "max-w-4xl px-4 flex-1 overflow-y-auto"
-                : "max-w-full px-4 md:px-6 lg:px-8 flex-1",
+                ? "max-w-full px-4 md:px-6 lg:px-8 pt-3 pb-1 flex-1 overflow-y-auto"
+                : "max-w-full px-4 md:px-6 lg:px-8 pt-3 pb-1 flex-1",
             )}
           >
             <AnimatePresence mode="wait">
@@ -3256,10 +2613,10 @@ export default function App() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
-                  className="h-full"
+                  className="h-full flex flex-col min-h-0 w-full"
                 >
                   <PlayerTab
-                    announcements={announcements}
+                    announcements={effectiveAnnouncements}
                     logs={logs}
                     onLog={addLog}
                     now={now}
@@ -3270,9 +2627,7 @@ export default function App() {
                     prerecordDate={prerecordDate}
                     prerecordLengthMinutes={prerecordLengthMinutes}
                     onConfigureTimeframe={() =>
-                      handleOpenTimeframeModal(
-                        playMode === "Export" ? "Export" : "Prerecord",
-                      )
+                      handleOpenTimeframeModal("Prerecord")
                     }
                     onExecuteExport={handleExportPrerecord}
                     isAdmin={isAdmin}
@@ -3282,7 +2637,12 @@ export default function App() {
                     isFolderChooserOpen={isFolderChooserOpen}
                     onCloseFolderChooser={() => setIsFolderChooserOpen(false)}
                     onOpenFolderChooser={() => setIsFolderChooserOpen(true)}
+                    isExportPopupOpen={isPrerecordExportOpen}
+                    onCloseExportPopup={() => setIsPrerecordExportOpen(false)}
+                    onPrerecordPlaylistAvailableChange={setPrerecordHasPlaylistItems}
+                    scheduleWindowConfig={scheduleWindowConfig}
                     isReadOnly={isReadOnlyCompatibility}
+                    adminContactInfo={adminContactInfo}
                   />
                 </motion.div>
               ) : activeTab === "live_dev" ? (
@@ -3308,6 +2668,12 @@ export default function App() {
                     onSave={saveAnnouncements}
                     shows={shows}
                     onSaveShows={saveShows}
+                    stationTimezone={stationTimezone}
+                    onSaveStationTimezone={saveStationTimezone}
+                    adminContactInfo={adminContactInfo}
+                    hasSavedAdminContact={hasSavedAdminContact}
+                    onSaveAdminContactInfo={saveAdminContactInfo}
+                    upNextPromoConfig={upNextPromoConfig}
                     logs={logs}
                     isAdmin={isAdmin}
                     onAdminToggle={setIsAdmin}
@@ -3330,7 +2696,7 @@ export default function App() {
                 >
                   <LogTab 
                     logs={logs} 
-                    announcements={announcements}
+                    announcements={effectiveAnnouncements}
                     shows={shows}
                   />
                 </motion.div>
@@ -3436,40 +2802,18 @@ export default function App() {
                   )}
                 />
               </button>
-              <button
-                type="button"
-                onClick={() => handleThemeChange("dark-test")}
-                title="Dark Test Theme"
-                aria-label="Dark Test Theme"
-                className={cn(
-                  "px-2 py-1 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border flex items-center justify-center relative",
-                  currentTheme === "dark-test"
-                    ? "bg-slate-800 border-slate-700 text-amber-400 shadow-sm"
-                    : "bg-slate-950/40 border-slate-900/40 text-slate-500 hover:text-slate-300 hover:bg-slate-900/60"
-                )}
-              >
-                <HelpCircle className="w-3.5 h-3.5 shrink-0" />
-                <span
-                  className={cn(
-                    "w-1.5 h-1.5 rounded-full transition-all duration-300 absolute -top-0.5 -right-0.5",
-                    currentTheme === "dark-test"
-                      ? "bg-amber-500 shadow-[0_0_8px_#F59E0B,0_0_3px_#F59E0B]"
-                      : "bg-slate-800 opacity-0"
-                  )}
-                />
-              </button>
             </div>
 
             {/* Collapsed view for smaller screens: active theme control itself expands vertically into choices on hover or click */}
             <div
-              className="sm:hidden relative group shrink-0"
+              className="sm:hidden interactive-item relative group shrink-0"
               onMouseEnter={() => setMobileThemeExpanded(true)}
               onMouseLeave={() => setMobileThemeExpanded(false)}
             >
               {/* Expanding control container overlaying the reserved button slot */}
               <div
                 className={cn(
-                  "absolute bottom-0 right-0 bg-slate-950 p-0.5 rounded border border-slate-900 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.8)] flex flex-col items-center gap-0.5 transition-all duration-150 z-50",
+                  "interactive-item absolute bottom-0 right-0 bg-slate-950 p-0.5 rounded border border-slate-900 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.8)] flex flex-col items-center gap-0.5 transition-all duration-150 z-50",
                   mobileThemeExpanded ? "shadow-2xl ring-1 ring-slate-800" : ""
                 )}
               >
@@ -3477,7 +2821,6 @@ export default function App() {
                   { id: "light" as const, label: "Light Mode", Icon: Sun },
                   { id: "dark" as const, label: "Dark Mode", Icon: Moon },
                   { id: "system" as const, label: "System Theme", Icon: Laptop },
-                  { id: "dark-test" as const, label: "Dark Test Theme", Icon: HelpCircle },
                 ].map((item) => {
                   const isActive = currentTheme === item.id;
                   return (
@@ -3494,9 +2837,7 @@ export default function App() {
                         "px-2 py-1 rounded transition-all cursor-pointer border flex items-center justify-center relative shrink-0 w-full",
                         !isActive && !mobileThemeExpanded && "hidden group-hover:flex",
                         isActive
-                          ? item.id === "dark-test"
-                            ? "bg-slate-800 border-slate-700 text-amber-400 shadow-sm"
-                            : "bg-slate-800 border-slate-700 text-white shadow-sm"
+                          ? "bg-slate-800 border-slate-700 text-white shadow-sm"
                           : "bg-slate-950/40 border-slate-900/40 text-slate-500 hover:text-slate-300 hover:bg-slate-900/60"
                       )}
                     >
@@ -3505,9 +2846,7 @@ export default function App() {
                         className={cn(
                           "w-1.5 h-1.5 rounded-full transition-all duration-300 absolute -top-0.5 -right-0.5",
                           isActive
-                            ? item.id === "dark-test"
-                              ? "bg-amber-500 shadow-[0_0_8px_#F59E0B,0_0_3px_#F59E0B]"
-                              : "bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]"
+                            ? "bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]"
                             : "bg-slate-800 opacity-0"
                         )}
                       />
@@ -3517,6 +2856,19 @@ export default function App() {
               </div>
               {/* Dummy spacer to maintain exact header element footprint */}
               <div className="w-[31px] h-[30px] pointer-events-none" />
+            </div>
+
+            {/* Admin Contact Info Question Mark Icon */}
+            <div className="bg-slate-950 p-0.5 rounded border border-slate-900 shrink-0 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.8)] flex items-center">
+              <button
+                type="button"
+                onClick={() => setShowAdminContactPopup(true)}
+                title={`ADMIN CONTACT: ${resolvedAdminContact}`}
+                aria-label="Admin Contact Info"
+                className="px-2 py-1 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border bg-slate-950/40 border-slate-900/40 text-slate-400 hover:text-white hover:bg-slate-800 hover:border-slate-700 flex items-center justify-center"
+              >
+                <HelpCircle className="w-3.5 h-3.5 shrink-0" />
+              </button>
             </div>
 
             {/* DEMO Indicator displayed only in Demo storage Mode - aligned next to the Folders button */}
@@ -3597,34 +2949,6 @@ export default function App() {
                       <span className={getModeTextHideClass("Prerecord")}>Prerecord</span>
                     </button>
                   )}
-                  {!isLiveApp && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        confirmNavAction(() => {
-                          handleOpenTimeframeModal("Export");
-                        });
-                      }}
-                      title="Export Mode"
-                      aria-label="Export Mode"
-                      className={cn(
-                        "px-2.5 py-1 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border flex items-center gap-1.5",
-                        playMode === "Export"
-                          ? "bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.4)]"
-                          : "bg-blue-950/30 border-blue-900/30 text-blue-500/60 hover:text-blue-400/80 hover:bg-blue-950/45",
-                      )}
-                    >
-                      <ListOrdered
-                        className={cn(
-                          "w-3.5 h-3.5 transition-all duration-300 shrink-0",
-                          playMode === "Export"
-                            ? "text-red-500 drop-shadow-[0_0_3px_rgba(239,68,68,0.85)]"
-                            : "text-slate-500",
-                        )}
-                      />
-                      <span className={getModeTextHideClass("Export")}>Export</span>
-                    </button>
-                  )}
                   {!isStudioApp && !isLiveApp && (
                     <button
                       type="button"
@@ -3657,121 +2981,118 @@ export default function App() {
 
                 {/* Collapsed view for smaller screens: active mode control itself expands vertically into choices on hover or click */}
                 <div
-                  className="mode-vertical-group relative group shrink-0"
+                  className={cn(
+                    "mode-vertical-group interactive-item relative group shrink-0 items-center",
+                    mobileModeExpanded && "is-expanded"
+                  )}
                   onMouseEnter={() => setMobileModeExpanded(true)}
                   onMouseLeave={() => setMobileModeExpanded(false)}
                 >
-                  <div
-                    className={cn(
-                      "absolute bottom-0 right-0 flex flex-col bg-slate-950 p-0.5 rounded border border-slate-900 z-50 gap-0.5 transition-all duration-200 shadow-xl",
-                      mobileModeExpanded ? "shadow-2xl ring-1 ring-slate-800" : ""
-                    )}
-                  >
-                    {[
-                      ...(!isStudioApp
-                        ? [
-                            {
-                              id: "Live" as const,
-                              label: "Live Mode",
-                              Icon: RadioTower,
-                              onClick: () => {
-                                confirmNavAction(() => {
-                                  if (playMode !== "Live") {
-                                    setShowCachingModal(true);
-                                    setCachingTargetMode("Live");
-                                    setCachingProgress({ total: 0, completed: 0, failed: 0, errors: [], isComplete: false });
-                                    setPlayMode("Live");
-                                    setPrerecordDate(null);
-                                    handleRefresh();
-                                    triggerCachingForMode("Live");
-                                  }
-                                });
+                  <span className="text-xs font-bold text-slate-400 mr-1.5 select-none leading-none">
+                    Mode:
+                  </span>
+                  <div className="relative shrink-0">
+                    <div
+                      className={cn(
+                        "interactive-item absolute bottom-0 right-0 flex flex-col bg-slate-950 p-0.5 rounded border border-slate-900 z-50 gap-0.5 transition-all duration-200 shadow-xl w-max",
+                        mobileModeExpanded ? "shadow-2xl ring-1 ring-slate-800" : ""
+                      )}
+                    >
+                      {[
+                        ...(!isStudioApp
+                          ? [
+                              {
+                                id: "Live" as const,
+                                label: "Live Mode",
+                                Icon: RadioTower,
+                                onClick: () => {
+                                  confirmNavAction(() => {
+                                    if (playMode !== "Live") {
+                                      setShowCachingModal(true);
+                                      setCachingTargetMode("Live");
+                                      setCachingProgress({ total: 0, completed: 0, failed: 0, errors: [], isComplete: false });
+                                      setPlayMode("Live");
+                                      setPrerecordDate(null);
+                                      setIsPrerecordExportOpen(false);
+                                      handleRefresh();
+                                      triggerCachingForMode("Live");
+                                    }
+                                  });
+                                },
+                                activeClass: "bg-gradient-to-b from-purple-500 to-purple-600 border-t-purple-400 border-b-purple-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)]",
+                                inactiveClass: "bg-purple-950/30 border-purple-900/30 text-purple-500/60 hover:text-purple-400/80 hover:bg-purple-950/45",
                               },
-                              activeClass: "bg-gradient-to-b from-purple-500 to-purple-600 border-t-purple-400 border-b-purple-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)]",
-                              inactiveClass: "bg-purple-950/30 border-purple-900/30 text-purple-500/60 hover:text-purple-400/80 hover:bg-purple-950/45",
-                            },
-                          ]
-                        : []),
-                      ...(!isLiveApp
-                        ? [
-                            {
-                              id: "Prerecord" as const,
-                              label: "Prerecord Mode",
-                              Icon: CassetteTape,
-                              onClick: () => {
-                                confirmNavAction(() => {
-                                  handleOpenTimeframeModal("Prerecord");
-                                });
+                            ]
+                          : []),
+                        ...(!isLiveApp
+                          ? [
+                              {
+                                id: "Prerecord" as const,
+                                label: "Prerecord Mode",
+                                Icon: CassetteTape,
+                                onClick: () => {
+                                  confirmNavAction(() => {
+                                    handleOpenTimeframeModal("Prerecord");
+                                  });
+                                },
+                                activeClass: "bg-gradient-to-b from-emerald-500 to-emerald-600 border-t-emerald-400 border-b-emerald-800 text-white shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.4)]",
+                                inactiveClass: "bg-emerald-950/30 border-emerald-900/30 text-emerald-500/60 hover:text-emerald-400/80 hover:bg-emerald-950/45",
                               },
-                              activeClass: "bg-gradient-to-b from-emerald-500 to-emerald-600 border-t-emerald-400 border-b-emerald-800 text-white shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.4)]",
-                              inactiveClass: "bg-emerald-950/30 border-emerald-900/30 text-emerald-500/60 hover:text-emerald-400/80 hover:bg-emerald-950/45",
-                            },
-                            {
-                              id: "Export" as const,
-                              label: "Export Mode",
-                              Icon: ListOrdered,
-                              onClick: () => {
-                                confirmNavAction(() => {
-                                  handleOpenTimeframeModal("Export");
-                                });
+                            ]
+                          : []),
+                        ...(!isStudioApp && !isLiveApp
+                          ? [
+                              {
+                                id: "Playlist" as const,
+                                label: "Playlist Mode",
+                                Icon: ListMusic,
+                                onClick: () => {
+                                  confirmNavAction(() => {
+                                    handleOpenPlaylistModal();
+                                  });
+                                },
+                                activeClass: "bg-gradient-to-b from-purple-600 to-purple-700 border-t-purple-400 border-b-purple-900 text-white shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.4)]",
+                                inactiveClass: "bg-purple-950/30 border-purple-900/30 text-purple-400/70 hover:text-purple-300 hover:bg-purple-950/45",
                               },
-                              activeClass: "bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.4)]",
-                              inactiveClass: "bg-blue-950/30 border-blue-900/30 text-blue-500/60 hover:text-blue-400/80 hover:bg-blue-950/45",
-                            },
-                          ]
-                        : []),
-                      ...(!isStudioApp && !isLiveApp
-                        ? [
-                            {
-                              id: "Playlist" as const,
-                              label: "Playlist Mode",
-                              Icon: ListMusic,
-                              onClick: () => {
-                                confirmNavAction(() => {
-                                  handleOpenPlaylistModal();
-                                });
-                              },
-                              activeClass: "bg-gradient-to-b from-purple-600 to-purple-700 border-t-purple-400 border-b-purple-900 text-white shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.4)]",
-                              inactiveClass: "bg-purple-950/30 border-purple-900/30 text-purple-400/70 hover:text-purple-300 hover:bg-purple-950/45",
-                            },
-                          ]
-                        : []),
-                    ].map((item) => {
-                      const isActive = playMode === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={(e) => {
-                            item.onClick();
-                            (e.currentTarget as HTMLElement).blur();
-                            setMobileModeExpanded(false);
-                          }}
-                          title={item.label}
-                          aria-label={item.label}
-                          className={cn(
-                            "px-2 py-1 rounded transition-all cursor-pointer border flex items-center justify-start relative shrink-0 w-full gap-1.5",
-                            !isActive && !mobileModeExpanded && "hidden group-hover:flex",
-                            isActive ? item.activeClass : item.inactiveClass
-                          )}
-                        >
-                          <item.Icon
+                            ]
+                          : []),
+                      ].map((item) => {
+                        const isActive = playMode === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={(e) => {
+                              item.onClick();
+                              (e.currentTarget as HTMLElement).blur();
+                              setMobileModeExpanded(false);
+                            }}
+                            title={item.label}
+                            aria-label={item.label}
                             className={cn(
-                              "w-3.5 h-3.5 transition-all duration-300 shrink-0",
-                              isActive
-                                ? "text-red-500 drop-shadow-[0_0_3px_rgba(239,68,68,0.85)]"
-                                : "text-slate-500"
+                              "px-2 py-1 rounded transition-all cursor-pointer border flex items-center justify-start relative shrink-0 w-full gap-1.5",
+                              !isActive && !mobileModeExpanded && "hidden group-hover:flex",
+                              isActive ? item.activeClass : item.inactiveClass
                             )}
-                          />
-                          <span className="mode-vertical-text text-xs font-black uppercase tracking-wider whitespace-nowrap">
-                            {item.id}
-                          </span>
-                        </button>
-                      );
-                    })}
+                          >
+                            <item.Icon
+                              className={cn(
+                                "w-3.5 h-3.5 transition-all duration-300 shrink-0",
+                                isActive
+                                  ? "text-red-500 drop-shadow-[0_0_3px_rgba(239,68,68,0.85)]"
+                                  : "text-slate-500"
+                              )}
+                            />
+                            <span className="mode-vertical-text text-xs font-black uppercase tracking-wider whitespace-nowrap">
+                              {item.id}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* Dummy spacer to maintain exact element footprint */}
+                    <div className="mode-vertical-spacer h-[30px] pointer-events-none" />
                   </div>
-                  {/* Dummy spacer to maintain exact element footprint */}
-                  <div className="mode-vertical-spacer h-[30px] pointer-events-none" />
                 </div>
               </>
             )}
@@ -3779,10 +3100,9 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Prerecord Activation Modal */}
-      <PrerecordModal
-        isOpen={showPrerecordModal}
-        onClose={() => setShowPrerecordModal(false)}
+      <AppOverlays
+        showPrerecordModal={showPrerecordModal}
+        setShowPrerecordModal={setShowPrerecordModal}
         prerecordModalTarget={prerecordModalTarget}
         prerecordSelectorMode={prerecordSelectorMode}
         setPrerecordSelectorMode={setPrerecordSelectorMode}
@@ -3805,31 +3125,22 @@ export default function App() {
         prerecordMinutesInput={prerecordMinutesInput}
         setPrerecordMinutesInput={setPrerecordMinutesInput}
         prerecordError={prerecordError}
-        onSelectPrerecordShow={handleSelectPrerecordShow}
-        onActivatePrerecord={handleActivatePrerecord}
-        onFinalConfirmPrerecord={handleFinalConfirmPrerecord}
-        getSortedShows={getSortedShows}
-        getShowShade={getShowShade}
+        handleSelectPrerecordShow={handleSelectPrerecordShow}
+        handleActivatePrerecord={handleActivatePrerecord}
+        handleFinalConfirmPrerecord={handleFinalConfirmPrerecord}
         getFutureDatesForShow={getFutureDatesForShow}
         formatVerifyAirDate={formatVerifyAirDate}
         getPrerecord12HrDisplay={getPrerecord12HrDisplay}
-      />
-
-      {/* Playlist Mode Selection Modal */}
-      <PlaylistSelectModal
-        isOpen={showPlaylistModal}
-        onClose={() => setShowPlaylistModal(false)}
-        loading={playlistModalLoading}
+        showPlaylistModal={showPlaylistModal}
+        setShowPlaylistModal={setShowPlaylistModal}
+        playlistModalLoading={playlistModalLoading}
         playlistShowOptions={playlistShowOptions}
         playlistModalNow={playlistModalNow}
         syncTime={syncTime}
         chosenPlaylistShowId={chosenPlaylistShowId}
-        onSelectAndConfirmShow={handleSelectAndConfirmShow}
-      />
-
-      <LocationsModal
-        isOpen={showLocationsModal}
-        onClose={() => setShowLocationsModal(false)}
+        handleSelectAndConfirmShow={handleSelectAndConfirmShow}
+        showLocationsModal={showLocationsModal}
+        setShowLocationsModal={setShowLocationsModal}
         locationMode={locationMode}
         setLocationMode={setLocationMode}
         isAiStudio={isAiStudio}
@@ -3848,8 +3159,8 @@ export default function App() {
         setDraftLocalPathMediaShows={setDraftLocalPathMediaShows}
         draftLocalPathLogs={draftLocalPathLogs}
         setDraftLocalPathLogs={setDraftLocalPathLogs}
-        onBrowseNative={handleBrowseNative}
-        onOpenLocalPath={handleOpenLocalPath}
+        handleBrowseNative={handleBrowseNative}
+        handleOpenLocalPath={handleOpenLocalPath}
         announcementsReadOnlyError={announcementsReadOnlyError}
         localPathsUnavailable={localPathsUnavailable}
         draftDriveFolderAmp={draftDriveFolderAmp}
@@ -3868,7 +3179,7 @@ export default function App() {
         setDraftDriveFolderLogs={setDraftDriveFolderLogs}
         driveFolderDescMap={driveFolderDescMap}
         setDriveFolderDescMap={setDriveFolderDescMap}
-        onOpenDriveFolder={handleOpenDriveFolder}
+        handleOpenDriveFolder={handleOpenDriveFolder}
         fetchDriveFolderDescriptor={fetchDriveFolderDescriptor}
         editingDriveField={editingDriveField}
         setEditingDriveField={setEditingDriveField}
@@ -3893,23 +3204,30 @@ export default function App() {
         setOverrideAccessToken={setOverrideAccessToken}
         locationsError={locationsError}
         locationsSuccess={locationsSuccess}
-        onSaveLocations={handleSaveLocations}
-        onShowLocalHelp={() => setShowLocalHelp(true)}
+        handleSaveLocations={handleSaveLocations}
+        showLocalHelp={showLocalHelp}
+        setShowLocalHelp={setShowLocalHelp}
         animationsDisabled={animationsDisabled}
+        setAnimationsDisabled={setAnimationsDisabled}
         toggleAnimations={toggleAnimations}
         showPixelRuler={showPixelRuler}
         togglePixelRuler={togglePixelRuler}
         isSyncing={isSyncing}
-      />
-      <LocalHelpModal
-        isOpen={showLocalHelp}
-        onClose={() => setShowLocalHelp(false)}
-      />
-      <ExportModal
-        isOpen={showExportModal}
-        onClose={handleCloseExportModal}
+        isAdmin={isAdmin}
+        stationTimezone={stationTimezone}
+        saveStationTimezone={saveStationTimezone}
+        adminContactInfo={adminContactInfo}
+        saveAdminContactInfo={saveAdminContactInfo}
+        upNextPromoConfig={upNextPromoConfig}
+        saveUpNextPromoConfig={saveUpNextPromoConfig}
+        scheduleWindowConfig={scheduleWindowConfig}
+        saveScheduleWindowConfig={saveScheduleWindowConfig}
+        showAdminContactPopup={showAdminContactPopup}
+        setShowAdminContactPopup={setShowAdminContactPopup}
+        resolvedAdminContact={resolvedAdminContact}
+        showExportModal={showExportModal}
+        handleCloseExportModal={handleCloseExportModal}
         exportState={exportState}
-        windowSize={windowSize}
         exportDestinationInput={exportDestinationInput}
         setExportDestinationInput={setExportDestinationInput}
         exportFolderPrefixInput={exportFolderPrefixInput}
@@ -3924,559 +3242,37 @@ export default function App() {
         getDynamicNames={getDynamicNames}
         prerecordDate={prerecordDate}
         prerecordLengthMinutes={prerecordLengthMinutes}
+        showUpgradeModal={showUpgradeModal}
+        handleConfirmUpgrade={handleConfirmUpgrade}
+        handleCancelOrChangeFolder={handleCancelOrChangeFolder}
+        localPathAmp={localPathAmp}
+        localPathCalendar={localPathCalendar}
+        driveFolderAmp={driveFolderAmp}
+        compatibilityReport={compatibilityReport}
+        showNewerVersionModal={showNewerVersionModal}
+        handleAcknowledgeNewerVersion={handleAcknowledgeNewerVersion}
+        isOptimizationConfigOpen={isOptimizationConfigOpen}
+        setIsOptimizationConfigOpen={setIsOptimizationConfigOpen}
+        tempOptimizations={tempOptimizations}
+        setTempOptimizations={setTempOptimizations}
+        setActiveOptimizations={setActiveOptimizations}
+        showCachingModal={showCachingModal}
+        setShowCachingModal={setShowCachingModal}
+        cachingTargetMode={cachingTargetMode}
+        cachingProgress={cachingProgress}
+        triggerCachingForMode={triggerCachingForMode}
+        showUnsavedChangesNavModal={showUnsavedChangesNavModal}
+        setShowUnsavedChangesNavModal={setShowUnsavedChangesNavModal}
+        showAudioPlayingNavModal={showAudioPlayingNavModal}
+        setShowAudioPlayingNavModal={setShowAudioPlayingNavModal}
+        pendingNavActionRef={pendingNavActionRef}
+        isAsleep={isAsleep}
+        handleWakeUp={handleWakeUp}
+        isSaving={isSaving}
+        savingLabel={savingLabel}
+        saveRecoveryModal={saveRecoveryModal}
+        setSaveRecoveryModal={setSaveRecoveryModal}
       />
-
-      {/* Schema Version Compatibility Modals */}
-      <DataUpgradeRequiredModal
-        isOpen={showUpgradeModal}
-        onConfirmUpgrade={handleConfirmUpgrade}
-        onCancelOrChangeFolder={handleCancelOrChangeFolder}
-        folderPath={locationMode === "Local" ? (localPathAmp || localPathCalendar || "") : (driveFolderDescMap[driveFolderAmp || ""] || driveFolderAmp || "")}
-        folderName={
-          locationMode === "Local"
-            ? ((localPathAmp || localPathCalendar || "").split(/[/\\]/).filter(Boolean).pop() || localPathAmp || localPathCalendar || "your chosen folder")
-            : (driveFolderDescMap[driveFolderAmp || ""] || driveFolderAmp || "your chosen folder")
-        }
-        onOpenFolder={(path) => {
-          if (locationMode === "Local") {
-            handleOpenExportFolder(path || localPathAmp || localPathCalendar);
-          } else if (driveFolderAmp) {
-            const folderId = extractFolderId(driveFolderAmp);
-            if (folderId) {
-              window.open(`https://drive.google.com/drive/folders/${folderId}`, '_blank');
-            }
-          }
-        }}
-        onBrowseFolder={handleCancelOrChangeFolder}
-        schemaVersion={compatibilityReport?.schemaVersion || 0}
-      />
-      <NewerVersionDetectedModal
-        isOpen={showNewerVersionModal}
-        minVersion={compatibilityReport?.minAppVersion || "0.16.0"}
-        onAcknowledge={handleAcknowledgeNewerVersion}
-      />
-
-      {/* Performance & CPU Overrides Configuration Modal */}
-      <AnimatePresence>
-        {isOptimizationConfigOpen && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-slate-900 border border-slate-800 rounded-xl shadow-2xl max-w-md w-full overflow-hidden text-slate-100 flex flex-col max-h-[90vh]"
-            >
-              {/* Modal Header */}
-              <div className="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
-                <div className="flex items-center gap-2 text-yellow-400">
-                  <Zap className="w-5 h-5 text-yellow-400" />
-                  <h3 className="text-xs font-black uppercase tracking-widest text-white">
-                    Performance Overrides
-                  </h3>
-                </div>
-              </div>
-
-              {/* Modal Content */}
-              <div className="p-4 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
-                <p className="text-sm text-slate-300 leading-relaxed font-sans">
-                  Choose which performance optimizations and CPU overrides to apply. 
-                  These features are surgically designed for radio broadcast hardware to maintain low overhead.
-                </p>
-
-                <div className="space-y-2.5">
-                  <p className="text-xs font-black uppercase text-slate-400 tracking-widest leading-none">
-                    Select Optimizations to Turn Off/Disable:
-                  </p>
-
-                  <div className="space-y-2">
-                    {/* CSS Animations */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.cssAnimations}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, cssAnimations: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Strict CSS Keyframes & Animations</p>
-                        <p className="text-xs text-slate-400">Stops continuous animate-pulse, animate-spin, and dynamic background animations.</p>
-                      </div>
-                    </label>
-
-                    {/* CSS Hover Transitions */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.hoverTransitions}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, hoverTransitions: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Purge Hover Transitions</p>
-                        <p className="text-xs text-slate-400">Instantly applies colors and layouts upon hover instead of using heavy transition effects.</p>
-                      </div>
-                    </label>
-
-                    {/* Hover Transforms */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.hoverTransforms}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, hoverTransforms: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Throttle Hover Transforms</p>
-                        <p className="text-xs text-slate-400">Suppresses scaling and moving on cursor roll-over to stop continuous layout recalculations.</p>
-                      </div>
-                    </label>
-
-                    {/* Hover Shadows & Filters */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.hoverShadowsFilters}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, hoverShadowsFilters: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Remove Hover Shadows & Filters</p>
-                        <p className="text-xs text-slate-400">Avoids expensive shadow casting and brightness/hue-rotation on list cards.</p>
-                      </div>
-                    </label>
-
-                    {/* Backdrop Blurs */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.backdropBlurs}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, backdropBlurs: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Disable Backdrop Blurs</p>
-                        <p className="text-xs text-slate-400">Forces flat, opaque backgrounds on modals to avoid costly GPU pixel shader blurring.</p>
-                      </div>
-                    </label>
-
-                    {/* Web Workers */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.webWorkers}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, webWorkers: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Isolate Processing into Web Workers</p>
-                        <p className="text-xs text-slate-400">Offloads periodic clock ticks, date calculations, and scheduling timeouts to background threads.</p>
-                      </div>
-                    </label>
-
-                    {/* Option A: Pointer Events Neutralization */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.pointerEventsNeutralization}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, pointerEventsNeutralization: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Option A: Pointer Events Neutralization</p>
-                        <p className="text-xs text-slate-400">Neutralizes pointer-events on background areas to prevent heavy browser mouse movement hit-testing traversal.</p>
-                      </div>
-                    </label>
-
-                    {/* Option B: GPU Compositing Layering */}
-                    <label className="flex items-start gap-3 p-2 bg-slate-950/40 border border-slate-800/60 rounded-lg hover:bg-slate-950/80 transition-colors cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tempOptimizations.gpuCompositingLayering}
-                        onChange={(e) => setTempOptimizations(prev => ({ ...prev, gpuCompositingLayering: e.target.checked }))}
-                        className="mt-1 rounded bg-slate-900 border-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <p className="text-xs font-bold text-slate-200">Option B: GPU Compositing Layering</p>
-                        <p className="text-xs text-slate-400">Forces separate GPU compositor layers for lists and buttons to completely isolate repaint boundaries.</p>
-                      </div>
-                    </label>
-
-                    {/* Note about unutilized options */}
-                    <div className="p-3 bg-slate-950/20 border border-dashed border-slate-800 rounded-lg text-slate-300 space-y-1.5">
-                      <p className="text-xs font-bold text-slate-200">⚠️ Note on CPU Optimizations (Options 1-3)</p>
-                      <p className="text-xs leading-relaxed text-slate-400">
-                        Intel Mac desktop optimizations (Option 1: Modern Electron runtime, Option 2: Disable Hardware Acceleration, and Option 3: Disable Window Shadows) exist as configurable definitions inside the Electron main process layer (<code className="text-blue-400 font-mono text-xs">electron-main.cjs</code>). They are currently not active. To experiment with or enable them, you must configure their active flags directly in the source file.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 font-mono">
-                  <span>Current State:</span>
-                  <span className={cn(
-                    "px-1.5 py-0.5 rounded font-bold uppercase",
-                    animationsDisabled 
-                      ? "bg-red-950/30 text-red-400 border border-red-500/20" 
-                      : "bg-emerald-950/30 text-emerald-400 border border-emerald-500/20"
-                  )}>
-                    {animationsDisabled ? "Optimizations Active (Flat State)" : "Optimizations Inactive (Normal)"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Modal Actions */}
-              <div className="px-4 py-3 bg-slate-950/60 border-t border-slate-800 flex gap-2 justify-end">
-                <button
-                  type="button"
-                  onClick={() => setIsOptimizationConfigOpen(false)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold uppercase rounded border border-slate-700 transition cursor-pointer active:translate-y-px"
-                >
-                  Cancel
-                </button>
-                {animationsDisabled && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAnimationsDisabled(false);
-                      localStorage.setItem("debug_animations_disabled", "false");
-                      setIsOptimizationConfigOpen(false);
-                    }}
-                    className="px-3.5 py-1.5 bg-red-950/40 text-red-400 hover:bg-red-900/30 text-xs font-bold uppercase rounded border border-red-500/20 transition cursor-pointer active:translate-y-px"
-                  >
-                    Restore Normal Playback
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveOptimizations(tempOptimizations);
-                    localStorage.setItem("debug_active_optimizations", JSON.stringify(tempOptimizations));
-                    setAnimationsDisabled(true);
-                    localStorage.setItem("debug_animations_disabled", "true");
-                    setIsOptimizationConfigOpen(false);
-                  }}
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black uppercase rounded shadow-md transition cursor-pointer active:translate-y-px"
-                >
-                  Apply Selected Overrides
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Caching Progress Modal */}
-      <AnimatePresence>
-        {showCachingModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-slate-900 border border-slate-800 rounded-xl shadow-2xl max-w-lg w-full overflow-hidden text-slate-100 flex flex-col"
-            >
-              {/* Modal Header */}
-              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
-                <div className="flex items-center gap-2 text-purple-400">
-                  <HardDriveDownload className={`w-5 h-5 ${!cachingProgress.isComplete ? 'animate-bounce text-purple-400' : 'text-purple-400'}`} />
-                  <h3 className="text-sm font-black uppercase tracking-wider text-white">
-                    Caching {cachingTargetMode} Audio Assets
-                  </h3>
-                </div>
-              </div>
-
-              {/* Modal Content */}
-              <div className="p-5 space-y-4">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-xs font-bold">
-                    <span className="text-slate-300">
-                      {cachingProgress.isComplete 
-                        ? (cachingProgress.failed > 0 ? 'Caching Completed with Errors' : 'Caching Complete!') 
-                        : (cachingProgress.total > 0 
-                            ? `Caching audio files (${cachingProgress.completed + cachingProgress.failed} / ${cachingProgress.total})`
-                            : 'Loading & verifying audio assets...')}
-                    </span>
-                    <span className="text-purple-400 font-mono">
-                      {cachingProgress.total > 0 
-                        ? `${Math.round(((cachingProgress.completed + cachingProgress.failed) / cachingProgress.total) * 100)}%`
-                        : '...'}
-                    </span>
-                  </div>
-                  {/* Progress Bar */}
-                  <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
-                    <div 
-                      className={`h-full transition-all duration-200 ${cachingProgress.failed > 0 ? 'bg-amber-500' : 'bg-purple-500'} ${cachingProgress.total === 0 ? 'animate-pulse' : ''}`}
-                      style={{ 
-                        width: cachingProgress.total > 0 
-                          ? `${Math.round(((cachingProgress.completed + cachingProgress.failed) / cachingProgress.total) * 100)}%` 
-                          : '100%' 
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* 2.b. Errors List if any */}
-                {cachingProgress.errors.length > 0 && (
-                  <div className="space-y-2 bg-red-950/40 border border-red-800/60 rounded-lg p-3 max-h-36 overflow-y-auto custom-scrollbar">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-red-400">
-                      <AlertCircle className="w-4 h-4 shrink-0" />
-                      <span>{cachingProgress.errors.length} Caching Error{cachingProgress.errors.length > 1 ? 's' : ''} Detected</span>
-                    </div>
-                    <ul className="space-y-1 text-xs text-red-300/90 font-mono">
-                      {cachingProgress.errors.map((err, idx) => (
-                        <li key={idx} className="flex flex-col border-b border-red-900/30 pb-1 last:border-b-0">
-                          <span className="font-semibold text-slate-200">{err.fileName}</span>
-                          <span className="text-[10px] text-red-400">{err.error}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              {/* Modal Footer Controls */}
-              <div className="px-4 py-3 bg-slate-950/60 border-t border-slate-800 flex items-center justify-end gap-2">
-                {!cachingProgress.isComplete ? (
-                  /* 2.a. Allow user to click "View while Caching" to close the in progress view */
-                  <button
-                    type="button"
-                    onClick={() => setShowCachingModal(false)}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold uppercase rounded border border-slate-700 transition cursor-pointer"
-                  >
-                    View while Caching
-                  </button>
-                ) : cachingProgress.failed > 0 ? (
-                  /* 2.d. If errors still exist: "View as-is" or "Try Again" */
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setShowCachingModal(false)}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold uppercase rounded border border-slate-700 transition cursor-pointer"
-                    >
-                      View as-is
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (cachingTargetMode) {
-                          triggerCachingForMode(cachingTargetMode);
-                        }
-                      }}
-                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold uppercase rounded shadow transition cursor-pointer flex items-center gap-1.5"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Try Again</span>
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setShowCachingModal(false)}
-                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold uppercase rounded shadow transition cursor-pointer"
-                  >
-                    Close
-                  </button>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Unsaved Changes Navigation Confirmation Modal */}
-      <AnimatePresence>
-        {showUnsavedChangesNavModal && (
-          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col items-center text-center space-y-4"
-            >
-              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-950/60 border border-amber-500/30 text-amber-400">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                <span className="text-xs font-black uppercase tracking-wider text-amber-300">Unsaved Changes</span>
-              </div>
-
-              <div className="space-y-1.5">
-                <h3 className="text-base font-bold text-white leading-snug">
-                  Are you sure?
-                </h3>
-                <p className="text-xs text-slate-300 leading-relaxed font-sans">
-                  All unsaved changes will be lost.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-2 w-full pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowUnsavedChangesNavModal(false);
-                    pendingNavActionRef.current = null;
-                  }}
-                  className="w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase tracking-wider rounded-xl border border-slate-700 transition cursor-pointer"
-                >
-                  Return to Editing
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (typeof (window as any).ampDiscardEdits === "function") {
-                      (window as any).ampDiscardEdits();
-                    }
-                    setShowUnsavedChangesNavModal(false);
-                    const nextAction = pendingNavActionRef.current;
-                    pendingNavActionRef.current = null;
-                    if (nextAction) {
-                      if (
-                        typeof (window as any).ampIsAudioPlaying === "function" &&
-                        (window as any).ampIsAudioPlaying()
-                      ) {
-                        pendingNavActionRef.current = nextAction;
-                        setShowAudioPlayingNavModal(true);
-                      } else {
-                        nextAction();
-                      }
-                    }
-                  }}
-                  className="w-full py-2 px-4 bg-amber-600 hover:bg-amber-700 text-white font-black text-xs uppercase tracking-wider rounded-xl border border-amber-500 shadow-md transition cursor-pointer"
-                >
-                  Go Ahead Anyway
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Audio Playing Navigation Confirmation Modal */}
-      <AnimatePresence>
-        {showAudioPlayingNavModal && (
-          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col items-center text-center space-y-4"
-            >
-              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-purple-950/60 border border-purple-500/30 text-purple-400">
-                <Square className="w-4 h-4 fill-current" />
-                <span className="text-xs font-black uppercase tracking-wider text-purple-300">Stop?</span>
-              </div>
-
-              <div className="space-y-1.5">
-                <p className="text-xs text-slate-300 leading-relaxed font-sans">
-                  Audio is currently playing. Do you want to stop playback before switching views, or leave it playing?
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-2 w-full pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (typeof (window as any).ampStopAllAudio === "function") {
-                      (window as any).ampStopAllAudio();
-                    }
-                    setShowAudioPlayingNavModal(false);
-                    if (pendingNavActionRef.current) {
-                      pendingNavActionRef.current();
-                      pendingNavActionRef.current = null;
-                    }
-                  }}
-                  className="w-full py-2 px-4 bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase tracking-wider rounded-xl border border-purple-500 shadow-md transition cursor-pointer flex items-center justify-center gap-2"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  <span>Stop and Switch</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAudioPlayingNavModal(false);
-                    pendingNavActionRef.current = null;
-                  }}
-                  className="w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase tracking-wider rounded-xl border border-slate-700 transition cursor-pointer"
-                >
-                  Stay and Play
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Sleep Mode Overlay Modal */}
-      <AnimatePresence>
-        {isAsleep && (
-          <div 
-            onClick={handleWakeUp}
-            className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[9999] flex items-center justify-center p-4 cursor-pointer"
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col items-center text-center space-y-4"
-            >
-              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-slate-400">
-                <Moon className="w-6 h-6 animate-pulse" />
-              </div>
-              <p className="text-sm text-slate-300 leading-relaxed font-sans font-medium">
-                Shhh... AMP is sleeping.
-              </p>
-              <button
-                type="button"
-                onClick={handleWakeUp}
-                className="w-full mt-2 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-sm uppercase tracking-wider rounded-xl border border-blue-500 shadow-md transition cursor-pointer flex items-center justify-center gap-2 "
-              >
-                <AlarmClock className="w-4 h-4 shrink-0" />
-                <span>Wakey Wakey!</span>
-                <AlarmClock className="w-4 h-4 shrink-0" />
-              </button>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Global In-Flight Save Indicator / Guard (Hybrid Approach) */}
-      <AnimatePresence>
-        {isSaving && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className={cn(
-              "fixed inset-0 z-[9990] flex items-center justify-center p-4 bg-slate-950/40 select-none",
-              !animationsDisabled && "backdrop-blur-[2px]"
-            )}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="flex items-center gap-3.5 px-6 py-4 bg-slate-900/95 text-white rounded-xl shadow-2xl border border-slate-700/80"
-            >
-              <RefreshCw className="w-5 h-5 animate-spin text-blue-400 shrink-0" />
-              <div className="flex flex-col">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-200">
-                  {savingLabel || "Saving..."}
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">
-                  Writing and syncing data...
-                </span>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Save Recovery Modal */}
-      <SaveRecoveryModal
-        recoveryInfo={saveRecoveryModal}
-        onClose={() => setSaveRecoveryModal(null)}
-      />
-
     </div>
   );
 }

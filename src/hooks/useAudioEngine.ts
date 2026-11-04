@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { getPlayableUrl } from '../lib/driveService';
+import { getPlayableUrl, cacheMP3, getAccessToken } from '../lib/driveService';
+import { mp3BlobCache, availableFilesCache } from '../lib/audioCache';
 
 export interface PlayingState {
   currentTime: number;
@@ -26,6 +27,13 @@ export function useAudioEngine(): UseAudioEngineResult {
 
   const stopAudio = useCallback((key: string) => {
     const audio = playingAudiosRef.current.get(key);
+    playingAudiosRef.current.delete(key);
+    setPlayingStates(prev => {
+      if (!(key in prev)) return prev;
+      const copy = { ...prev };
+      delete copy[key];
+      return copy;
+    });
     if (audio) {
       try {
         audio.pause();
@@ -33,17 +41,14 @@ export function useAudioEngine(): UseAudioEngineResult {
       } catch (e) {
         console.warn('Error stopping audio:', e);
       }
-      playingAudiosRef.current.delete(key);
-      setPlayingStates(prev => {
-        const copy = { ...prev };
-        delete copy[key];
-        return copy;
-      });
     }
   }, []);
 
   const stopAllAudios = useCallback(() => {
-    for (const audio of playingAudiosRef.current.values()) {
+    const audios: HTMLAudioElement[] = Array.from(playingAudiosRef.current.values());
+    playingAudiosRef.current.clear();
+    setPlayingStates({});
+    for (const audio of audios) {
       try {
         audio.pause();
         audio.src = '';
@@ -51,8 +56,6 @@ export function useAudioEngine(): UseAudioEngineResult {
         console.warn('Error stopping audio:', e);
       }
     }
-    playingAudiosRef.current.clear();
-    setPlayingStates({});
   }, []);
 
   const playAudio = useCallback(async (
@@ -66,25 +69,51 @@ export function useAudioEngine(): UseAudioEngineResult {
       stopAudio(key);
     }
 
-    const playableUrl = getPlayableUrl(url);
+    let playableUrl = getPlayableUrl(url);
     if (!playableUrl) {
       if (onError) onError(new Error('Invalid or unplayable URL'));
       return null;
     }
 
+    // If a Google Drive URL is not yet in mp3BlobCache, fetch and cache it first for reliable HTMLAudioElement playback
+    const fileInCache = availableFilesCache.get(url);
+    const resolvedPath = fileInCache ? fileInCache.path : url;
+    if (
+      playableUrl.includes('googleapis.com') &&
+      !playableUrl.startsWith('blob:') &&
+      !mp3BlobCache.has(url) &&
+      !mp3BlobCache.has(resolvedPath)
+    ) {
+      try {
+        const cachedBlobUrl = await cacheMP3(url, getAccessToken() || '');
+        if (cachedBlobUrl) {
+          playableUrl = cachedBlobUrl;
+        }
+      } catch (_) {}
+    }
+
     const audio = new Audio(playableUrl);
 
     const updateProgress = () => {
+      if (audio.ended || audio.paused || playingAudiosRef.current.get(key) !== audio) {
+        return;
+      }
       setPlayingStates(prev => ({
         ...prev,
         [key]: { currentTime: audio.currentTime, duration: audio.duration || 0 }
       }));
     };
 
+    const cleanupListeners = () => {
+      audio.removeEventListener('loadedmetadata', updateProgress);
+      audio.removeEventListener('timeupdate', updateProgress);
+    };
+
     audio.addEventListener('loadedmetadata', updateProgress);
     audio.addEventListener('timeupdate', updateProgress);
 
     audio.addEventListener('ended', () => {
+      cleanupListeners();
       playingAudiosRef.current.delete(key);
       setPlayingStates(prev => {
         const copy = { ...prev };
@@ -92,9 +121,10 @@ export function useAudioEngine(): UseAudioEngineResult {
         return copy;
       });
       if (onEnded) onEnded();
-    });
+    }, { once: true });
 
     audio.addEventListener('error', (err) => {
+      cleanupListeners();
       playingAudiosRef.current.delete(key);
       setPlayingStates(prev => {
         const copy = { ...prev };
@@ -102,17 +132,20 @@ export function useAudioEngine(): UseAudioEngineResult {
         return copy;
       });
       if (onError) onError(err);
-    });
+    }, { once: true });
 
     try {
-      await audio.play();
       playingAudiosRef.current.set(key, audio);
-      setPlayingStates(prev => ({
-        ...prev,
-        [key]: { currentTime: audio.currentTime, duration: audio.duration || 0 }
-      }));
+      await audio.play();
+      if (!audio.ended && playingAudiosRef.current.get(key) === audio) {
+        setPlayingStates(prev => ({
+          ...prev,
+          [key]: { currentTime: audio.currentTime, duration: audio.duration || 0 }
+        }));
+      }
       return audio;
     } catch (err) {
+      cleanupListeners();
       playingAudiosRef.current.delete(key);
       setPlayingStates(prev => {
         const copy = { ...prev };
@@ -138,12 +171,12 @@ export function useAudioEngine(): UseAudioEngineResult {
 
   // Global window listeners for electron/navigation safety
   useEffect(() => {
-    (window as any).ampIsAudioPlaying = () => isAudioPlaying();
-    (window as any).ampStopAllAudio = () => stopAllAudios();
+    window.ampIsAudioPlaying = () => isAudioPlaying();
+    window.ampStopAllAudio = () => stopAllAudios();
 
     return () => {
-      delete (window as any).ampIsAudioPlaying;
-      delete (window as any).ampStopAllAudio;
+      window.ampIsAudioPlaying = undefined;
+      window.ampStopAllAudio = undefined;
     };
   }, [isAudioPlaying, stopAllAudios]);
 

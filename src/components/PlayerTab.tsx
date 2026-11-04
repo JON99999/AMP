@@ -1,14 +1,21 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, Fragment } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, Fragment } from 'react';
 import { format, addMinutes, subMinutes, subDays, isSameMinute, isBefore, isAfter, startOfMinute, differenceInSeconds, parseISO } from 'date-fns';
-import { Play, Pause, Square, CheckCircle, AlertCircle, RefreshCw, Clock, X, Copy, RadioTower, CassetteTape, ListOrdered, Download, Ear, FileText, Volume2, ListMusic, ChevronUp, ChevronDown, RotateCcw, Music, Flag, ListPlus } from 'lucide-react';
+import { Play, Pause, Square, CheckCircle, AlertCircle, RefreshCw, Clock, X, Copy, RadioTower, CassetteTape, ListOrdered, Download, Ear, FileText, Volume2, ListMusic, ChevronUp, ChevronDown, RotateCcw, Music, Flag, ListPlus, HelpCircle } from 'lucide-react';
 import { Announcement, AnnouncementType, LogEntry, Show } from '../types';
 import { useAudioEngine } from '../hooks/useAudioEngine';
-import { cn, getMP3Status, parseCustomTimeText, getParsedCustomTimeISO, isTimeInShow, getActualShowStart, getSortedShows, getShowShade, readMp3ID3Metadata, Mp3ID3Metadata, formatDuration, formatTotalTrackTime, getActiveMp3ForSlot, getGatedAssetType, formatExportTimeAmPm } from '../lib/utils';
+import { cn, getMP3Status, parseCustomTimeText, getParsedCustomTimeISO, isTimeInShow, getActualShowStart, getSortedShows, getShowShade, readMp3ID3Metadata, Mp3ID3Metadata, formatDuration, formatTotalTrackTime, getActiveMp3ForSlot, getGatedAssetType, formatExportTimeAmPm, isAudioFile, isUpNextPromoUrl, decodeUpNextPromoText, getGateMediaItems, formatRotatedAnnouncementName, getAnnouncementsForSlot as getScheduledAnnouncementsForSlot } from '../lib/utils';
+import { stationSlotDateToUtcIso, isLogForStationSlot, getStationNow, getAdminContactInfo, ScheduleWindowConfig, getScheduleWindowConfig } from '../lib/compatibility';
 import LiveReadPopout from './LiveReadPopout';
 import { WaveformVisualizer } from './WaveformVisualizer';
-import { mp3BlobCache, getPlayableUrl, mp3DurationCache, availableFilesCache, updateAudioCache, getAccessToken, driveFileNameCache, loadPlaylistTracksFromDrive, saveShowPlaylistLogToDrive, loadShowPlaylistLogFromDrive, formatShowPlaylistLogFileName, getSavedSettings } from '../lib/driveService';
+import { getPlayableUrl, updateAudioCache, getAccessToken, formatShowPlaylistLogFileName, getSavedSettings, getStorageApiHeaders } from '../lib/driveService';
+import { mp3BlobCache, mp3DurationCache, availableFilesCache, driveFileNameCache } from '../lib/audioCache';
 import { ShowPlaylistLog } from '../types';
 import FolderChooserModal from './FolderChooserModal';
+import PrerecordExportPopup, { PrerecordExportBreakItem, PrerecordExportTrackEntry } from './PrerecordExportPopup';
+import { PinnedLiveShowBanner, PersistentModeShowHeader } from './player/PlayerShowSpacer';
+import { PlayerPlaylistDeckView } from './player/PlayerPlaylistDeckView';
+import { PlayerLiveTimelineView } from './player/PlayerLiveTimelineView';
+import { PlayerPrerecordTimelineView } from './player/PlayerPrerecordTimelineView';
 
 interface PlayerTabProps {
   announcements: Announcement[];
@@ -17,7 +24,7 @@ interface PlayerTabProps {
   now: Date;
   syncTime: Date;
   scrollTrigger: number;
-  playMode?: 'Live' | 'Prerecord' | 'Export' | 'Playlist';
+  playMode?: 'Live' | 'Prerecord' | 'Playlist';
   playlistShow?: Show | null;
   prerecordDate?: Date | null;
   prerecordLengthMinutes?: number;
@@ -26,11 +33,16 @@ interface PlayerTabProps {
   isAdmin?: boolean;
   onRefresh?: () => Promise<any> | void;
   shows?: Show[];
-  onTriggerCaching?: (targetMode: 'Live' | 'Prerecord' | 'Export' | 'Playlist', additionalUrls?: string[]) => void;
+  onTriggerCaching?: (targetMode: 'Live' | 'Prerecord' | 'Playlist', additionalUrls?: string[]) => void;
   isFolderChooserOpen?: boolean;
   onCloseFolderChooser?: () => void;
   onOpenFolderChooser?: () => void;
+  isExportPopupOpen?: boolean;
+  onCloseExportPopup?: () => void;
+  onPrerecordPlaylistAvailableChange?: (available: boolean) => void;
+  scheduleWindowConfig?: ScheduleWindowConfig;
   isReadOnly?: boolean;
+  adminContactInfo?: string;
 }
 
 export default function PlayerTab({ 
@@ -53,8 +65,19 @@ export default function PlayerTab({
   isFolderChooserOpen,
   onCloseFolderChooser,
   onOpenFolderChooser,
+  isExportPopupOpen = false,
+  onCloseExportPopup,
+  onPrerecordPlaylistAvailableChange,
+  scheduleWindowConfig,
   isReadOnly = false,
+  adminContactInfo,
 }: PlayerTabProps) {
+  const [helpPopupCard, setHelpPopupCard] = useState<{
+    name: string;
+    timeLabel: string;
+    errorLabel: string;
+  } | null>(null);
+  const resolvedAdminContact = (adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo()).trim() || 'No admin contact info configured yet (set in Admin Mode > Folders > Help).';
   const {
     playingStates,
     playAudio,
@@ -140,20 +163,22 @@ export default function PlayerTab({
   const [cancelledTrackIds, setCancelledTrackIds] = useState<string[]>([]);
   const [pushedBeforeBreakTrackIds, setPushedBeforeBreakTrackIds] = useState<string[]>([]);
   const [breakPositions, setBreakPositions] = useState<Record<string, number>>({});
+  const [breakOrder, setBreakOrder] = useState<string[]>([]);
   const [trackMetadataMap, setTrackMetadataMap] = useState<Record<string, Mp3ID3Metadata>>({});
   const [selectedFolderPath, setSelectedFolderPath] = useState<string>('.');
   const [isExternalFolder, setIsExternalFolder] = useState<boolean>(false);
   const [externalAbsolutePath, setExternalAbsolutePath] = useState<string | null>(null);
   const [showFolderChooserModal, setShowFolderChooserModal] = useState<boolean>(false);
+  const [hasAvailableShowPlaylistFiles, setHasAvailableShowPlaylistFiles] = useState<boolean>(false);
   const isFolderChooserVisible = isFolderChooserOpen !== undefined ? isFolderChooserOpen : showFolderChooserModal;
 
   const [, setPlaylistDurationUpdates] = useState(0);
 
-  // Derive effective show for Playlist, Prerecord, and Export modes, as well as Live mode
+  // Derive effective show for Playlist and Prerecord modes, as well as Live mode
   const effectiveShow = useMemo(() => {
     if (playMode === 'Playlist') return playlistShow;
     if (playlistShow) return playlistShow;
-    if ((playMode === 'Prerecord' || playMode === 'Export') && prerecordDate && shows && shows.length > 0) {
+    if (playMode === 'Prerecord' && prerecordDate && shows && shows.length > 0) {
       const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
       const dayName = daysOrder[prerecordDate.getDay()];
       const hour = prerecordDate.getHours();
@@ -179,7 +204,6 @@ export default function PlayerTab({
 
   const getShowForSlot = useCallback((slot: Date): Show | null => {
     if (playMode === 'Playlist') return playlistShow;
-    if (playMode === 'Export') return playlistShow || effectiveShow;
     if (playMode === 'Prerecord') {
       if (effectiveShow) return effectiveShow;
       const targetDate = prerecordDate || slot;
@@ -202,7 +226,7 @@ export default function PlayerTab({
     return effectiveShow || playlistShow || null;
   }, [playMode, playlistShow, effectiveShow, prerecordDate, shows]);
 
-  const playlistFolderType: 'Playlists' | 'Evergreens' = playMode === 'Export' ? 'Evergreens' : 'Playlists';
+  const playlistFolderType: 'Playlists' | 'Evergreens' = 'Playlists';
 
   // Synchronization refs for background tasks & state persistence
   const playedPlaylistTracksRef = useRef(playedPlaylistTracks);
@@ -230,6 +254,13 @@ export default function PlayerTab({
     breakPositionsRef.current = breakPositions;
   }, [breakPositions]);
 
+  const breakOrderRef = useRef(breakOrder);
+  useEffect(() => {
+    breakOrderRef.current = breakOrder;
+  }, [breakOrder]);
+
+  const lastKnownUnplayedTrackIdsRef = useRef<string[]>([]);
+
   const selectedFolderPathRef = useRef(selectedFolderPath);
   useEffect(() => {
     selectedFolderPathRef.current = selectedFolderPath;
@@ -247,6 +278,8 @@ export default function PlayerTab({
 
   const lastShowIdRef = useRef<string | null>(null);
   const lastPlayModeRef = useRef<string | null>(null);
+  const lastPrerecordDateMsRef = useRef<number | null>(null);
+  const prerecordUserSelectedFolderRef = useRef<string | null>(null);
 
   const saveLogPromiseQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastSavedLogJsonRef = useRef<string>('');
@@ -310,9 +343,10 @@ export default function PlayerTab({
       selectedFolderPath?: string;
       isExternalFolder?: boolean;
       externalAbsolutePath?: string | null;
-    }
+    },
+    overrideBreakOrder?: string[]
   ) => {
-    if ((playMode !== 'Playlist' && playMode !== 'Prerecord' && playMode !== 'Export') || !effectiveShow) return Promise.resolve();
+    if ((playMode !== 'Playlist' && playMode !== 'Prerecord') || !effectiveShow) return Promise.resolve();
 
     saveLogPromiseQueueRef.current = saveLogPromiseQueueRef.current.then(async () => {
       try {
@@ -321,7 +355,7 @@ export default function PlayerTab({
         const showName = effectiveShow.name;
         const hostName = effectiveShow.host;
 
-        const showStart = (playMode === 'Prerecord' || playMode === 'Export') && prerecordDate
+        const showStart = playMode === 'Prerecord' && prerecordDate
           ? prerecordDate
           : getActualShowStart(effectiveShow, now || syncTime || new Date());
 
@@ -336,6 +370,9 @@ export default function PlayerTab({
         const activeBreakPositions = overrideBreakPositions !== undefined
           ? overrideBreakPositions
           : breakPositionsRef.current;
+        const activeBreakOrder = overrideBreakOrder !== undefined
+          ? overrideBreakOrder
+          : breakOrderRef.current;
         const activeSelectedFolder = overrideFolderContext?.selectedFolderPath !== undefined
           ? overrideFolderContext.selectedFolderPath
           : selectedFolderPathRef.current;
@@ -372,6 +409,7 @@ export default function PlayerTab({
               album: info.album || meta?.album || trackObj?.album || '',
               durationSeconds: finalDurationSeconds,
               durationFormatted: finalDurationFormatted,
+              streamUrl: trackObj?.streamUrl || info.streamUrl || availableFilesCache.get(info.fileName)?.path || '',
               playedAt: info.playedAt,
               isAnnouncement: info.isAnnouncement || false
             });
@@ -386,7 +424,7 @@ export default function PlayerTab({
           return timeA - timeB;
         });
 
-        const unplayedIds = activeTracksList
+        let unplayedIds = activeTracksList
           .filter(t => {
             const isPlayed = !!activePlayedMap[t.id] || !!activePlayedMap[t.fileName];
             const isCancelled = activeCancelledIds.includes(t.id) || activeCancelledIds.includes(t.fileName);
@@ -394,18 +432,39 @@ export default function PlayerTab({
           })
           .map(t => t.id);
 
+        if (unplayedIds.length > 0) {
+          lastKnownUnplayedTrackIdsRef.current = unplayedIds;
+        } else if (activeSelectedFolder === '__no_playlist__' && activeTracksList.length === 0 && lastKnownUnplayedTrackIdsRef.current.length > 0) {
+          unplayedIds = lastKnownUnplayedTrackIdsRef.current;
+        }
+
         const metaObj: Record<string, any> = {};
-        activeTracksList.forEach(track => {
-          const meta = activeMetaMap[track.id] || activeMetaMap[track.fileName] || activeMetaMap[track.streamUrl];
-          metaObj[track.id] = {
-            id: track.id,
-            fileName: track.fileName,
-            title: meta?.title || track.title || '',
-            artist: meta?.artist || track.artist || '',
-            albumArtist: meta?.albumArtist || meta?.artist || track.artist || '',
-            album: meta?.album || ''
-          };
-        });
+        if (activeTracksList.length > 0) {
+          activeTracksList.forEach(track => {
+            const meta = activeMetaMap[track.id] || activeMetaMap[track.fileName] || activeMetaMap[track.streamUrl];
+            metaObj[track.id] = {
+              id: track.id,
+              fileName: track.fileName,
+              title: meta?.title || track.title || '',
+              artist: meta?.artist || track.artist || '',
+              albumArtist: meta?.albumArtist || meta?.artist || track.artist || '',
+              album: meta?.album || ''
+            };
+          });
+        } else {
+          Object.entries(activeMetaMap).forEach(([k, meta]: [string, any]) => {
+            if (k.startsWith('playlist-track-') && meta) {
+              metaObj[k] = {
+                id: (meta as any).id || k,
+                fileName: (meta as any).fileName || '',
+                title: meta.title || '',
+                artist: meta.artist || '',
+                albumArtist: meta.albumArtist || meta.artist || '',
+                album: meta.album || ''
+              };
+            }
+          });
+        }
 
         const logPayload: ShowPlaylistLog = {
           showId: effectiveShow.id,
@@ -420,6 +479,7 @@ export default function PlayerTab({
           cancelledTrackIds: activeCancelledIds,
           unplayedTrackIds: unplayedIds,
           breakPositions: activeBreakPositions,
+          breakOrder: activeBreakOrder,
           trackMetadata: metaObj
         };
 
@@ -429,22 +489,19 @@ export default function PlayerTab({
         }
         lastSavedLogJsonRef.current = logPayloadJson;
 
-        if (settings.mode === 'Local') {
-          await fetch('/api/shows/playlist/save-log-json', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              showNameShort,
-              showName,
-              showStartTime: showStart.toISOString(),
-              logFileName: logPayload.logFileName,
-              logData: logPayload,
-              folderType: playlistFolderType
-            })
-          });
-        } else {
-          await saveShowPlaylistLogToDrive(showNameShort, showName, showStart, logPayload, playlistFolderType);
-        }
+        const headers = await getStorageApiHeaders();
+        await fetch('/api/shows/playlist/save-log-json', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            showNameShort,
+            showName,
+            showStartTime: showStart.toISOString(),
+            logFileName: logPayload.logFileName,
+            logData: logPayload,
+            folderType: playlistFolderType
+          })
+        });
       } catch (err) {
         console.error('Failed to save show playlist log JSON:', err);
       }
@@ -456,8 +513,15 @@ export default function PlayerTab({
   const syncRequestIdRef = useRef(0);
 
   // Sync playlist tracks from server, update caches, and load/restore state from JSON show log
-  const syncPlaylistTracks = async (isInitial = false) => {
-    if ((playMode !== 'Playlist' && playMode !== 'Prerecord' && playMode !== 'Export') || !effectiveShow) {
+  const syncPlaylistTracks = async (
+    isInitial = false,
+    overrideFolder?: {
+      relPath: string;
+      isExternal?: boolean;
+      externalAbsolutePath?: string | null;
+    }
+  ) => {
+    if ((playMode !== 'Playlist' && playMode !== 'Prerecord') || !effectiveShow) {
       setPlaylistTracks([]);
       setPlaylistFile(null);
       return;
@@ -475,47 +539,65 @@ export default function PlayerTab({
       const showNameShort = effectiveShow.nameShort || effectiveShow.name;
       const showName = effectiveShow.name;
 
-      const showStart = (playMode === 'Prerecord' || playMode === 'Export') && prerecordDate
+      const showStart = playMode === 'Prerecord' && prerecordDate
         ? prerecordDate
         : getActualShowStart(effectiveShow, now || syncTime || new Date());
 
       // 1. Fetch existing JSON playlist log for state restoration and folder targeting
       let existingLog: ShowPlaylistLog | null = null;
-      if (settings.mode === 'Local') {
-        try {
-          const resp = await fetch('/api/shows/playlist/load-log-json', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              showNameShort,
-              showName,
-              showStartTime: showStart.toISOString(),
-              logFileName: formatShowPlaylistLogFileName(showNameShort || showName, showStart),
-              folderType: playlistFolderType
-            })
-          });
-          if (currentSyncId !== syncRequestIdRef.current) return;
-          if (resp.ok) {
-            const data = await resp.json();
-            existingLog = data?.logData || data;
-          }
-        } catch (e) {
-          console.warn('No existing show playlist JSON log found or failed to fetch:', e);
-        }
-      } else {
-        existingLog = await loadShowPlaylistLogFromDrive(showNameShort, showName, showStart, playlistFolderType);
+      try {
+        const headers = await getStorageApiHeaders();
+        const resp = await fetch('/api/shows/playlist/load-log-json', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            showNameShort,
+            showName,
+            showStartTime: showStart.toISOString(),
+            logFileName: formatShowPlaylistLogFileName(showNameShort || showName, showStart),
+            folderType: playlistFolderType
+          })
+        });
         if (currentSyncId !== syncRequestIdRef.current) return;
+        if (resp.ok) {
+          const data = await resp.json();
+          existingLog = data?.logData || data;
+        }
+      } catch (e) {
+        console.warn('No existing show playlist JSON log found or failed to fetch:', e);
       }
 
-      const activeTargetSubfolder = existingLog?.selectedFolderPath !== undefined
-        ? existingLog.selectedFolderPath
-        : (selectedFolderPathRef.current || '.');
-      const activeIsExternal = existingLog?.isExternalFolder !== undefined
-        ? existingLog.isExternalFolder
-        : (isExternalFolderRef.current || false);
-      const activeExternalPath = existingLog?.externalAbsolutePath !== undefined
-        ? existingLog.externalAbsolutePath
-        : (externalAbsolutePathRef.current || null);
+      if (existingLog && Array.isArray(existingLog.unplayedTrackIds)) {
+        lastKnownUnplayedTrackIdsRef.current = existingLog.unplayedTrackIds;
+      } else if (!existingLog) {
+        lastKnownUnplayedTrackIdsRef.current = [];
+      }
+
+      const activeTargetSubfolder = overrideFolder
+        ? overrideFolder.relPath
+        : playMode === 'Prerecord'
+          ? (prerecordUserSelectedFolderRef.current !== null
+              ? prerecordUserSelectedFolderRef.current
+              : (existingLog?.selectedFolderPath && existingLog.selectedFolderPath !== '__no_playlist__'
+                  ? existingLog.selectedFolderPath
+                  : '__no_playlist__'))
+          : (existingLog?.selectedFolderPath !== undefined
+              ? existingLog.selectedFolderPath
+              : (selectedFolderPathRef.current || '.'));
+      const activeIsExternal = overrideFolder
+        ? !!overrideFolder.isExternal
+        : existingLog?.isExternalFolder !== undefined
+          ? existingLog.isExternalFolder
+          : (isExternalFolderRef.current || false);
+      const activeExternalPath = overrideFolder
+        ? (overrideFolder.externalAbsolutePath || null)
+        : existingLog?.externalAbsolutePath !== undefined
+          ? existingLog.externalAbsolutePath
+          : (externalAbsolutePathRef.current || null);
+
+      if (playMode === 'Prerecord') {
+        prerecordUserSelectedFolderRef.current = activeTargetSubfolder;
+      }
 
       setSelectedFolderPath(activeTargetSubfolder);
       setIsExternalFolder(activeIsExternal);
@@ -525,42 +607,7 @@ export default function PlayerTab({
       isExternalFolderRef.current = activeIsExternal;
       externalAbsolutePathRef.current = activeExternalPath;
 
-      // 2. Fetch physical tracks present in targeted show playlist folder
-      let serverTracks: any[] = [];
-      let playlistFileName: string | null = null;
-
-      if (activeTargetSubfolder !== '__no_playlist__') {
-        if (settings.mode === 'Local') {
-          const resp = await fetch('/api/shows/playlist/load-tracks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              showNameShort,
-              showName,
-              folderType: playlistFolderType,
-              targetSubfolder: activeTargetSubfolder,
-              isExternal: activeIsExternal,
-              externalAbsolutePath: activeExternalPath
-            })
-          });
-          const data = await resp.json();
-          if (currentSyncId !== syncRequestIdRef.current) return;
-          if (!resp.ok) throw new Error(data.error || 'Failed to load tracks');
-          serverTracks = data.tracks || [];
-          playlistFileName = data.playlistFile || null;
-        } else {
-          const result = await loadPlaylistTracksFromDrive(showNameShort, showName, settings.mode, playlistFolderType, activeTargetSubfolder);
-          if (currentSyncId !== syncRequestIdRef.current) return;
-          serverTracks = result.tracks || [];
-          playlistFileName = result.playlistFile || null;
-        }
-      }
-
-      setPlaylistFile(playlistFileName);
-
-      if (currentSyncId !== syncRequestIdRef.current) return;
-
-      // Restored state containers - do NOT carry over previous show state if no JSON log exists
+      // Restore saved log state (even if currently in __no_playlist__ so re-opening playlist later retains prior state)
       let restoredPlayedMap: Record<string, {
         id?: string;
         playedAt: string;
@@ -597,28 +644,88 @@ export default function PlayerTab({
             }
           });
           setPlayedPlaylistTracks(restoredPlayedMap);
+          playedPlaylistTracksRef.current = restoredPlayedMap;
         }
 
         if (Array.isArray(existingLog.cancelledTrackIds)) {
           const mergedCancelled = Array.from(new Set([...restoredCancelledIds, ...existingLog.cancelledTrackIds]));
           restoredCancelledIds = mergedCancelled;
           setCancelledTrackIds(restoredCancelledIds);
+          cancelledTrackIdsRef.current = restoredCancelledIds;
         }
 
         if (existingLog.trackMetadata && typeof existingLog.trackMetadata === 'object') {
           setTrackMetadataMap(existingLog.trackMetadata);
+          trackMetadataMapRef.current = existingLog.trackMetadata;
         }
 
         if (existingLog.breakPositions && typeof existingLog.breakPositions === 'object') {
           setBreakPositions(existingLog.breakPositions);
+          breakPositionsRef.current = existingLog.breakPositions;
+        } else {
+          setBreakPositions({});
+          breakPositionsRef.current = {};
+        }
+
+        if (Array.isArray(existingLog.breakOrder)) {
+          setBreakOrder(existingLog.breakOrder);
+          breakOrderRef.current = existingLog.breakOrder;
+        } else {
+          setBreakOrder([]);
+          breakOrderRef.current = [];
         }
       } else {
         // No existing JSON log: fresh state for this show
         setPlayedPlaylistTracks({});
+        playedPlaylistTracksRef.current = {};
         setCancelledTrackIds([]);
+        cancelledTrackIdsRef.current = [];
         setBreakPositions({});
+        breakPositionsRef.current = {};
+        setBreakOrder([]);
+        breakOrderRef.current = [];
         setTrackMetadataMap({});
+        trackMetadataMapRef.current = {};
       }
+
+      if (playMode === 'Prerecord' && activeTargetSubfolder === '__no_playlist__') {
+        setPlaylistTracks([]);
+        setPlaylistFile(null);
+        setIsPlaylistLoading(false);
+        if (onTriggerCaching) {
+          onTriggerCaching('Prerecord', []);
+        }
+        return;
+      }
+
+      // 2. Fetch physical tracks present in targeted show playlist folder
+      let serverTracks: any[] = [];
+      let playlistFileName: string | null = null;
+
+      if (activeTargetSubfolder !== '__no_playlist__') {
+        const headers = await getStorageApiHeaders();
+        const resp = await fetch('/api/shows/playlist/load-tracks', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            showNameShort,
+            showName,
+            folderType: playlistFolderType,
+            targetSubfolder: activeTargetSubfolder,
+            isExternal: activeIsExternal,
+            externalAbsolutePath: activeExternalPath
+          })
+        });
+        const data = await resp.json();
+        if (currentSyncId !== syncRequestIdRef.current) return;
+        if (!resp.ok) throw new Error(data.error || 'Failed to load tracks');
+        serverTracks = data.tracks || [];
+        playlistFileName = data.playlistFile || null;
+      }
+
+      setPlaylistFile(playlistFileName);
+
+      if (currentSyncId !== syncRequestIdRef.current) return;
 
       // Reconcile and retain all played tracks from log, ensuring historical played tracks remain in state even if file is missing from current disk folder
       const playedTracksFromLog: any[] = [];
@@ -626,6 +733,7 @@ export default function PlayerTab({
 
       if (existingLog && Array.isArray(existingLog.playedTracks)) {
         existingLog.playedTracks.forEach((pt: any, pIdx: number) => {
+          if (pt.isAnnouncement) return;
           let assignedId = pt.id;
           if (assignedId && typeof assignedId === 'string' && assignedId.startsWith('playlist-track-')) {
             const num = parseInt(assignedId.replace('playlist-track-', ''), 10);
@@ -638,16 +746,25 @@ export default function PlayerTab({
           const restoredMeta = (existingLog?.trackMetadata && (existingLog.trackMetadata as any)[assignedId]) ||
             (existingLog?.trackMetadata && (existingLog.trackMetadata as any)[pt.fileName]);
 
+          const matchingServerTrack = (serverTracks as any[]).find(
+            (st: any) => (st.fileName || '').toLowerCase() === (pt.fileName || '').toLowerCase()
+          );
+          const resolvedStreamUrl =
+            matchingServerTrack?.streamUrl ||
+            pt.streamUrl ||
+            availableFilesCache.get(pt.fileName)?.path ||
+            '';
+
           const playedTrackObj = {
             id: assignedId,
             fileName: pt.fileName || `played-track-${pIdx + 1}.mp3`,
-            title: pt.title || restoredMeta?.title || pt.fileName,
-            artist: pt.artist || restoredMeta?.artist || '',
-            albumArtist: pt.albumArtist || restoredMeta?.albumArtist || pt.artist || restoredMeta?.artist || '',
-            album: pt.album || restoredMeta?.album || '',
-            durationSeconds: pt.durationSeconds || 0,
-            durationFormatted: pt.durationFormatted || '0:00',
-            streamUrl: pt.streamUrl || '',
+            title: pt.title || restoredMeta?.title || matchingServerTrack?.title || pt.fileName,
+            artist: pt.artist || restoredMeta?.artist || matchingServerTrack?.artist || '',
+            albumArtist: pt.albumArtist || restoredMeta?.albumArtist || pt.artist || restoredMeta?.artist || matchingServerTrack?.albumArtist || '',
+            album: pt.album || restoredMeta?.album || matchingServerTrack?.album || '',
+            durationSeconds: pt.durationSeconds || matchingServerTrack?.durationSeconds || 0,
+            durationFormatted: pt.durationFormatted || matchingServerTrack?.durationFormatted || '0:00',
+            streamUrl: resolvedStreamUrl,
             isAnnouncement: pt.isAnnouncement || false,
             isPlayed: true
           };
@@ -666,15 +783,29 @@ export default function PlayerTab({
         });
       }
 
+      // Map fileNames from existingLog.trackMetadata to preserve original track IDs across sessions
+      const savedFileNameToIdMap = new Map<string, string>();
+      if (existingLog?.trackMetadata && typeof existingLog.trackMetadata === 'object') {
+        Object.entries(existingLog.trackMetadata).forEach(([k, meta]: [string, any]) => {
+          if (meta?.fileName && k.startsWith('playlist-track-')) {
+            savedFileNameToIdMap.set(meta.fileName.toLowerCase(), meta.id || k);
+          }
+        });
+      }
+
       const playedFileNameSet = new Set(playedTracksFromLog.map(pt => pt.fileName.toLowerCase()));
 
-      // Normalize newly scanned server tracks: continue IDs from maxPlayedIndex to avoid colliding with historical played items
+      // Normalize newly scanned server tracks: reuse saved track ID if available, otherwise continue IDs from maxPlayedIndex
       let nextTrackIndex = maxPlayedIndex;
       const normalizedServerTracks = (serverTracks as any[])
         .filter((t: any) => !playedFileNameSet.has((t.fileName || '').toLowerCase()))
         .map((t: any) => {
-          nextTrackIndex++;
-          const id = (t as any).id || `playlist-track-${nextTrackIndex}`;
+          const savedId = savedFileNameToIdMap.get((t.fileName || '').toLowerCase());
+          let id = savedId || (t as any).id;
+          if (!id) {
+            nextTrackIndex++;
+            id = `playlist-track-${nextTrackIndex}`;
+          }
           const restoredMeta = (existingLog?.trackMetadata && (existingLog.trackMetadata as any)[id]) ||
             (existingLog?.trackMetadata && (existingLog.trackMetadata as any)[t.fileName]);
           return {
@@ -826,12 +957,13 @@ export default function PlayerTab({
           restoredCancelledIds,
           orderedTracks,
           loadedMetaMap,
-          undefined,
+          existingLog?.breakPositions,
           {
             selectedFolderPath: activeTargetSubfolder,
             isExternalFolder: activeIsExternal,
             externalAbsolutePath: activeExternalPath
-          }
+          },
+          existingLog?.breakOrder
         );
       } catch (logErr) {
         console.warn('Initial show log save notice:', logErr);
@@ -865,12 +997,15 @@ export default function PlayerTab({
     isExternal?: boolean;
     externalAbsolutePath?: string | null;
   }) => {
-    if ((playMode !== 'Playlist' && playMode !== 'Prerecord' && playMode !== 'Export') || !effectiveShow) return;
+    if ((playMode !== 'Playlist' && playMode !== 'Prerecord') || !effectiveShow) return;
 
     const targetSubfolder = newFolder.relPath;
     const isExternal = !!newFolder.isExternal;
     const extAbsPath = newFolder.externalAbsolutePath || null;
 
+    if (playMode === 'Prerecord') {
+      prerecordUserSelectedFolderRef.current = targetSubfolder;
+    }
     setSelectedFolderPath(targetSubfolder);
     setIsExternalFolder(isExternal);
     setExternalAbsolutePath(extAbsPath);
@@ -884,15 +1019,24 @@ export default function PlayerTab({
     const showName = effectiveShow.name;
 
     if (targetSubfolder === '__no_playlist__') {
-      // Clear unplayed tracks while retaining all played tracks
+      // In Prerecord mode, choosing No Playlist returns to the announcements-only view
+      // while preserving the saved track order and break sequence in the JSON log
       const currentPlayedMap = playedPlaylistTracksRef.current;
-      const playedList = playlistTracksRef.current.filter(t => !!currentPlayedMap[t.id] || !!currentPlayedMap[t.fileName]);
+      const tracksForPersistence = playlistTracksRef.current;
+      const playedList = playMode === 'Prerecord'
+        ? []
+        : playlistTracksRef.current.filter(
+            t => !(t as any).isAnnouncement && (!!currentPlayedMap[t.id] || !!currentPlayedMap[t.fileName])
+          );
       setPlaylistTracks(playedList);
       setPlaylistFile(null);
+      if (onTriggerCaching) {
+        onTriggerCaching((playMode as any) || 'Prerecord', []);
+      }
       await saveCurrentShowPlaylistLog(
         undefined,
         undefined,
-        playedList,
+        tracksForPersistence.length > 0 ? tracksForPersistence : playedList,
         undefined,
         undefined,
         {
@@ -904,33 +1048,39 @@ export default function PlayerTab({
       return;
     }
 
+    // If switching from __no_playlist__ (when playlistTracks in memory is empty),
+    // delegate to syncPlaylistTracks with overrideFolder so any saved JSON log order and break positions are restored.
+    if (playlistTracksRef.current.length === 0) {
+      await syncPlaylistTracks(true, {
+        relPath: targetSubfolder,
+        isExternal,
+        externalAbsolutePath: extAbsPath
+      });
+      return;
+    }
+
     setIsPlaylistLoading(true);
     try {
       let serverTracks: any[] = [];
       let playlistFileName: string | null = null;
 
-      if (settings.mode === 'Local') {
-        const resp = await fetch('/api/shows/playlist/load-tracks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            showNameShort,
-            showName,
-            folderType: playlistFolderType,
-            targetSubfolder,
-            isExternal,
-            externalAbsolutePath: extAbsPath
-          })
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'Failed to load tracks');
-        serverTracks = data.tracks || [];
-        playlistFileName = data.playlistFile || null;
-      } else {
-        const result = await loadPlaylistTracksFromDrive(showNameShort, showName, settings.mode, playlistFolderType, targetSubfolder);
-        serverTracks = result.tracks || [];
-        playlistFileName = result.playlistFile || null;
-      }
+      const headers = await getStorageApiHeaders();
+      const resp = await fetch('/api/shows/playlist/load-tracks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          showNameShort,
+          showName,
+          folderType: playlistFolderType,
+          targetSubfolder,
+          isExternal,
+          externalAbsolutePath: extAbsPath
+        })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Failed to load tracks');
+      serverTracks = data.tracks || [];
+      playlistFileName = data.playlistFile || null;
 
       setPlaylistFile(playlistFileName);
 
@@ -981,7 +1131,11 @@ export default function PlayerTab({
       currentTracks.forEach(t => {
         const isPlayed = !!currentPlayedMap[t.id] || !!currentPlayedMap[t.fileName];
         if (isPlayed) {
-          reconciledTracks.push(t);
+          const matchingNewTrack = newTrackMap.get(t.fileName.toLowerCase());
+          reconciledTracks.push({
+            ...t,
+            streamUrl: matchingNewTrack?.streamUrl || t.streamUrl || availableFilesCache.get(t.fileName)?.path || ''
+          });
           usedIds.add(t.id);
           usedFileNames.add(t.fileName.toLowerCase());
         }
@@ -1057,31 +1211,46 @@ export default function PlayerTab({
     // Invalidate any in-flight sync calls from previous view/mode
     syncRequestIdRef.current++;
 
-    if ((playMode !== 'Playlist' && playMode !== 'Prerecord' && playMode !== 'Export') || !effectiveShow) {
+    if ((playMode !== 'Playlist' && playMode !== 'Prerecord') || !effectiveShow) {
       setPlaylistTracks([]);
       setPlaylistFile(null);
       setCancelledTrackIds([]);
       setPushedBeforeBreakTrackIds([]);
       setBreakPositions({});
+      setBreakOrder([]);
       setPlayedPlaylistTracks({});
       setIsPlaylistLoading(false);
       lastTriggeredCacheHashRef.current = '';
       lastSavedLogJsonRef.current = '';
+      if (!effectiveShow && playMode === 'Prerecord' && onTriggerCaching) {
+        onTriggerCaching(playMode, []);
+      }
       return;
     }
 
-    const showChanged = effectiveShow?.id !== lastShowIdRef.current || playMode !== lastPlayModeRef.current;
+    const dateMs = prerecordDate ? prerecordDate.getTime() : null;
+    const showChanged =
+      effectiveShow?.id !== lastShowIdRef.current ||
+      playMode !== lastPlayModeRef.current ||
+      (playMode === 'Prerecord' && dateMs !== lastPrerecordDateMsRef.current);
+
     if (showChanged) {
       lastShowIdRef.current = effectiveShow ? effectiveShow.id : null;
       lastPlayModeRef.current = playMode;
+      lastPrerecordDateMsRef.current = dateMs;
       playedPlaylistTracksRef.current = {};
       cancelledTrackIdsRef.current = [];
       playlistTracksRef.current = [];
       trackMetadataMapRef.current = {};
-      selectedFolderPathRef.current = '.';
+      breakPositionsRef.current = {};
+      breakOrderRef.current = [];
+      lastKnownUnplayedTrackIdsRef.current = [];
+      const initialFolder = playMode === 'Prerecord' ? '__no_playlist__' : '.';
+      prerecordUserSelectedFolderRef.current = null;
+      selectedFolderPathRef.current = initialFolder;
       isExternalFolderRef.current = false;
       externalAbsolutePathRef.current = null;
-      setSelectedFolderPath('.');
+      setSelectedFolderPath(initialFolder);
       setIsExternalFolder(false);
       setExternalAbsolutePath(null);
       setTrackMetadataMap({});
@@ -1093,6 +1262,7 @@ export default function PlayerTab({
     setCancelledTrackIds([]);
     setPushedBeforeBreakTrackIds([]);
     setBreakPositions({});
+    setBreakOrder([]);
     setPlayedPlaylistTracks({});
     setIsPlaylistLoading(true);
     lastTriggeredCacheHashRef.current = '';
@@ -1103,18 +1273,20 @@ export default function PlayerTab({
     }
 
     syncPlaylistTracks(true);
-  }, [playMode, effectiveShow, prerecordDate]);
+  }, [playMode, effectiveShow?.id, prerecordDate ? prerecordDate.getTime() : 0]);
 
   // Periodic check for additional tracks added to folder (every 30 seconds)
   useEffect(() => {
-    if ((playMode !== 'Playlist' && playMode !== 'Prerecord' && playMode !== 'Export') || !effectiveShow) return;
+    if ((playMode !== 'Playlist' && playMode !== 'Prerecord') || !effectiveShow) return;
+    if (playMode === 'Prerecord' && selectedFolderPathRef.current === '__no_playlist__') return;
 
     const interval = setInterval(() => {
+      if (playMode === 'Prerecord' && selectedFolderPathRef.current === '__no_playlist__') return;
       syncPlaylistTracks(false);
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [playMode, effectiveShow, prerecordDate, syncTime, scrollTrigger]);
+  }, [playMode, effectiveShow?.id, prerecordDate ? prerecordDate.getTime() : 0]);
 
   // Listen for browser duration calculation events ('mp3-duration-cached')
   useEffect(() => {
@@ -1166,7 +1338,8 @@ export default function PlayerTab({
       });
 
       const activeShow = effectiveShow || playlistShow;
-      if ((playMode === 'Playlist' || playMode === 'Prerecord') && activeShow && logEntry?.announcementId) {
+      const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
+      if (isPlaylistActive && activeShow && logEntry?.announcementId) {
         const targetAnnouncement = announcements.find(s => s.id === logEntry.announcementId);
         const activeMp3 = targetAnnouncement ? getActiveMp3ForSlot(targetAnnouncement, new Date(logEntry.announcementTime || logEntry.timestamp || Date.now())) : null;
         const durSec = activeMp3?.duration ? parseInt(activeMp3.duration, 10) || 60 : 60;
@@ -1239,31 +1412,33 @@ export default function PlayerTab({
     const urls: string[] = [];
     announcements.forEach(s => {
       if (!s.enabled) return;
-      const activeMp3 = getActiveMp3ForSlot(s, nowClock);
-      if (activeMp3?.mp3Url) {
-        const status = getMP3Status(activeMp3.mp3Url);
-        if (status.exists && status.valid) {
-          urls.push(activeMp3.mp3Url);
-        }
-      }
       if (Array.isArray(s.timeGatedMp3s)) {
         s.timeGatedMp3s.forEach(m => {
-          if (m.mp3Url && m.mp3Url !== activeMp3?.mp3Url) {
-            const status = getMP3Status(m.mp3Url);
-            if (status.exists && status.valid) {
-              urls.push(m.mp3Url);
+          const mediaItems = getGateMediaItems(m);
+          mediaItems.forEach(mi => {
+            if (mi.mp3Url && isAudioFile(mi.mp3Url) && !isUpNextPromoUrl(mi.mp3Url)) {
+              const status = getMP3Status(mi.mp3Url);
+              if (status.exists && status.valid) {
+                urls.push(mi.mp3Url);
+              }
             }
-          }
+            if (mi.backupMp3Url && isAudioFile(mi.backupMp3Url)) {
+              const bStatus = getMP3Status(mi.backupMp3Url);
+              if (bStatus.exists && bStatus.valid) {
+                urls.push(mi.backupMp3Url);
+              }
+            }
+          });
         });
       }
     });
 
-    if (playMode === 'Playlist' && playlistTracks.length > 0) {
+    if ((playMode === 'Playlist' || playMode === 'Prerecord') && playlistTracks.length > 0) {
       const trackUrls = playlistTracks.map(t => t.streamUrl).filter(Boolean);
       return Array.from(new Set([...urls, ...trackUrls]));
     }
     return Array.from(new Set(urls));
-  }, [announcements, nowClock, playMode, playlistTracks]);
+  }, [announcements, playMode, playlistTracks]);
 
   useEffect(() => {
     const hash = activeMp3Urls.join(',');
@@ -1309,7 +1484,7 @@ export default function PlayerTab({
         setCacheDisplayStatus('all-cached');
         const timer = setTimeout(() => {
           setCacheDisplayStatus('idle');
-        }, 4000);
+        }, 30000);
         return () => clearTimeout(timer);
       }
     }
@@ -1322,7 +1497,7 @@ export default function PlayerTab({
           clearInterval(interval);
           const timer = setTimeout(() => {
             setCacheDisplayStatus('idle');
-          }, 4000);
+          }, 30000);
           return () => clearTimeout(timer);
         }
       }, 500);
@@ -1335,23 +1510,27 @@ export default function PlayerTab({
 
     if (cacheDisplayStatus === 'caching') {
       return (
-        <div id="global-cache-status-caching" className="flex items-center gap-1.5 text-xs font-bold text-white/95 uppercase tracking-wider animate-pulse select-none shrink-0 ml-2">
-          <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0 text-white" />
-          <span>Caching mp3's</span>
+        <div
+          id="global-cache-status-caching"
+          className="flex items-center gap-1.5 text-[11px] font-bold text-white/95 uppercase tracking-wider animate-pulse select-none w-full pt-0.5 border-t border-emerald-500/60"
+        >
+          <RefreshCw className="w-3 h-3 animate-spin shrink-0 text-white" />
+          <span className="truncate">Caching mp3&apos;s</span>
         </div>
       );
     }
 
-    /*
     if (cacheDisplayStatus === 'all-cached') {
       return (
-        <div id="global-cache-status-cached" className="flex items-center gap-1.5 text-xs font-bold text-emerald-200 uppercase tracking-wider select-none shrink-0 ml-2">
-          <CheckCircle className="w-3.5 h-3.5 text-emerald-300 shrink-0 fill-emerald-500/20" />
-          <span>All cached</span>
+        <div
+          id="global-cache-status-cached"
+          className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-100 uppercase tracking-wider select-none w-full pt-0.5 border-t border-emerald-500/60"
+        >
+          <CheckCircle className="w-3 h-3 text-emerald-200 shrink-0" />
+          <span className="truncate">All mp3&apos;s cached</span>
         </div>
       );
     }
-    */
 
     return null;
   };
@@ -1378,8 +1557,8 @@ export default function PlayerTab({
         userScrollTopRef.current = scrollContainerRef.current.scrollTop;
       }
       if (persistentTitleRef.current && persistentLeftStripRef.current && persistentTextBoxRef.current) {
-        if (playMode === 'Playlist' || playMode === 'Prerecord' || playMode === 'Export') {
-          const defaultTitle = playMode === 'Export' ? 'Export Mode' : playMode === 'Prerecord' ? 'Prerecord Mode' : 'Playlist Mode';
+        if (playMode === 'Playlist' || playMode === 'Prerecord') {
+          const defaultTitle = playMode === 'Prerecord' ? 'Prerecord Mode' : 'Playlist Mode';
           const shade = effectiveShow 
             ? getShowShade(effectiveShow, getSortedShows(shows))
             : { bg: '#faf5ff', border: '#c084fc', title: defaultTitle };
@@ -1493,8 +1672,8 @@ export default function PlayerTab({
         
         // Update persistent header DOM directly
         if (persistentTitleRef.current && persistentLeftStripRef.current && persistentTextBoxRef.current) {
-          if (playMode === 'Playlist' || playMode === 'Prerecord' || playMode === 'Export') {
-            const defaultTitle = playMode === 'Export' ? 'Export Mode' : playMode === 'Prerecord' ? 'Prerecord Mode' : 'Playlist Mode';
+          if (playMode === 'Playlist' || playMode === 'Prerecord') {
+            const defaultTitle = playMode === 'Prerecord' ? 'Prerecord Mode' : 'Playlist Mode';
             const shade = effectiveShow 
               ? getShowShade(effectiveShow, getSortedShows(shows))
               : { bg: '#faf5ff', border: '#c084fc', title: defaultTitle };
@@ -1576,16 +1755,6 @@ export default function PlayerTab({
           } else {
             cont.scrollTop = 0;
           }
-        } else if (playMode === 'Export') {
-          const targetEl = (cont.querySelector('#export-start-indicator') as HTMLElement) || activeItemRef.current;
-          if (targetEl) {
-            const containerRect = cont.getBoundingClientRect();
-            const targetRect = targetEl.getBoundingClientRect();
-            const targetTop = targetRect.top - containerRect.top + cont.scrollTop;
-            cont.scrollTop = Math.max(0, targetTop - (cont.clientHeight / 2) + (targetRect.height / 2));
-          } else {
-            cont.scrollTo({ top: 0, behavior: 'auto' });
-          }
         }
 
         if (scrollContainerRef.current) {
@@ -1615,6 +1784,66 @@ export default function PlayerTab({
     }
   });
 
+  const activeScheduleWindow = scheduleWindowConfig || getScheduleWindowConfig();
+  const windowBeforeMinutes = activeScheduleWindow.windowBeforeMinutes ?? 5;
+  const windowAfterMinutes = activeScheduleWindow.windowAfterMinutes ?? 5;
+  const showLookaroundHours = activeScheduleWindow.showLookaroundHours ?? 1;
+
+  // Check whether the user's show folder or subfolders contain audio files for the Prerecord Playlist button
+  useEffect(() => {
+    if (playMode !== 'Prerecord' || !effectiveShow) {
+      setHasAvailableShowPlaylistFiles(false);
+      return;
+    }
+
+    let cancelled = false;
+    const checkAvailableFolders = async () => {
+      try {
+        const showNameShort = effectiveShow.nameShort || effectiveShow.name;
+        const showName = effectiveShow.name;
+        const headers = await getStorageApiHeaders();
+        const resp = await fetch('/api/shows/discover-folders', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            showNameShort,
+            showName,
+            folderType: 'show'
+          })
+        });
+        if (!cancelled && resp.ok) {
+          const data = await resp.json();
+          const folders = Array.isArray(data.folders) ? data.folders : [];
+          const total =
+            typeof data.totalFiles === 'number'
+              ? data.totalFiles
+              : folders.reduce((sum: number, f: any) => sum + (Number(f.fileCount) || 0), 0);
+          setHasAvailableShowPlaylistFiles(total > 0);
+        } else if (!cancelled) {
+          setHasAvailableShowPlaylistFiles(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setHasAvailableShowPlaylistFiles(false);
+        }
+      }
+    };
+
+    checkAvailableFolders();
+    return () => {
+      cancelled = true;
+    };
+  }, [playMode, effectiveShow?.id, effectiveShow?.nameShort, effectiveShow?.name]);
+
+  useEffect(() => {
+    if (!onPrerecordPlaylistAvailableChange) return;
+    if (playMode === 'Prerecord') {
+      onPrerecordPlaylistAvailableChange(Boolean(effectiveShow && hasAvailableShowPlaylistFiles));
+    } else {
+      onPrerecordPlaylistAvailableChange(false);
+    }
+  }, [playMode, effectiveShow, hasAvailableShowPlaylistFiles, playlistTracks.length, onPrerecordPlaylistAvailableChange]);
+
   const timeline = useMemo(() => {
     if (playMode === 'Prerecord' && prerecordDate) {
       const slots = [];
@@ -1627,18 +1856,21 @@ export default function PlayerTab({
       return slots;
     } else {
       const baseTime = now || syncTime || new Date();
-      const start = subMinutes(baseTime, 120);
-      const end = addMinutes(baseTime, 120);
+      const lookbackMins = Math.max(windowBeforeMinutes, showLookaroundHours * 60);
+      const lookaheadMins = Math.max(windowAfterMinutes, showLookaroundHours * 60);
+      const start = subMinutes(baseTime, lookbackMins);
+      const end = addMinutes(baseTime, lookaheadMins);
+      const endMinute = startOfMinute(end);
+
       const slots = [];
-      
       let current = startOfMinute(start);
-      while (isBefore(current, end)) {
+      while (!isAfter(current, endMinute)) {
         slots.push(new Date(current));
         current = addMinutes(current, 1);
       }
       return slots;
     }
-  }, [now, syncTime, playMode, prerecordDate, prerecordLengthMinutes]);
+  }, [now, syncTime, playMode, prerecordDate, prerecordLengthMinutes, windowBeforeMinutes, windowAfterMinutes, showLookaroundHours]);
 
   // Dynamic persistent header padding adjustment to align its right edge with the cards in the scrollable container.
   useEffect(() => {
@@ -1648,9 +1880,7 @@ export default function PlayerTab({
     const updateHeaderAlignment = () => {
       const header = persistentHeaderRef.current;
       if (header) {
-        const scrollbarWidth = container.offsetWidth - container.clientWidth;
-        // The default card right padding is 4px (pr-1). Add the scrollbar width to align them.
-        header.style.paddingRight = `${scrollbarWidth + 4}px`;
+        header.style.paddingRight = '4px';
       }
     };
 
@@ -1671,77 +1901,49 @@ export default function PlayerTab({
     };
   }, [playMode, timeline]);
 
-  const getAnnouncementsForSlot = (slot: Date) => {
-    const day = slot.getDay();
-    const hour = slot.getHours();
-    const minute = slot.getMinutes();
-    const dateStr = format(slot, 'yyyy-MM-dd');
-
-    return announcements.filter(s => {
-      if (!s.enabled) return false;
-      if (s.type === AnnouncementType.ONE_TIME) {
-        const hourStr = format(slot, 'HH');
-        return s.date === dateStr && s.minute === minute && s.time === hourStr;
-      }
-      if (s.type === AnnouncementType.BASIC_HOURLY) {
-        const afterStart = s.startDate ? !isBefore(slot, parseISO(s.startDate)) : true;
-        const beforeEnd = s.endDate ? !isAfter(slot, parseISO(s.endDate)) : true;
-        return s.minute === minute && afterStart && beforeEnd;
-      }
-      if (s.type === AnnouncementType.ADVANCED) {
-        const afterStart = s.startDate ? !isBefore(slot, parseISO(s.startDate)) : true;
-        const beforeEnd = s.endDate ? !isAfter(slot, parseISO(s.endDate)) : true;
-        
-        let ruleMatch = false;
-        if (s.gridRules && s.gridRules.length > 0) {
-          ruleMatch = s.gridRules.includes(`${day}-${hour}`);
-        } else {
-          const dayMatch = s.days?.includes(day);
-          const hourMatch = s.hours?.includes(hour);
-          ruleMatch = !!(dayMatch && hourMatch);
-        }
-        
-        return s.minute === minute && ruleMatch && afterStart && beforeEnd;
-      }
-
-      return false;
-    });
-  };
+  const getAnnouncementsForSlot = (slot: Date) =>
+    getScheduledAnnouncementsForSlot(announcements, slot);
 
   const playlistTimeline = useMemo(() => {
-    if ((playMode !== 'Playlist' && playMode !== 'Prerecord' && playMode !== 'Export') || !effectiveShow) return [];
+    if ((playMode !== 'Playlist' && playMode !== 'Prerecord') || !effectiveShow) return [];
 
-    const showStart = (playMode === 'Prerecord' || playMode === 'Export') && prerecordDate
+    const showStart = playMode === 'Prerecord' && prerecordDate
       ? prerecordDate
       : getActualShowStart(effectiveShow, now || syncTime || new Date());
 
     const showDurationMinutes = (effectiveShow.durationHours * 60) + effectiveShow.durationMinutes;
     const showEnd = addMinutes(showStart, showDurationMinutes);
 
-    // 1. Collect all scheduled Announcement Breaks in the show window
+    // 1. Collect all scheduled Announcement Breaks in the show window (one break card per announcement so same-time items reorder independently)
     const scheduledBreaks: Array<{
       id: string;
+      legacySlotId: string;
       slotTime: Date;
       announcements: Announcement[];
       totalDurationSec: number;
+      initialOrderIndex: number;
     }> = [];
 
     let currentSlot = startOfMinute(showStart);
+    let breakInitIdx = 0;
     while (isBefore(currentSlot, showEnd)) {
       const sForSlot = getAnnouncementsForSlot(currentSlot);
       if (sForSlot.length > 0) {
-        const totalDur = sForSlot.reduce((acc, item) => {
+        const legacySlotId = `break-${currentSlot.toISOString()}`;
+        for (const item of sForSlot) {
           const activeMp3 = getActiveMp3ForSlot(item, currentSlot);
           const durStr = activeMp3?.duration;
           const d = durStr ? parseInt(durStr, 10) : 60;
-          return acc + (!isNaN(d) && d > 0 ? d : 60);
-        }, 0);
-        scheduledBreaks.push({
-          id: `break-${currentSlot.toISOString()}`,
-          slotTime: new Date(currentSlot),
-          announcements: sForSlot,
-          totalDurationSec: totalDur
-        });
+          const itemDur = !isNaN(d) && d > 0 ? d : 60;
+          scheduledBreaks.push({
+            id: `break-${currentSlot.toISOString()}-${item.id}`,
+            legacySlotId,
+            slotTime: new Date(currentSlot),
+            announcements: [item],
+            totalDurationSec: itemDur,
+            initialOrderIndex: breakInitIdx++
+          });
+        }
       }
       currentSlot = addMinutes(currentSlot, 1);
     }
@@ -1820,8 +2022,9 @@ export default function PlayerTab({
     const playedItems: PlaylistTimelineEntry[] = [];
 
     // 2.a. Played Music Tracks (announcements are excluded here so they render exclusively as unified scheduled break cards)
-    const playedTracks = (playMode === 'Export') ? [] : playlistTracks.filter(t => {
+    const playedTracks = playlistTracks.filter(t => {
       if (t.isAnnouncement) return false;
+      if (playingStates[t.id] || isAudioPlaying(t.id)) return false;
       const playedInfo = playedPlaylistTracks[t.id] || playedPlaylistTracks[t.fileName];
       if (playedInfo?.isAnnouncement) return false;
       return !!playedInfo;
@@ -1860,54 +2063,54 @@ export default function PlayerTab({
 
     // 2.b. Played Announcement Breaks
     const playedBreakIds = new Set<string>();
-    if (playMode !== 'Export') {
-      for (const b of scheduledBreaks) {
-        const playedInBreak = b.announcements.filter(s => {
-          if (playedPlaylistTracks[s.id]) return true;
-          return logs.some(l => 
-            l.announcementId === s.id && 
-            (l.announcementTime === b.slotTime.toISOString() || isSameMinute(parseISO(l.timestamp), b.slotTime)) &&
-            (l.status === 'played' || l.status === 'backup play') &&
-            l.playMode !== 'Export'
-          );
-        });
+    for (const b of scheduledBreaks) {
+      const playedInBreak = b.announcements.filter(s => {
+        const slotKey = `${b.slotTime.toISOString()}-${s.id}`;
+        if (playingStates[slotKey] || isAudioPlaying(slotKey)) return false;
+        if (playedPlaylistTracks[s.id]) return true;
+        return logs.some(l => 
+          l.announcementId === s.id && 
+          isLogForStationSlot(l, b.slotTime) &&
+          (l.status === 'played' || l.status === 'backup play') &&
+          (playMode === 'Prerecord' || l.playMode !== 'Export')
+        );
+      });
 
-        if (playedInBreak.length > 0) {
-          playedBreakIds.add(b.id);
-          let earliestPlayedAt = b.slotTime;
-          for (const s of playedInBreak) {
-            const pInfo = playedPlaylistTracks[s.id];
-            if (pInfo?.playedAt) {
-              const d = new Date(pInfo.playedAt);
+      if (playedInBreak.length > 0) {
+        playedBreakIds.add(b.id);
+        let earliestPlayedAt = b.slotTime;
+        for (const s of playedInBreak) {
+          const pInfo = playedPlaylistTracks[s.id];
+          if (pInfo?.playedAt) {
+            const d = new Date(pInfo.playedAt);
+            if (!isNaN(d.getTime())) earliestPlayedAt = d;
+          } else {
+            const pLog = logs.find(l => 
+              l.announcementId === s.id && 
+              isLogForStationSlot(l, b.slotTime) &&
+              (l.status === 'played' || l.status === 'backup play') &&
+              (playMode === 'Prerecord' || l.playMode !== 'Export')
+            );
+            if (pLog?.timestamp) {
+              const d = new Date(pLog.timestamp);
               if (!isNaN(d.getTime())) earliestPlayedAt = d;
-            } else {
-              const pLog = logs.find(l => 
-                l.announcementId === s.id && 
-                (l.announcementTime === b.slotTime.toISOString() || isSameMinute(parseISO(l.timestamp), b.slotTime)) &&
-                (l.status === 'played' || l.status === 'backup play') &&
-                l.playMode !== 'Export'
-              );
-              if (pLog?.timestamp) {
-                const d = new Date(pLog.timestamp);
-                if (!isNaN(d.getTime())) earliestPlayedAt = d;
-              }
             }
           }
+        }
 
-          const bEnd = new Date(earliestPlayedAt.getTime() + b.totalDurationSec * 1000);
-          playedItems.push({
-            type: 'break',
-            id: b.id,
-            slotTime: b.slotTime,
-            startTime: earliestPlayedAt,
-            endTime: bEnd,
-            announcements: b.announcements,
-            played: true,
-            playedAt: earliestPlayedAt.toISOString()
-          });
-          if (bEnd.getTime() > maxPlayedEnd.getTime()) {
-            maxPlayedEnd = new Date(bEnd);
-          }
+        const bEnd = new Date(earliestPlayedAt.getTime() + b.totalDurationSec * 1000);
+        playedItems.push({
+          type: 'break',
+          id: b.id,
+          slotTime: b.slotTime,
+          startTime: earliestPlayedAt,
+          endTime: bEnd,
+          announcements: b.announcements,
+          played: true,
+          playedAt: earliestPlayedAt.toISOString()
+        });
+        if (bEnd.getTime() > maxPlayedEnd.getTime()) {
+          maxPlayedEnd = new Date(bEnd);
         }
       }
     }
@@ -1934,12 +2137,15 @@ export default function PlayerTab({
       : virtualCursor;
 
     // Prerecord and Export have NO missed breaks by clock time; all unplayed breaks are upcoming and placed by cumulative duration.
-    // Live with Playlist identifies breaks that have passed the live wall-clock cursor as missed.
+    // Live with Playlist identifies breaks that have passed the live wall-clock cursor as missed (unless manually positioned by the user).
+    const hasManualPosition = (b: typeof unplayedScheduledBreaks[0]) =>
+      breakPositions[b.id] !== undefined || breakPositions[b.legacySlotId] !== undefined;
+
     const missedBreaks = isLivePlaylist
-      ? unplayedScheduledBreaks.filter(b => b.slotTime.getTime() < unplayedStartCursor.getTime())
+      ? unplayedScheduledBreaks.filter(b => !hasManualPosition(b) && b.slotTime.getTime() < unplayedStartCursor.getTime())
       : [];
     const upcomingBreaks = isLivePlaylist
-      ? unplayedScheduledBreaks.filter(b => b.slotTime.getTime() >= unplayedStartCursor.getTime())
+      ? unplayedScheduledBreaks.filter(b => hasManualPosition(b) || b.slotTime.getTime() >= unplayedStartCursor.getTime())
       : unplayedScheduledBreaks;
 
     let missedCursor = new Date(maxPlayedEnd);
@@ -1957,9 +2163,7 @@ export default function PlayerTab({
     }
 
     // 4. Calculate default track insertion indices for upcoming breaks, and interleave with active unplayed tracks
-    const activeUnplayedTracks = (playMode === 'Export')
-      ? playlistTracks.filter(t => !t.isAnnouncement && !cancelledTrackIds.includes(t.id) && !cancelledTrackIds.includes(t.fileName))
-      : playlistTracks.filter(t => !t.isAnnouncement && !playedPlaylistTracks[t.id] && !playedPlaylistTracks[t.fileName] && !cancelledTrackIds.includes(t.id) && !cancelledTrackIds.includes(t.fileName));
+    const activeUnplayedTracks = playlistTracks.filter(t => !t.isAnnouncement && !playedPlaylistTracks[t.id] && !playedPlaylistTracks[t.fileName] && !cancelledTrackIds.includes(t.id) && !cancelledTrackIds.includes(t.fileName));
 
     const getTrackDurationSec = (track: any): number => {
       const exactCachedDurationStr = mp3DurationCache.get(track.streamUrl) || availableFilesCache.get(track.fileName)?.duration;
@@ -1979,10 +2183,13 @@ export default function PlayerTab({
     const breakTargetCounts: Array<{ breakObj: typeof upcomingBreaks[0]; afterCount: number }> = [];
 
     for (const b of upcomingBreaks) {
-      if (breakPositions[b.id] !== undefined) {
+      const savedPos = breakPositions[b.id] !== undefined
+        ? breakPositions[b.id]
+        : breakPositions[b.legacySlotId];
+      if (savedPos !== undefined) {
         breakTargetCounts.push({
           breakObj: b,
-          afterCount: Math.min(activeUnplayedTracks.length, Math.max(0, breakPositions[b.id]))
+          afterCount: Math.min(activeUnplayedTracks.length, Math.max(0, savedPos))
         });
       } else {
         let defaultCount = 0;
@@ -2011,7 +2218,18 @@ export default function PlayerTab({
       breaksByAfterCount.set(entry.afterCount, existing);
     }
     for (const [, breakList] of breaksByAfterCount.entries()) {
-      breakList.sort((a, b) => a.slotTime.getTime() - b.slotTime.getTime());
+      breakList.sort((a, b) => {
+        const idxA = breakOrder.indexOf(a.id);
+        const idxB = breakOrder.indexOf(b.id);
+        if (idxA !== -1 && idxB !== -1) {
+          return idxA - idxB;
+        }
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        const timeDiff = a.slotTime.getTime() - b.slotTime.getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return a.initialOrderIndex - b.initialOrderIndex;
+      });
     }
 
     type ActiveItem =
@@ -2109,8 +2327,11 @@ export default function PlayerTab({
     // Append show entries first
     items.push(...showEntries);
 
-    // Append Show End indicator card right after show entries (if in Export mode, only display when evergreen folder has files)
-    const shouldShowEndIndicator = playMode !== 'Export' || (playlistTracks && playlistTracks.length > 0);
+    // Append Show End indicator card strictly when in Playlist view (never on pure Prerecord view)
+    const hasMusicTracks = (playlistTracks || []).some(t => !(t as any).isAnnouncement);
+    const shouldShowEndIndicator =
+      playMode === 'Playlist' ||
+      (playMode === 'Prerecord' && selectedFolderPath !== '__no_playlist__' && hasMusicTracks);
     if (shouldShowEndIndicator) {
       items.push({
         type: 'show-end',
@@ -2173,7 +2394,7 @@ export default function PlayerTab({
     }
 
     return items;
-  }, [playMode, playlistShow, playlistTracks, playlistFile, syncTime, announcements, playedPlaylistTracks, cancelledTrackIds, nowClock, breakPositions]);
+  }, [playMode, playlistShow, effectiveShow, prerecordDate, playlistTracks, playlistFile, syncTime, announcements, logs, playedPlaylistTracks, playingStates, cancelledTrackIds, nowClock, breakPositions, breakOrder, selectedFolderPath]);
 
   const breakIndexMap = useMemo(() => {
     const map: Record<string, number> = {};
@@ -2189,6 +2410,59 @@ export default function PlayerTab({
     });
     return map;
   }, [playlistTimeline]);
+
+  const applySwappedTimelineCards = (
+    activeCards: Array<(typeof playlistTimeline)[number]>,
+    idxA: number,
+    idxB: number
+  ) => {
+    const swapped = [...activeCards];
+    const itemA = swapped[idxA];
+    const itemB = swapped[idxB];
+    swapped[idxA] = itemB;
+    swapped[idxB] = itemA;
+
+    let trackCountSoFar = 0;
+    const newBreakPositions: Record<string, number> = { ...breakPositions };
+    const newBreakOrder: string[] = [];
+
+    for (const card of swapped) {
+      if (card.type === 'track') {
+        trackCountSoFar++;
+      } else if (card.type === 'break') {
+        newBreakPositions[card.id] = trackCountSoFar;
+        newBreakOrder.push(card.id);
+      }
+    }
+
+    setBreakPositions(newBreakPositions);
+    breakPositionsRef.current = newBreakPositions;
+    setBreakOrder(newBreakOrder);
+    breakOrderRef.current = newBreakOrder;
+
+    if (itemA.type === 'track' && itemB.type === 'track') {
+      setPlaylistTracks(prev => {
+        const trackA = prev.find(t => t.id === itemA.id);
+        const trackB = prev.find(t => t.id === itemB.id);
+        if (trackA && trackB) {
+          const newTracks = [...prev];
+          const pos1 = newTracks.findIndex(t => t.id === trackA.id);
+          const pos2 = newTracks.findIndex(t => t.id === trackB.id);
+          if (pos1 !== -1 && pos2 !== -1) {
+            newTracks[pos1] = trackB;
+            newTracks[pos2] = trackA;
+            playlistTracksRef.current = newTracks;
+            saveCurrentShowPlaylistLog(undefined, undefined, newTracks, undefined, newBreakPositions, undefined, newBreakOrder);
+            return newTracks;
+          }
+        }
+        saveCurrentShowPlaylistLog(undefined, undefined, prev, undefined, newBreakPositions, undefined, newBreakOrder);
+        return prev;
+      });
+    } else {
+      saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions, undefined, newBreakOrder);
+    }
+  };
 
   const handleMoveTrackUp = (trackId: string) => {
     triggerMovedHighlight(trackId);
@@ -2223,44 +2497,12 @@ export default function PlayerTab({
       return;
     }
 
-    // Active unplayed item move: look at active timeline cards (tracks & breaks)
     const activeTimelineCards = playlistTimeline.filter(
-      item => (item.type === 'track' && !item.played && !item.cancelled) || item.type === 'break'
+      item => (item.type === 'track' && !item.played && !item.cancelled) || (item.type === 'break' && !item.played && !item.cancelled)
     );
     const cardIdx = activeTimelineCards.findIndex(item => item.type === 'track' && item.id === trackId);
     if (cardIdx > 0) {
-      const prevItem = activeTimelineCards[cardIdx - 1];
-      if (prevItem.type === 'track') {
-        // Swap with previous track in playlistTracks
-        setPlaylistTracks(prev => {
-          const currentTrack = prev.find(t => t.id === trackId);
-          const prevTrack = prev.find(t => t.id === prevItem.id);
-          if (currentTrack && prevTrack) {
-            const newTracks = [...prev];
-            const pos1 = newTracks.findIndex(t => t.id === currentTrack.id);
-            const pos2 = newTracks.findIndex(t => t.id === prevTrack.id);
-            if (pos1 !== -1 && pos2 !== -1) {
-              newTracks[pos1] = prevTrack;
-              newTracks[pos2] = currentTrack;
-              saveCurrentShowPlaylistLog(undefined, undefined, newTracks);
-              return newTracks;
-            }
-          }
-          return prev;
-        });
-      } else if (prevItem.type === 'break') {
-        // Track wants to move ABOVE break (prevItem) -> break should come AFTER trackId
-        let tracksBeforeBreakCount = 0;
-        for (let i = 0; i < cardIdx - 1; i++) {
-          if (activeTimelineCards[i].type === 'track') {
-            tracksBeforeBreakCount++;
-          }
-        }
-        const newCount = tracksBeforeBreakCount + 1;
-        const newBreakPositions = { ...breakPositions, [prevItem.id]: newCount };
-        setBreakPositions(newBreakPositions);
-        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
-      }
+      applySwappedTimelineCards(activeTimelineCards, cardIdx - 1, cardIdx);
     }
   };
 
@@ -2291,44 +2533,12 @@ export default function PlayerTab({
       return;
     }
 
-    // Active unplayed item move: look at active timeline cards (tracks & breaks)
     const activeTimelineCards = playlistTimeline.filter(
-      item => (item.type === 'track' && !item.played && !item.cancelled) || item.type === 'break'
+      item => (item.type === 'track' && !item.played && !item.cancelled) || (item.type === 'break' && !item.played && !item.cancelled)
     );
     const cardIdx = activeTimelineCards.findIndex(item => item.type === 'track' && item.id === trackId);
     if (cardIdx !== -1 && cardIdx < activeTimelineCards.length - 1) {
-      const nextItem = activeTimelineCards[cardIdx + 1];
-      if (nextItem.type === 'track') {
-        // Swap with next track in playlistTracks
-        setPlaylistTracks(prev => {
-          const currentTrack = prev.find(t => t.id === trackId);
-          const nextTrack = prev.find(t => t.id === nextItem.id);
-          if (currentTrack && nextTrack) {
-            const newTracks = [...prev];
-            const pos1 = newTracks.findIndex(t => t.id === currentTrack.id);
-            const pos2 = newTracks.findIndex(t => t.id === nextTrack.id);
-            if (pos1 !== -1 && pos2 !== -1) {
-              newTracks[pos1] = nextTrack;
-              newTracks[pos2] = currentTrack;
-              saveCurrentShowPlaylistLog(undefined, undefined, newTracks);
-              return newTracks;
-            }
-          }
-          return prev;
-        });
-      } else if (nextItem.type === 'break') {
-        // Track wants to move BELOW break (nextItem) -> break should come BEFORE trackId
-        let tracksBeforeBreakCount = 0;
-        for (let i = 0; i < cardIdx + 1; i++) {
-          if (activeTimelineCards[i].type === 'track' && activeTimelineCards[i].id !== trackId) {
-            tracksBeforeBreakCount++;
-          }
-        }
-        const newCount = tracksBeforeBreakCount;
-        const newBreakPositions = { ...breakPositions, [nextItem.id]: newCount };
-        setBreakPositions(newBreakPositions);
-        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
-      }
+      applySwappedTimelineCards(activeTimelineCards, cardIdx, cardIdx + 1);
     }
   };
 
@@ -2339,26 +2549,7 @@ export default function PlayerTab({
     );
     const cardIdx = activeTimelineCards.findIndex(item => item.id === breakId);
     if (cardIdx > 0) {
-      const prevItem = activeTimelineCards[cardIdx - 1];
-      if (prevItem.type === 'track') {
-        let tracksBeforeBreakCount = 0;
-        for (let i = 0; i < cardIdx - 1; i++) {
-          if (activeTimelineCards[i].type === 'track') {
-            tracksBeforeBreakCount++;
-          }
-        }
-        const newBreakPositions = { ...breakPositions, [breakId]: tracksBeforeBreakCount };
-        setBreakPositions(newBreakPositions);
-        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
-      } else if (prevItem.type === 'break') {
-        const prevTarget = breakPositions[prevItem.id] ?? 0;
-        const newBreakPositions = {
-          ...breakPositions,
-          [breakId]: Math.max(0, prevTarget - 1)
-        };
-        setBreakPositions(newBreakPositions);
-        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
-      }
+      applySwappedTimelineCards(activeTimelineCards, cardIdx - 1, cardIdx);
     }
   };
 
@@ -2369,26 +2560,7 @@ export default function PlayerTab({
     );
     const cardIdx = activeTimelineCards.findIndex(item => item.id === breakId);
     if (cardIdx !== -1 && cardIdx < activeTimelineCards.length - 1) {
-      const nextItem = activeTimelineCards[cardIdx + 1];
-      if (nextItem.type === 'track') {
-        let tracksBeforeBreakCount = 0;
-        for (let i = 0; i <= cardIdx + 1; i++) {
-          if (activeTimelineCards[i].type === 'track') {
-            tracksBeforeBreakCount++;
-          }
-        }
-        const newBreakPositions = { ...breakPositions, [breakId]: tracksBeforeBreakCount };
-        setBreakPositions(newBreakPositions);
-        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
-      } else if (nextItem.type === 'break') {
-        const nextTarget = breakPositions[nextItem.id] ?? 0;
-        const newBreakPositions = {
-          ...breakPositions,
-          [breakId]: nextTarget + 1
-        };
-        setBreakPositions(newBreakPositions);
-        saveCurrentShowPlaylistLog(undefined, undefined, undefined, undefined, newBreakPositions);
-      }
+      applySwappedTimelineCards(activeTimelineCards, cardIdx, cardIdx + 1);
     }
   };
 
@@ -2418,11 +2590,15 @@ export default function PlayerTab({
     } else {
       const playedAt = new Date().toISOString();
       try {
-        const audio = await playAudio(slotKey, track.streamUrl);
+        const targetStreamUrl =
+          track.streamUrl ||
+          availableFilesCache.get(track.fileName)?.path ||
+          track.fileName;
+        const audio = await playAudio(slotKey, targetStreamUrl);
         if (!audio) return;
 
-        const meta = trackMetadataMap[track.id] || trackMetadataMap[track.fileName] || trackMetadataMap[track.streamUrl];
-        const durRes = resolveTrackDuration(track, meta, audio.duration);
+        const meta = trackMetadataMap[track.id] || trackMetadataMap[track.fileName] || trackMetadataMap[targetStreamUrl];
+        const durRes = resolveTrackDuration({ ...track, streamUrl: targetStreamUrl }, meta, audio.duration);
         const trackDurationSeconds = durRes.durationSeconds;
         const trackDurationFormatted = durRes.durationFormatted;
 
@@ -2447,23 +2623,22 @@ export default function PlayerTab({
           album: trackAlbum,
           durationSeconds: trackDurationSeconds,
           durationFormatted: trackDurationFormatted,
+          streamUrl: targetStreamUrl,
           isAnnouncement: false
         };
 
-        if (playMode !== 'Export') {
-          pendingPlayedPlaylistTracksRef.current[track.id] = playedInfo;
-          pendingPlayedPlaylistTracksRef.current[track.fileName] = playedInfo;
+        pendingPlayedPlaylistTracksRef.current[track.id] = playedInfo;
+        pendingPlayedPlaylistTracksRef.current[track.fileName] = playedInfo;
 
-          const updatedPlayedMap = {
-            ...playedPlaylistTracks,
-            [track.id]: playedInfo,
-            [track.fileName]: playedInfo
-          };
-          setPlayedPlaylistTracks(updatedPlayedMap);
+        const updatedPlayedMap = {
+          ...playedPlaylistTracks,
+          [track.id]: playedInfo,
+          [track.fileName]: playedInfo
+        };
+        setPlayedPlaylistTracks(updatedPlayedMap);
 
-          // 3. Save entry to playlist show Log___.json
-          saveCurrentShowPlaylistLog(updatedPlayedMap);
-        }
+        // 3. Save entry to playlist show Log___.json
+        saveCurrentShowPlaylistLog(updatedPlayedMap);
 
         // Reset card redraw timer when play is started
         startCardRotateTimer();
@@ -2476,9 +2651,10 @@ export default function PlayerTab({
   const handleVerifyEvergreens = async () => {
     setIsVerifyingEvergreens(true);
     try {
+      const headers = await getStorageApiHeaders();
       const resp = await fetch('/api/shows/verify-evergreens', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ shows })
       });
       const data = await resp.json();
@@ -2507,14 +2683,14 @@ export default function PlayerTab({
 
     // In Desktop App (Mac/Win), spawnLiveRead creates a standalone BrowserWindow.
     // Render a flat, semi-opaque blocking modal in the main window disabling interactions until closed.
-    if ((window as any).electronAPI && (window as any).electronAPI.spawnLiveRead) {
+    if (window.electronAPI && window.electronAPI.spawnLiveRead) {
       return (
         <div
           id="live-read-blocking-backdrop"
           className="fixed inset-0 bg-slate-950/80 z-50 flex items-center justify-center p-4 select-none"
           onClick={() => {
-            if ((window as any).electronAPI?.focusLiveReadWindow) {
-              (window as any).electronAPI.focusLiveReadWindow();
+            if (window.electronAPI?.focusLiveReadWindow) {
+              window.electronAPI.focusLiveReadWindow();
             }
           }}
         >
@@ -2544,8 +2720,8 @@ export default function PlayerTab({
                 type="button"
                 id="focus-live-read-popup-btn"
                 onClick={() => {
-                  if ((window as any).electronAPI?.focusLiveReadWindow) {
-                    (window as any).electronAPI.focusLiveReadWindow();
+                  if (window.electronAPI?.focusLiveReadWindow) {
+                    window.electronAPI.focusLiveReadWindow();
                   }
                 }}
                 className="w-full py-2 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition-colors shadow-sm cursor-pointer"
@@ -2556,8 +2732,8 @@ export default function PlayerTab({
                 type="button"
                 id="dismiss-live-read-overlay-btn"
                 onClick={() => {
-                  if ((window as any).electronAPI?.closeLiveReadWindow) {
-                    (window as any).electronAPI.closeLiveReadWindow();
+                  if (window.electronAPI?.closeLiveReadWindow) {
+                    window.electronAPI.closeLiveReadWindow();
                   }
                   setActiveLiveReadOverlay(null);
                 }}
@@ -2586,15 +2762,16 @@ export default function PlayerTab({
           backupMp3Url={activeLiveReadOverlay.backupMp3Url}
           playMode={playMode}
           isOverlay={true}
-          isPreview={activeLiveReadOverlay.playMode === 'Export' || activeLiveReadOverlay.isPreview || playMode === 'Export'}
+          isPreview={activeLiveReadOverlay.playMode === 'Export' || activeLiveReadOverlay.isPreview}
           isReadOnly={isReadOnly}
           onClose={() => setActiveLiveReadOverlay(null)}
           onLogCommit={(logEntry) => {
-            if (playMode !== 'Export' && activeLiveReadOverlay.playMode !== 'Export' && !activeLiveReadOverlay.isPreview) {
+            if (activeLiveReadOverlay.playMode !== 'Export' && !activeLiveReadOverlay.isPreview) {
               onLog(logEntry);
               const targetDate = new Date(logEntry.announcementTime || logEntry.timestamp || Date.now());
               const activeShow = getShowForSlot(targetDate);
-              if ((playMode === 'Playlist' || playMode === 'Prerecord') && activeShow && logEntry.announcementId) {
+              const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
+              if (isPlaylistActive && activeShow && logEntry.announcementId) {
                 const targetAnnouncement = announcements.find(s => s.id === logEntry.announcementId);
                 const activeMp3 = targetAnnouncement ? getActiveMp3ForSlot(targetAnnouncement, targetDate) : null;
                 const durSec = activeMp3?.duration ? parseInt(activeMp3.duration, 10) || 60 : 60;
@@ -2644,7 +2821,7 @@ export default function PlayerTab({
           if (onCloseFolderChooser) onCloseFolderChooser();
         }}
         show={effectiveShow}
-        folderType={playMode === 'Export' ? 'evergreen' : 'show'}
+        folderType="show"
         currentSelectedFolderPath={selectedFolderPath}
         isExternalFolder={isExternalFolder}
         externalAbsolutePath={externalAbsolutePath}
@@ -2677,10 +2854,10 @@ export default function PlayerTab({
       
       const announcementTimeISO = getParsedCustomTimeISO(customScriptTimes[slotKey], slot);
 
-      const slotISO = slot.toISOString();
+      const slotISO = stationSlotDateToUtcIso(slot);
       const playedLog = logs.find(l => 
         l.announcementId === s.id && 
-        (l.announcementTime === slotISO || isSameMinute(parseISO(l.timestamp), slot)) &&
+        isLogForStationSlot(l, slot) &&
         (l.status === 'played' || l.status === 'backup play')
       );
 
@@ -2692,22 +2869,22 @@ export default function PlayerTab({
         fileName: filename,
         filePath: targetScriptUrl,
         announcementId: s.id,
-        announcementName: s.name,
+        announcementName: formatRotatedAnnouncementName(s.name, activeMp3),
         announcementTime: announcementTimeISO,
         initialLoggedTime: playedLog?.logTimeStamp || playedLog?.timestamp || '',
         backupMp3Url: activeMp3?.backupMp3Url,
         slotKey,
         slotISO: announcementTimeISO,
         playMode,
-        isPreview: playMode === 'Export',
+        isPreview: false,
         showId: activeShow?.id || '',
         showName: activeShow?.name || '',
         hostName: activeShow?.host || '',
-        showDateTime: showStart ? showStart.toISOString() : slot.toISOString()
+        showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : slotISO
       };
 
-      if ((window as any).electronAPI && (window as any).electronAPI.spawnLiveRead) {
-        (window as any).electronAPI.spawnLiveRead(payload);
+      if (window.electronAPI && window.electronAPI.spawnLiveRead) {
+        window.electronAPI.spawnLiveRead(payload);
         setActiveLiveReadOverlay(payload); // Set local state so we can show active ticking clock
       } else {
         // Fallback to server call & client-side overlay
@@ -2738,71 +2915,70 @@ export default function PlayerTab({
       const audio = await playAudio(slotKey, targetMp3Url);
       if (!audio) return;
 
-      if (playMode !== 'Export') {
-        const playedAt = new Date().toISOString();
-        const activeShow = getShowForSlot(slot);
-        const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
-        const logEntry: LogEntry = {
-          timestamp: playedAt,
-          announcementTime: slot.toISOString(),
-          mp3Name: targetMp3Url,
-          announcementName: s.name,
-          announcementId: s.id,
-          status: 'played',
-          playMode: playMode,
-          logTimeStamp: playedAt,
-          assetType: 'audio',
-          ...(activeShow ? {
-            showId: activeShow.id,
-            showName: activeShow.name,
-            hostName: activeShow.host,
-            showDateTime: showStart ? showStart.toISOString() : slot.toISOString()
-          } : {})
-        };
-        onLog(logEntry);
+      const playedAt = new Date().toISOString();
+      const slotISO = stationSlotDateToUtcIso(slot);
+      const activeShow = getShowForSlot(slot);
+      const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
+      const logEntry: LogEntry = {
+        timestamp: playedAt,
+        announcementTime: slotISO,
+        mp3Name: targetMp3Url,
+        announcementName: s.name,
+        announcementId: s.id,
+        status: 'played',
+        playMode: playMode,
+        logTimeStamp: playedAt,
+        assetType: 'audio',
+        ...(activeShow ? {
+          showId: activeShow.id,
+          showName: activeShow.name,
+          hostName: activeShow.host,
+          showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : slotISO
+        } : {})
+      };
+      onLog(logEntry);
 
-        if ((playMode === 'Playlist' || playMode === 'Prerecord') && activeShow) {
-          const durRes = resolveTrackDuration({ streamUrl: targetMp3Url, fileName: targetMp3Url }, undefined, audio.duration);
-          const updatedPlayed = {
-            ...playedPlaylistTracksRef.current,
-            [s.id]: {
-              id: s.id,
-              playedAt,
-              fileName: targetMp3Url,
-              title: s.name,
-              durationSeconds: durRes.durationSeconds,
-              durationFormatted: durRes.durationFormatted,
-              isAnnouncement: true
-            }
-          };
-          setPlayedPlaylistTracks(updatedPlayed);
-          saveCurrentShowPlaylistLog(updatedPlayed);
-        }
+      const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
+      if (isPlaylistActive && activeShow) {
+        const durRes = resolveTrackDuration({ streamUrl: targetMp3Url, fileName: targetMp3Url }, undefined, audio.duration);
+        const updatedPlayed = {
+          ...playedPlaylistTracksRef.current,
+          [s.id]: {
+            id: s.id,
+            playedAt,
+            fileName: targetMp3Url,
+            title: s.name,
+            durationSeconds: durRes.durationSeconds,
+            durationFormatted: durRes.durationFormatted,
+            isAnnouncement: true
+          }
+        };
+        setPlayedPlaylistTracks(updatedPlayed);
+        saveCurrentShowPlaylistLog(updatedPlayed);
       }
     } catch (err) {
       console.error('Playback failed', err);
-      if (playMode !== 'Export') {
-        const failedAt = new Date().toISOString();
-        const activeShow = getShowForSlot(slot);
-        const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
-        onLog({
-          timestamp: failedAt,
-          announcementTime: slot.toISOString(),
-          mp3Name: targetMp3Url,
-          announcementName: s.name,
-          announcementId: s.id,
-          status: 'failed',
-          playMode: playMode,
-          logTimeStamp: failedAt,
-          assetType: 'audio',
-          ...(activeShow ? {
-            showId: activeShow.id,
-            showName: activeShow.name,
-            hostName: activeShow.host,
-            showDateTime: showStart ? showStart.toISOString() : slot.toISOString()
-          } : {})
-        });
-      }
+      const failedAt = new Date().toISOString();
+      const slotISO = stationSlotDateToUtcIso(slot);
+      const activeShow = getShowForSlot(slot);
+      const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
+      onLog({
+        timestamp: failedAt,
+        announcementTime: slotISO,
+        mp3Name: targetMp3Url,
+        announcementName: s.name,
+        announcementId: s.id,
+        status: 'failed',
+        playMode: playMode,
+        logTimeStamp: failedAt,
+        assetType: 'audio',
+        ...(activeShow ? {
+          showId: activeShow.id,
+          showName: activeShow.name,
+          hostName: activeShow.host,
+          showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : slotISO
+        } : {})
+      });
     }
   };
 
@@ -2811,49 +2987,49 @@ export default function PlayerTab({
       const audio = await playAudio(slotKey, backupUrl);
       if (!audio) return;
 
-      if (playMode !== 'Export') {
-        const playedAt = new Date().toISOString();
-        const activeShow = getShowForSlot(slot);
-        const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
-        
-        if (!skipLogging) {
-          const logEntry: LogEntry = {
-            timestamp: playedAt,
-            announcementTime: slot.toISOString(),
-            mp3Name: backupUrl,
-            announcementName: s.name,
-            announcementId: s.id,
-            status: 'backup play',
-            playMode: playMode,
-            logTimeStamp: playedAt,
-            assetType: 'audio',
-            ...(activeShow ? {
-              showId: activeShow.id,
-              showName: activeShow.name,
-              hostName: activeShow.host,
-              showDateTime: showStart ? showStart.toISOString() : slot.toISOString()
-            } : {})
-          };
-          onLog(logEntry);
-        }
+      const playedAt = new Date().toISOString();
+      const slotISO = stationSlotDateToUtcIso(slot);
+      const activeShow = getShowForSlot(slot);
+      const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
+      
+      if (!skipLogging) {
+        const logEntry: LogEntry = {
+          timestamp: playedAt,
+          announcementTime: slotISO,
+          mp3Name: backupUrl,
+          announcementName: s.name,
+          announcementId: s.id,
+          status: 'backup play',
+          playMode: playMode,
+          logTimeStamp: playedAt,
+          assetType: 'audio',
+          ...(activeShow ? {
+            showId: activeShow.id,
+            showName: activeShow.name,
+            hostName: activeShow.host,
+            showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : slotISO
+          } : {})
+        };
+        onLog(logEntry);
+      }
 
-        if ((playMode === 'Playlist' || playMode === 'Prerecord') && activeShow) {
-          const durRes = resolveTrackDuration({ streamUrl: backupUrl, fileName: backupUrl }, undefined, audio.duration);
-          const updatedPlayed = {
-            ...playedPlaylistTracksRef.current,
-            [s.id]: {
-              id: s.id,
-              playedAt,
-              fileName: backupUrl,
-              title: `${s.name} (backup mp3)`,
-              durationSeconds: durRes.durationSeconds,
-              durationFormatted: durRes.durationFormatted,
-              isAnnouncement: true
-            }
-          };
-          setPlayedPlaylistTracks(updatedPlayed);
-          saveCurrentShowPlaylistLog(updatedPlayed);
-        }
+      const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
+      if (isPlaylistActive && activeShow) {
+        const durRes = resolveTrackDuration({ streamUrl: backupUrl, fileName: backupUrl }, undefined, audio.duration);
+        const updatedPlayed = {
+          ...playedPlaylistTracksRef.current,
+          [s.id]: {
+            id: s.id,
+            playedAt,
+            fileName: backupUrl,
+            title: `${s.name} (backup mp3)`,
+            durationSeconds: durRes.durationSeconds,
+            durationFormatted: durRes.durationFormatted,
+            isAnnouncement: true
+          }
+        };
+        setPlayedPlaylistTracks(updatedPlayed);
+        saveCurrentShowPlaylistLog(updatedPlayed);
       }
     } catch (err) {
       console.error('Backup MP3 playback failed', err);
@@ -2876,7 +3052,7 @@ export default function PlayerTab({
   };
 
   const itemsToExport = useMemo(() => {
-    if (playMode !== 'Export' || !prerecordDate) return [];
+    if (playMode !== 'Prerecord' || !prerecordDate) return [];
     
     const items: Array<{
       slotTime: string;
@@ -2911,12 +3087,15 @@ export default function PlayerTab({
           const safeSlotTime = formatExportTimeAmPm(item.slotTime.getHours(), item.slotTime.getMinutes());
           const rawName = s.name || 'Unnamed Break';
           const safeAnnouncementName = rawName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
-          const sourceFileName = activeMp3?.mp3Url || '';
+          const rawMp3Url = activeMp3?.mp3Url || '';
+          const isUpNextItem = Boolean(s.isUpNextPromo) || isUpNextPromoUrl(rawMp3Url);
+          const cleanUpNextShowName = rawName.replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
+          const sourceFileName = isUpNextItem ? `Up Next - ${cleanUpNextShowName}.txt` : rawMp3Url;
           const dotIndex = sourceFileName.lastIndexOf('.');
           const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : (itemAssetType === 'script' ? '.txt' : '.mp3');
           const paddedIdx = String(itemIdx).padStart(2, '0');
           const targetFileName = `${showPrefix} ${paddedIdx} Break at ${safeSlotTime} - ${safeAnnouncementName}${ext}`;
-          const exists = sourceFileName ? getMP3Status(sourceFileName).exists : false;
+          const exists = rawMp3Url ? getMP3Status(rawMp3Url).exists : false;
 
           const backupUrl = activeMp3?.backupMp3Url;
           const backupMp3Exists = backupUrl ? getMP3Status(backupUrl).exists : false;
@@ -2929,7 +3108,7 @@ export default function PlayerTab({
             minute: s.minute,
             exists,
             targetFileName,
-            slotISO: item.slotTime.toISOString(),
+            slotISO: stationSlotDateToUtcIso(item.slotTime),
             assetType: itemAssetType,
             approximateReadTime: activeMp3?.approximateReadTime,
             backupMp3Url: backupUrl,
@@ -2966,7 +3145,7 @@ export default function PlayerTab({
           minute: item.startTime.getMinutes(),
           exists,
           targetFileName,
-          slotISO: item.startTime.toISOString(),
+          slotISO: stationSlotDateToUtcIso(item.startTime),
           assetType: 'audio',
           isEvergreen: true,
           showNameShort: playlistShow?.nameShort,
@@ -2982,7 +3161,7 @@ export default function PlayerTab({
   }, [playMode, prerecordDate, playlistTimeline, playlistShow, trackMetadataMap]);
 
   const previewText = useMemo(() => {
-    if (playMode !== 'Export' || !prerecordDate) return '';
+    if (playMode !== 'Prerecord' || !prerecordDate) return '';
 
     const year = prerecordDate.getFullYear();
     const month = String(prerecordDate.getMonth() + 1).padStart(2, '0');
@@ -3070,7 +3249,7 @@ export default function PlayerTab({
   }, [playMode, prerecordDate, prerecordLengthMinutes, itemsToExport]);
 
   const exportActiveShow = useMemo(() => {
-    if (playMode !== 'Export' || !prerecordDate) return null;
+    if (playMode !== 'Prerecord' || !prerecordDate) return null;
     const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
     const dayName = daysOrder[prerecordDate.getDay()];
     const hour = prerecordDate.getHours();
@@ -3092,10 +3271,10 @@ export default function PlayerTab({
     if (!itemsToExport) return false;
     return itemsToExport.some(item => {
       if (item.isEvergreen) return false;
-      const slot = parseISO(item.slotISO);
+      const slot = getStationNow(parseISO(item.slotISO));
       const playedLog = logs.find(l => 
         l.announcementId === item.announcementId && 
-        (l.announcementTime === item.slotISO || isSameMinute(parseISO(l.timestamp), slot)) &&
+        isLogForStationSlot(l, slot) &&
         (l.status === 'played' || l.status === 'backup play')
       );
       return !playedLog;
@@ -3105,10 +3284,10 @@ export default function PlayerTab({
   const handleLogExportAsPlayed = async () => {
     const unlogged = itemsToExport.filter(item => {
       if (item.isEvergreen) return false;
-      const slot = parseISO(item.slotISO);
+      const slot = getStationNow(parseISO(item.slotISO));
       const playedLog = logs.find(l => 
         l.announcementId === item.announcementId && 
-        (l.announcementTime === item.slotISO || isSameMinute(parseISO(l.timestamp), slot)) &&
+        isLogForStationSlot(l, slot) &&
         (l.status === 'played' || l.status === 'backup play')
       );
       return !playedLog;
@@ -3120,7 +3299,7 @@ export default function PlayerTab({
     try {
       const nowISO = new Date().toISOString();
       for (const item of unlogged) {
-        const slot = parseISO(item.slotISO);
+        const slot = getStationNow(parseISO(item.slotISO));
         const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
         const dayName = daysOrder[slot.getDay()];
         const hour = slot.getHours();
@@ -3145,7 +3324,7 @@ export default function PlayerTab({
             showId: activeShow.id,
             showName: activeShow.name,
             hostName: activeShow.host,
-            showDateTime: showStart ? showStart.toISOString() : item.slotISO
+            showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : item.slotISO
           } : {})
         });
       }
@@ -3159,1881 +3338,453 @@ export default function PlayerTab({
     }
   };
 
-  const [copiedPlan, setCopiedPlan] = useState(false);
-  const [copiedPlaylist, setCopiedPlaylist] = useState(false);
+  // Option 2 Pinned Show Spacer State for Live Mode
+  const [topPinnedSpacer, setTopPinnedSpacer] = useState<{
+    id: string;
+    name: string;
+    time: string;
+    shadeBg: string;
+    shadeBorder: string;
+  } | null>(null);
+  const [bottomPinnedSpacer, setBottomPinnedSpacer] = useState<{
+    id: string;
+    name: string;
+    time: string;
+    shadeBg: string;
+    shadeBorder: string;
+  } | null>(null);
+  const nowSectionRef = useRef<HTMLDivElement>(null);
 
-  const handleCopyPlan = () => {
-    navigator.clipboard.writeText(previewText);
-    setCopiedPlan(true);
-    setTimeout(() => setCopiedPlan(false), 2000);
-  };
+  const handleLiveScrollContainer = useCallback(() => {
+    if (playMode !== 'Live' || !scrollContainerRef.current) return;
+    const container = scrollContainerRef.current;
+    const scrollTop = container.scrollTop;
+    const clientHeight = container.clientHeight;
+    const containerRect = container.getBoundingClientRect();
 
-  const playlistText = useMemo(() => {
-    if (!itemsToExport || itemsToExport.length === 0) return '';
-    const m3uLines: string[] = ['#EXTM3U'];
-    itemsToExport.forEach((item, idx) => {
-      const itemIdx = idx + 1;
-      const sourceFileName = item.fileName || '';
-      const dotIndex = sourceFileName.lastIndexOf('.');
-      const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex).toLowerCase() : '';
-      if (ext === '.mp3') {
-        const paddedIdx = String(itemIdx).padStart(2, '0');
-        const typePrefix = item.isEvergreen ? 'Track' : 'Break';
-        m3uLines.push(`#EXTINF:-1,${paddedIdx} ${typePrefix} - ${item.slotTime} - ${item.announcementName}`);
-        m3uLines.push(item.targetFileName);
-      }
-    });
-    return m3uLines.join('\n');
-  }, [itemsToExport]);
-
-  const handleCopyPlaylist = () => {
-    navigator.clipboard.writeText(playlistText);
-    setCopiedPlaylist(true);
-    setTimeout(() => setCopiedPlaylist(false), 2000);
-  };
-
-  if (playMode === 'Export') {
-    if (!prerecordDate) {
-      return (
-        <div id="export-mode-unconfigured" className="flex flex-col items-center justify-center h-full text-slate-800 p-3 text-center space-y-3 bg-slate-50">
-          <div className="w-10 h-10 rounded-full bg-blue-100 border border-blue-300 flex items-center justify-center shrink-0">
-            <ListOrdered className="w-5 h-5 text-blue-700" />
-          </div>
-          <div className="space-y-1">
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-900 flex items-center justify-center gap-1.5">
-              <ListOrdered className="w-4 h-4 text-blue-700" />
-              Export Setup
-            </h3>
-            <p className="text-xs text-slate-600 leading-normal">
-              Select air date & duration to export broadcast breaks.
-            </p>
-          </div>
-          <button
-            id="btn-configure-export-timeframe"
-            onClick={onConfigureTimeframe}
-            className="w-full h-10 flex items-center justify-center bg-blue-600 hover:bg-blue-500 text-white rounded border-b-[4px] border-blue-800 hover:brightness-110 active:border-b-0 active:translate-y-[4px] font-black text-xs uppercase tracking-wider transition-all cursor-pointer shadow-sm"
-          >
-            Configure
-          </button>
-          {renderLiveReadOverlay()}
-          {renderFolderChooserModal()}
-        </div>
-      );
+    const spacerEls = Array.from(
+      container.querySelectorAll('[data-spacer-id]')
+    ) as HTMLElement[];
+    if (spacerEls.length === 0) {
+      setTopPinnedSpacer(null);
+      setBottomPinnedSpacer(null);
+      return;
     }
 
-    return (
-      <div id="export-mode-container" className="flex flex-col h-full bg-slate-50">
-        <div 
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto space-y-2 pb-4"
-        >
-          {/* Action stacked buttons above the MP3 list, satisfying layout requests A & B */}
-          <div className="sticky top-0 bg-slate-50 z-10 space-y-1.5 pt-1.5 pb-2 px-1.5 border-b border-slate-200">
-            <button
-              id="bg-btn-execute-export"
-              onClick={() => onExecuteExport ? onExecuteExport(itemsToExport, previewText) : undefined}
-              className="w-full h-10 flex items-center justify-center gap-2 px-3 bg-blue-600 hover:bg-blue-500 text-white rounded border-b-[4px] border-blue-800 hover:brightness-110 active:border-b-0 active:translate-y-[4px] transition-all font-black uppercase text-sm tracking-wide font-sans cursor-pointer select-none shadow-sm"
-            >
-              <Download className="w-5 h-5 shrink-0" />
-              <span>Export</span>
-            </button>
+    const measures = spacerEls.map((el) => {
+      const elRect = el.getBoundingClientRect();
+      const top = elRect.top - containerRect.top;
+      const offsetHeight = elRect.height || el.offsetHeight || 32;
+      const bottom = top + offsetHeight;
+      const offsetTop = top + scrollTop;
+      return {
+        id: el.getAttribute('data-spacer-id') || '',
+        name: el.getAttribute('data-spacer-name') || '',
+        time: el.getAttribute('data-spacer-time') || '',
+        shadeBg: el.getAttribute('data-spacer-bg') || 'var(--show-shade-odd-bg)',
+        shadeBorder: el.getAttribute('data-spacer-border') || 'var(--show-shade-odd-border)',
+        offsetTop,
+        isOffScreenTop: top < -2,
+        isOffScreenBottom: bottom > clientHeight + 2,
+      };
+    });
 
-            <button
-              id="btn-log-export-as-played"
-              onClick={handleLogExportAsPlayed}
-              disabled={!hasUnlogged || isLoggingExports}
-              className={cn(
-                "w-full h-10 flex items-center justify-center gap-2 px-3 rounded font-black uppercase text-xs tracking-wide font-sans select-none transition-all duration-75 shadow-sm",
-                hasUnlogged && !isLoggingExports
-                  ? "bg-blue-800 hover:bg-blue-700 text-white border-b-[4px] border-blue-950 hover:brightness-110 active:border-b-0 active:translate-y-[4px] cursor-pointer"
-                  : "bg-slate-200 text-slate-400 border-b-[4px] border-slate-300 cursor-not-allowed opacity-65"
-              )}
-            >
-              {isLoggingExports ? (
-                <>
-                  <RefreshCw className="w-4 h-4 shrink-0 animate-spin" />
-                  <span>Logging Exports...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle className="w-4 h-4 shrink-0" />
-                  <span>Log Export As Played</span>
-                </>
-              )}
-            </button>
+    measures.sort((a, b) => a.offsetTop - b.offsetTop);
 
-            {/* Yellow card for the show name */}
-            <div 
-              className="flex items-stretch gap-2 w-full relative min-h-[2.5rem] h-[2.5rem] z-10 shrink-0 mb-0 font-sans"
-              style={{ paddingRight: '4px' }}
-            >
-              <div 
-                className="absolute left-0 top-0 bottom-0 w-1 z-10"
-                style={{ backgroundColor: exportShade.bg }}
-                title={exportShade.title}
-              />
-              <div 
-                className="text-slate-800 p-1 px-3 rounded-none shadow-sm flex flex-col justify-center text-xs font-black tracking-normal leading-tight ml-1 select-none uppercase border flex-1"
-                style={{ 
-                  backgroundColor: exportShade.bg, 
-                  borderColor: exportShade.border 
-                }}
-              >
-                <div className="line-clamp-2 font-sans">
-                  <span>{exportActiveShow ? exportActiveShow.name : (effectiveShow ? effectiveShow.name : "Export Mode")}</span>
-                </div>
-              </div>
-            </div>
+    const offTop = measures.filter((m) => m.isOffScreenTop);
+    const newTop = offTop.length > 0 ? offTop[offTop.length - 1] : null;
 
-            {/* Header indicator bar matching 'mp3's' */}
-            <div 
-              ref={activeItemRef}
-              className="bg-blue-600 min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border border-blue-500 flex-wrap"
-              id="export-start-indicator"
-            >
-              <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
-                <ListOrdered className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                mp3's ({playlistTimeline.filter(i => i.type === 'track').length} tracks, {playlistTimeline.filter(i => i.type === 'break').length} breaks, {formatTotalTrackTime(playlistTimeline.reduce((acc, item) => item.type === 'track' ? acc + Math.round((item.endTime.getTime() - item.startTime.getTime()) / 1000) : acc, 0))})
-              </span>
-            </div>
-          </div>
+    const offBottom = measures.filter((m) => m.isOffScreenBottom);
+    const newBottom = offBottom.find((m) => !newTop || m.id !== newTop.id) || null;
 
-          {/* Cards for each item in the export timeframe */}
-          <div className="space-y-2 px-1">
-            {playlistTimeline.length === 0 || playlistTimeline.every(i => i.type === 'header') ? (
-              <div className="p-3 bg-white border border-slate-300 border-dashed rounded text-center text-xs text-slate-500 mx-1">
-                No active items found in timeframe.
-              </div>
-            ) : (
-              playlistTimeline.map((item, index) => {
-                if (item.type === 'header') {
-                  return null;
-                }
-
-                if (item.type === 'track') {
-                  const isCurrentlyPlaying = !!playingStates[item.track.id] || isAudioPlaying(item.track.id);
-                  const isPlayedTrack = !!item.played || !!playedPlaylistTracks[item.track.id] || !!playedPlaylistTracks[item.track.fileName] || !!pendingPlayedPlaylistTracksRef.current[item.track.id] || !!pendingPlayedPlaylistTracksRef.current[item.track.fileName];
-                  const playedAtTime = item.playedAt || playedPlaylistTracks[item.track.id]?.playedAt || playedPlaylistTracks[item.track.fileName]?.playedAt || pendingPlayedPlaylistTracksRef.current[item.track.id]?.playedAt || pendingPlayedPlaylistTracksRef.current[item.track.fileName]?.playedAt;
-                  const formattedPlayedAt = playedAtTime ? format(parseISO(playedAtTime), 'h:mm a') : format(new Date(), 'h:mm a');
-                  const isCancelledTrack = !!item.cancelled;
-
-                  const meta = trackMetadataMap[item.track.streamUrl] || 
-                               trackMetadataMap[item.track.fileName] || 
-                               trackMetadataMap[item.track.id];
-
-                  const isParsed = !!meta;
-                  const mp3FileName = item.track.fileName || item.track.title || '';
-                  const rawArtist = meta?.artist ? meta.artist.trim() : null;
-                  const rawAlbumArtist = meta?.albumArtist ? meta.albumArtist.trim() : null;
-                  const rawTitle = meta?.title ? meta.title.trim() : null;
-                  const rawAlbum = meta?.album ? meta.album.trim() : null;
-
-                  let row1Text: string | null = null;
-                  if (rawArtist && rawAlbumArtist && rawArtist.toLowerCase() !== rawAlbumArtist.toLowerCase()) {
-                    row1Text = `${rawArtist} (${rawAlbumArtist})`;
-                  } else if (rawArtist) {
-                    row1Text = rawArtist;
-                  } else if (rawAlbumArtist) {
-                    row1Text = rawAlbumArtist;
-                  }
-
-                  let row2Text = rawTitle || mp3FileName;
-                  if (rawAlbum) {
-                    row2Text = `${row2Text} - ${rawAlbum}`;
-                  }
-
-                  const tooltipParts: string[] = [];
-                  if (mp3FileName) tooltipParts.push(`File: ${mp3FileName}`);
-                  if (rawTitle) tooltipParts.push(`Title: ${rawTitle}`);
-                  if (rawArtist) tooltipParts.push(`Artist: ${rawArtist}`);
-                  if (rawAlbumArtist) tooltipParts.push(`Album Artist: ${rawAlbumArtist}`);
-                  if (rawAlbum) tooltipParts.push(`Album: ${rawAlbum}`);
-                  if (!isParsed) tooltipParts.push(`(ID3 Tags: ...parsing...)`);
-                  const tooltipText = tooltipParts.join('\n');
-
-                  return (
-                    <div 
-                      key={item.id}
-                      className={cn(
-                        "rounded border shadow-xs p-2 my-1.5 transition-all flex flex-col gap-0 select-none text-left border-l-[4px]",
-                        item.track ? "pb-[1px]" : "",
-                        item.isOverrun ? "border-amber-600" : "",
-                        (item.track && item.track.id === movedHighlightTrackId)
-                          ? "ring-2 ring-purple-500/90 shadow-lg scale-[1.01] z-10"
-                          : isCurrentlyPlaying 
-                            ? "ring-1 ring-purple-500/40" 
-                            : isPlayedTrack
-                              ? "opacity-90"
-                              : isCancelledTrack
-                                ? "opacity-75"
-                                : ""
-                      )}
-                      style={{
-                        backgroundColor: 'var(--playlist-card-bg)',
-                        borderColor: item.isOverrun ? '#d97706' : 'var(--playlist-card-border)',
-                        color: 'var(--playlist-card-text)',
-                        borderLeftColor: isCurrentlyPlaying
-                          ? '#9333ea'
-                          : isPlayedTrack
-                            ? '#10b981'
-                            : isCancelledTrack
-                              ? '#94a3b8'
-                              : '#a855f7'
-                      }}
-                      title={tooltipText}
-                    >
-                      {/* Top Header Bar for Playlist card: ListMusic icon + Up/Down/X controls on left, Play button right-justified */}
-                      <div 
-                        className={cn(
-                          "flex justify-between items-center -mx-2 -mt-2 px-2 py-1 rounded-t border-b",
-                          item.isOverrun ? "border-amber-600/50" : "border-slate-200/60 dark:border-slate-700/60"
-                        )}
-                        style={{ backgroundColor: item.isOverrun ? 'rgba(217, 119, 6, 0.15)' : 'var(--playlist-card-header-bg)' }}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <ListMusic className={cn("w-3.5 h-3.5 shrink-0", item.isOverrun ? "text-amber-600 dark:text-amber-400" : "text-purple-600 dark:text-purple-300")} />
-                          
-                          {/* Up, Down, X, Reactivate controls */}
-                          <div className="flex items-center gap-0.5 ml-0.5">
-                            {(!isPlayedTrack && !isCancelledTrack) && (
-                              <>
-                                <button
-                                  onClick={() => handleMoveTrackUp(item.track.id)}
-                                  className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                  title="Move song up in queue"
-                                >
-                                  <ChevronUp className="w-3 h-3" />
-                                </button>
-                                <button
-                                  onClick={() => handleMoveTrackDown(item.track.id)}
-                                  className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                  title="Move song down in queue"
-                                >
-                                  <ChevronDown className="w-3 h-3" />
-                                </button>
-                                <button
-                                  onClick={() => handleCancelTrack(item.track.id)}
-                                  className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-red-600 hover:bg-red-100 dark:hover:bg-red-950/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                  title="Cancel song (move to bottom)"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </>
-                            )}
-
-                            {isCancelledTrack && (
-                              <button
-                                onClick={() => handleReactivateTrack(item.track.id)}
-                                className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors shadow-xs"
-                                title="Reactivate song to queue"
-                              >
-                                <RotateCcw className="w-2.5 h-2.5 text-slate-600 dark:text-slate-300" />
-                                <span>Reactivate</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Right side: Right-justified circular Play / Pause / Check / Ear button */}
-                        <div className="flex items-center gap-1.5 ml-auto">
-                          <button
-                            onClick={() => handleTogglePlayTrack(item.track)}
-                            className={cn(
-                              "w-5 h-5 rounded-full shrink-0 aspect-square transition-all shadow-xs cursor-pointer flex items-center justify-center p-0 border border-transparent",
-                              isCurrentlyPlaying
-                                ? "bg-purple-700 hover:bg-purple-800 text-white"
-                                : isPlayedTrack
-                                  ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                                  : isCancelledTrack
-                                    ? "bg-slate-400 dark:bg-slate-700 hover:bg-slate-500 text-white"
-                                    : "bg-purple-600 hover:bg-purple-500 text-white"
-                            )}
-                            title={isCurrentlyPlaying ? "Stop track" : isPlayedTrack ? "Replay playlist track" : "Play track"}
-                          >
-                            {isCurrentlyPlaying ? (
-                              <Square className="w-2.5 h-2.5 fill-current" />
-                            ) : isPlayedTrack ? (
-                              <CheckCircle className="w-2.5 h-2.5 text-white" />
-                            ) : (
-                              <Ear className="w-3 h-3 text-white" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* MP3 Information */}
-                      <div 
-                        className={cn(
-                          "flex flex-col justify-start items-start text-left w-full font-sans font-normal text-xs leading-snug gap-0.5 pt-[3px] pb-[3px]",
-                          isCurrentlyPlaying ? "text-purple-800 dark:text-purple-200" :
-                          isPlayedTrack ? "text-emerald-950 dark:text-emerald-100" :
-                          isCancelledTrack ? "text-slate-500 dark:text-slate-400 line-through decoration-slate-400/60" :
-                          "text-slate-900 dark:text-slate-100"
-                        )}
-                        title={tooltipText}
-                      >
-                        {!isParsed ? (
-                          <div className="line-clamp-3 break-words font-sans font-normal text-xs w-full">
-                            {mp3FileName}
-                          </div>
-                        ) : (
-                          <>
-                            {row1Text && (
-                              <div className="line-clamp-1 truncate font-sans font-normal text-xs w-full text-slate-600 dark:text-slate-300">
-                                {row1Text}
-                              </div>
-                            )}
-                            <div className={cn("break-words font-sans font-normal text-xs w-full", row1Text ? "line-clamp-2" : "line-clamp-3")}>
-                              {row2Text}
-                            </div>
-                          </>
-                        )}
-                      </div>
-
-                      {/* Status & Duration row + Waveform visualizer */}
-                      <div className="flex flex-col gap-[1px] pt-0.5">
-                        <div className="flex items-center justify-between gap-1">
-                          <div className="flex items-center gap-1">
-                            {isCurrentlyPlaying ? (
-                              <>
-                                <Volume2 className="w-2.5 h-2.5 text-purple-600 animate-pulse" />
-                                <span className="text-xs font-bold text-purple-600 dark:text-purple-400 uppercase tracking-tighter">
-                                  Playing
-                                </span>
-                              </>
-                            ) : isPlayedTrack ? (
-                              <>
-                                <CheckCircle className="w-2.5 h-2.5 text-green-500" />
-                                <span className="text-xs font-bold text-green-600 dark:text-green-400 uppercase tracking-tighter">
-                                  Played {formattedPlayedAt}
-                                </span>
-                              </>
-                            ) : isCancelledTrack ? (
-                              <>
-                                <AlertCircle className="w-2.5 h-2.5 text-slate-400" />
-                                <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter">
-                                  Cancelled
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <Clock className="w-2.5 h-2.5 text-slate-500" />
-                                <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter">
-                                  To be played
-                                </span>
-                              </>
-                            )}
-                          </div>
-
-                          {isCurrentlyPlaying ? (
-                            <div className="flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none text-purple-600 dark:text-purple-400">
-                              <span>{formatTime(playingStates[item.track.id]?.currentTime || 0)}</span>
-                              <span className="opacity-30">/</span>
-                              <span>{formatTime(playingStates[item.track.id]?.duration || item.track.durationSeconds || 0)}</span>
-                            </div>
-                          ) : (
-                            <span className="text-xs font-sans font-bold tabular-nums text-slate-500 dark:text-slate-400 leading-none">
-                              {mp3DurationCache.get(item.track.streamUrl) || availableFilesCache.get(item.track.fileName)?.duration || item.track.durationFormatted}
-                            </span>
-                          )}
-                        </div>
-
-                        <WaveformVisualizer 
-                          url={item.track.streamUrl || item.track.fileName}
-                          currentTime={isCurrentlyPlaying ? (playingStates[item.track.id]?.currentTime || 0) : 0}
-                          duration={playingStates[item.track.id]?.duration || item.track.durationSeconds || 0}
-                          isPlaying={isCurrentlyPlaying}
-                          isPlayed={isPlayedTrack}
-                        />
-                      </div>
-                    </div>
-                  );
-                }
-
-                if (item.type === 'break') {
-                  const slot = item.slotTime;
-                  const sForSlot = item.announcements;
-                  const isPresent = isSameMinute(slot, now);
-                  const isPast = isBefore(slot, now) && !isPresent;
-                  const diffSeconds = Math.abs(differenceInSeconds(now, slot));
-
-                  return (
-                    <div key={item.id} className="space-y-1.5 my-1.5">
-                      {sForSlot.map((s, bIdx) => {
-                        const playedLog = logs.find(l => 
-                          l.announcementId === s.id && 
-                          (l.announcementTime === slot.toISOString() || isSameMinute(parseISO(l.timestamp), slot)) &&
-                          (l.status === 'played' || l.status === 'backup play')
-                        );
-                        const exported = !!playedLog && playedLog.playMode === 'Export' && playedLog.status === 'played';
-                        const played = !!playedLog && playedLog.playMode !== 'Export';
-                        const slotKey = `${slot.toISOString()}-${s.id}`;
-                        const breakNum = breakIndexMap[slotKey] || (bIdx + 1);
-                        const previewKey = `export-preview-${slotKey}`;
-                        const activeMp3 = getActiveMp3ForSlot(s, slot);
-                        const isScript = getGatedAssetType(activeMp3) === 'script';
-                        const activeMp3Url = activeMp3?.mp3Url || '';
-                        const status = getMP3Status(activeMp3Url);
-                        const isVerified = isScript ? status.exists : (status.exists && status.valid);
-                        const isCurrentlyPlaying = !!playingStates[previewKey] || isAudioPlaying(previewKey);
-                        const isUpcoming = !played && !exported && !isPast && !isPresent && diffSeconds <= 600 && isAfter(slot, now);
-
-                        const isMissedRecent = isPast && !played && !exported && diffSeconds <= 1800;
-                        const isMissedOld = isPast && !played && !exported && diffSeconds > 1800;
-
-                        const bgClass = !isVerified
-                          ? "bg-red-50 border-red-300"
-                          : exported
-                            ? "bg-blue-50 border-blue-300"
-                            : played
-                              ? "bg-green-50 border-green-300"
-                              : (isMissedRecent || isMissedOld)
-                                ? "bg-amber-50 border-amber-300"
-                                : "bg-white border-slate-200";
-
-                        const slotTimeStr = format(slot, 'HH:mm');
-
-                        return (
-                          <div 
-                            key={s.id} 
-                            title={`MP3: ${activeMp3Url}`}
-                            onClick={() => isVerified ? handlePlay(s, slot) : null}
-                            className={cn(
-                              "rounded border shadow-xs p-2 transition-all flex flex-col gap-1.5 mx-1 text-left select-none relative cursor-pointer",
-                              !isScript && isVerified ? "pb-[1px]" : "",
-                              bgClass,
-                            )}
-                            style={{
-                              borderLeftWidth: '4px',
-                              borderLeftColor: isScript
-                                ? (isVerified ? '#3b82f6' : '#f43f5e')
-                                : (isVerified ? '#a855f7' : '#f43f5e')
-                            }}
-                          >
-                            {/* Header: Date & Time in full-width strip */}
-                            <div className="flex justify-between items-center bg-slate-100/90 -mx-2 -mt-2 px-2.5 py-1 rounded-t border-b border-slate-200">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs uppercase font-black text-slate-600 tracking-tighter">
-                                  {format(slot, 'MMM dd')}
-                                </span>
-                                <span className="text-xs font-sans font-black tabular-nums text-blue-700">
-                                  {slotTimeStr}
-                                </span>
-                              </div>
-                              
-                              <div className="flex items-center gap-2">
-                                {isCurrentlyPlaying ? (
-                                  <div className="flex items-center gap-1 text-xs font-black uppercase text-blue-700">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse"></div>
-                                    Preview
-                                  </div>
-                                ) : (isPresent && !played && !exported) ? (
-                                  <span className="text-xs text-white px-1 py-0.5 rounded font-black uppercase leading-none bg-blue-600">Next</span>
-                                ) : isUpcoming ? (
-                                  <span className="text-xs text-white px-1 py-0.5 rounded font-black uppercase leading-none shadow-xs bg-blue-600">Next</span>
-                                ) : null}
-                              </div>
-                            </div>
-
-                            {/* Track Row: Title + Play/Stop/Script Icon */}
-                            <div className="flex items-center justify-between gap-2">
-                              <div className={cn(
-                                "text-xs font-bold leading-tight break-words line-clamp-2 flex-1",
-                                isCurrentlyPlaying ? "text-blue-700" : "text-slate-800"
-                              )}>
-                                {s.name}
-                              </div>
-
-                              <div className="shrink-0">
-                                {isScript ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handlePlay(s, slot);
-                                    }}
-                                    className={cn(
-                                      "p-1 rounded-full transition-all shadow-xs flex items-center justify-center cursor-pointer active:scale-95 border",
-                                      played 
-                                        ? "bg-blue-100 border-blue-300 text-blue-700 hover:bg-blue-200" 
-                                        : "bg-blue-600 hover:bg-blue-700 text-white border-transparent"
-                                    )}
-                                    title={played ? "Re-read / View Script" : "Read Script"}
-                                  >
-                                    {played ? (
-                                      <RefreshCw className="w-3 h-3" />
-                                    ) : (
-                                      <FileText className="w-3 h-3" />
-                                    )}
-                                  </button>
-                                ) : isVerified ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (isCurrentlyPlaying) {
-                                        stopAudio(previewKey);
-                                      } else {
-                                        playAudio(previewKey, activeMp3Url).catch(err => {
-                                          console.error("Preview playback failed", err);
-                                        });
-                                      }
-                                    }}
-                                    className={cn(
-                                      "p-1 rounded-full transition-all shadow-xs flex items-center justify-center cursor-pointer active:scale-95 border",
-                                      isCurrentlyPlaying
-                                        ? "bg-blue-100 border-blue-300 text-blue-700"
-                                        : "bg-slate-200 hover:bg-slate-300 text-slate-700 border-transparent"
-                                    )}
-                                    title="Preview Audio"
-                                  >
-                                    {isCurrentlyPlaying ? (
-                                      <Square className="w-2.5 h-2.5 fill-current" />
-                                    ) : (
-                                      <Ear className="w-3 h-3" />
-                                    )}
-                                  </button>
-                                ) : (
-                                  <div 
-                                    className="p-1 rounded-full bg-red-100 text-red-600 border border-red-300 flex items-center justify-center shadow-xs"
-                                    title="Missing File"
-                                  >
-                                    <X className="w-2.5 h-2.5" />
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Status & Details Footer */}
-                            <div className="flex flex-col gap-[1px] mt-1">
-                              <div className="flex items-center justify-between">
-                                {isVerified ? (
-                                  <div className="flex items-center gap-1.5">
-                                    {isCurrentlyPlaying ? (
-                                      <>
-                                        <Volume2 className="w-3 h-3 text-purple-600 animate-pulse" />
-                                        <span className="text-xs font-bold text-purple-700 uppercase tracking-tighter">
-                                          Playing
-                                        </span>
-                                      </>
-                                    ) : exported ? (
-                                      <>
-                                        <CheckCircle className="w-3 h-3 text-blue-600" />
-                                        <span className="text-xs font-bold text-blue-700 uppercase tracking-tighter">
-                                          Exported
-                                        </span>
-                                      </>
-                                    ) : played ? (
-                                      <>
-                                        <CheckCircle className="w-3 h-3 text-green-600" />
-                                        <span className="text-xs font-bold text-green-700 uppercase tracking-tighter">
-                                          {isScript ? (playedLog?.status === 'backup play' ? 'Played' : 'Read') : 'Played'} {playedLog ? format(parseISO(playedLog.logTimeStamp || playedLog.timestamp), 'h:mm a') : ''}
-                                        </span>
-                                      </>
-                                    ) : (isMissedRecent || isMissedOld) ? (
-                                      <>
-                                        <AlertCircle className="w-3 h-3 text-amber-600" />
-                                        <span className="text-xs font-bold text-amber-700 uppercase tracking-tighter">
-                                          Missed
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Clock className="w-3 h-3 text-slate-500" />
-                                        <span className="text-xs font-bold text-slate-500 uppercase tracking-tighter">
-                                          {`Break ${breakNum}`}
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center gap-1.5">
-                                    <AlertCircle className="w-3 h-3 text-red-600" />
-                                    <span className="text-xs font-bold text-red-600 uppercase tracking-tighter">
-                                      Missing File
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-
-                              {((!isScript && isVerified) || (isScript && activeMp3?.backupMp3Url && isCurrentlyPlaying)) && (
-                                <WaveformVisualizer 
-                                  url={isScript ? ((availableFilesCache.get(activeMp3?.backupMp3Url || '')?.path) || activeMp3?.backupMp3Url || '') : ((availableFilesCache.get(activeMp3Url)?.path) || activeMp3Url)}
-                                  currentTime={isCurrentlyPlaying ? (playingStates[previewKey]?.currentTime || playingStates[slotKey]?.currentTime || 0) : 0}
-                                  duration={playingStates[previewKey]?.duration || playingStates[slotKey]?.duration || 0}
-                                  isPlaying={isCurrentlyPlaying}
-                                  isPlayed={played || exported}
-                                />
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                }
-
-                if (item.type === 'show-end') {
-                  return (
-                    <div 
-                      key={item.id}
-                      className="min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border bg-slate-700 border-slate-600 text-white select-none w-full flex-wrap"
-                      id="show-end-indicator"
-                    >
-                      <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
-                        <Flag className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-                        show end
-                        <span className="text-[10px] text-slate-300 font-sans font-normal tabular-nums">
-                          ({format(item.showEnd, 'h:mm a')})
-                        </span>
-                      </span>
-                      <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-600 text-slate-100 shrink-0 tabular-nums">
-                        {item.status === 'over' ? (
-                          `Over by: ${item.diffFormatted}`
-                        ) : item.status === 'under' ? (
-                          `Under by: ${item.diffFormatted}`
-                        ) : (
-                          `On time (${item.diffFormatted})`
-                        )}
-                      </span>
-                    </div>
-                  );
-                }
-
-                if (item.type === 'extra-tracks') {
-                  return (
-                    <div 
-                      key={item.id} 
-                      className="min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border bg-amber-700 border-amber-600 text-white select-none w-full flex-wrap"
-                      id="extra-tracks-indicator"
-                    >
-                      <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
-                        <ListPlus className="w-3.5 h-3.5 text-amber-200 shrink-0" />
-                        overrun
-                      </span>
-                      <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-500/50 text-amber-100 shrink-0 tabular-nums">
-                        {`Over by: ${item.extraFormatted}`}
-                      </span>
-                    </div>
-                  );
-                }
-
-                return null;
-              })
-            )}
-          </div>
-
-          {/* Copy Plan & Copy Playlist Action Buttons */}
-          <div className="space-y-2 pt-2 px-1">
-            <button
-              id="btn-copy-play-plan"
-              onClick={handleCopyPlan}
-              className="w-full h-10 flex items-center justify-center gap-2 px-3 bg-blue-600 hover:bg-blue-500 text-white rounded border-b-[4px] border-blue-800 hover:brightness-110 active:border-b-0 active:translate-y-[4px] transition-all font-black uppercase text-xs tracking-wide font-sans cursor-pointer select-none shadow-sm"
-            >
-              <Copy className="w-4 h-4 shrink-0" />
-              <span>{copiedPlan ? "Copied!" : "Copy Plan"}</span>
-            </button>
-
-            <button
-              id="btn-copy-playlist"
-              onClick={handleCopyPlaylist}
-              className="w-full h-10 flex items-center justify-center gap-2 px-3 bg-blue-700 hover:bg-blue-600 text-white rounded border-b-[4px] border-blue-900 hover:brightness-110 active:border-b-0 active:translate-y-[4px] transition-all font-black uppercase text-xs tracking-wide font-sans cursor-pointer select-none shadow-sm"
-            >
-              <Copy className="w-4 h-4 shrink-0" />
-              <span>{copiedPlaylist ? "Copied!" : "Copy Playlist"}</span>
-            </button>
-          </div>
-        </div>
-        {renderLiveReadOverlay()}
-        {renderFolderChooserModal()}
-      </div>
+    setTopPinnedSpacer(
+      newTop
+        ? {
+            id: newTop.id,
+            name: newTop.name,
+            time: newTop.time,
+            shadeBg: newTop.shadeBg,
+            shadeBorder: newTop.shadeBorder,
+          }
+        : null
     );
-  }
+    setBottomPinnedSpacer(
+      newBottom
+        ? {
+            id: newBottom.id,
+            name: newBottom.name,
+            time: newBottom.time,
+            shadeBg: newBottom.shadeBg,
+            shadeBorder: newBottom.shadeBorder,
+          }
+        : null
+    );
+  }, [playMode]);
+
+  useEffect(() => {
+    if (playMode === 'Live') {
+      const timer = setTimeout(() => {
+        handleLiveScrollContainer();
+      }, 60);
+      return () => clearTimeout(timer);
+    } else {
+      setTopPinnedSpacer(null);
+      setBottomPinnedSpacer(null);
+    }
+  }, [playMode, timeline, announcements, shows, handleLiveScrollContainer]);
+
+  const scrollToSpacer = (spacerId: string) => {
+    if (!scrollContainerRef.current) return;
+    const container = scrollContainerRef.current;
+    const el = container.querySelector(`[data-spacer-id="${spacerId}"]`) as HTMLElement | null;
+    if (!el) return;
+    const containerRect = container.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const elOffsetTop = elRect.top - containerRect.top + container.scrollTop;
+    container.scrollTo({
+      top: Math.max(0, elOffsetTop - 8),
+      behavior: 'smooth',
+    });
+  };
+
+  const scrollToNow = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+    const container = scrollContainerRef.current;
+    const nowEl = nowSectionRef.current || (container.querySelector('#now-indicator') as HTMLElement | null);
+    if (!nowEl) return;
+    const containerHeight = container.clientHeight;
+    const nowHeight = nowEl.offsetHeight;
+    const nowTop = nowEl.offsetTop;
+    if (nowHeight >= containerHeight) {
+      container.scrollTo({
+        top: Math.max(0, nowTop - 8),
+        behavior: 'smooth',
+      });
+    } else {
+      const targetScrollTop = nowTop + nowHeight / 2 - containerHeight / 2;
+      container.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: 'smooth',
+      });
+    }
+  }, []);
+
+  const prerecordExportBreakItems = useMemo<PrerecordExportBreakItem[]>(() => {
+    if (playMode !== 'Prerecord' || !prerecordDate) return [];
+    const results: PrerecordExportBreakItem[] = [];
+    const buildBreakItem = (slot: Date, s: Announcement): PrerecordExportBreakItem => {
+      const activeMp3 = getActiveMp3ForSlot(s, slot);
+      const isScript = getGatedAssetType(activeMp3) === 'script';
+      const activeMp3Url = activeMp3?.mp3Url || '';
+      const fileInCache = availableFilesCache.get(activeMp3Url);
+      const resolvedUrl = fileInCache ? fileInCache.path : activeMp3Url;
+      const rawDur = isScript
+        ? activeMp3?.approximateReadTime
+          ? activeMp3.approximateReadTime.startsWith('~')
+            ? activeMp3.approximateReadTime
+            : `~${activeMp3.approximateReadTime}`
+          : '0:20'
+        : mp3DurationCache.get(activeMp3Url) || activeMp3?.duration || '0:30';
+      let durSec = 30;
+      const cleanDur = rawDur.replace(/^~/, '');
+      const parts = cleanDur.split(':');
+      if (parts.length === 2) {
+        const m = parseInt(parts[0], 10);
+        const sec = parseInt(parts[1], 10);
+        if (!isNaN(m) && !isNaN(sec)) durSec = m * 60 + sec;
+      }
+      const decodedUpNextText = decodeUpNextPromoText(activeMp3Url) || (s as any).upNextScriptText || undefined;
+      return {
+        slot,
+        announcement: s,
+        activeMp3,
+        isScript,
+        isUpNextPromo: Boolean(s.isUpNextPromo) || isUpNextPromoUrl(activeMp3Url),
+        resolvedUrl,
+        durationLabel: rawDur,
+        durationSeconds: durSec,
+        scriptText: decodedUpNextText,
+      };
+    };
+
+    const timelineBreaks = playlistTimeline.filter(
+      (item): item is Extract<(typeof playlistTimeline)[number], { type: 'break' }> =>
+        item.type === 'break'
+    );
+
+    if (timelineBreaks.length > 0) {
+      for (const bEntry of timelineBreaks) {
+        for (const s of bEntry.announcements) {
+          results.push(buildBreakItem(bEntry.slotTime, s));
+        }
+      }
+    } else {
+      const playedResults: PrerecordExportBreakItem[] = [];
+      const upcomingResults: PrerecordExportBreakItem[] = [];
+      for (const slot of timeline) {
+        const sForSlot = getAnnouncementsForSlot(slot);
+        for (const s of sForSlot) {
+          const item = buildBreakItem(slot, s);
+          const isCompleted = logs.some(
+            (l) =>
+              l.announcementId === s.id &&
+              isLogForStationSlot(l, slot) &&
+              (l.status === 'played' || l.status === 'backup play')
+          );
+          if (isCompleted) {
+            playedResults.push(item);
+          } else {
+            upcomingResults.push(item);
+          }
+        }
+      }
+      results.push(...playedResults, ...upcomingResults);
+    }
+    return results;
+  }, [playMode, prerecordDate, playlistTimeline, timeline, announcements, logs]);
+
+  const prerecordExportPlaylistSequence = useMemo<PrerecordExportTrackEntry[]>(() => {
+    if (playMode !== 'Prerecord' || playlistTracks.length === 0) return [];
+    const seq: PrerecordExportTrackEntry[] = [];
+    for (const item of playlistTimeline) {
+      if (item.type === 'track' && !item.cancelled) {
+        const durStr =
+          mp3DurationCache.get(item.track.streamUrl) ||
+          availableFilesCache.get(item.track.fileName)?.duration ||
+          item.track.durationFormatted ||
+          '3:00';
+        seq.push({
+          kind: 'track',
+          title: item.track.title || item.track.fileName,
+          durationSeconds: item.track.durationSeconds || 180,
+          durationLabel: durStr,
+          filename: item.track.fileName,
+        });
+      } else if (item.type === 'break') {
+        const bItems = prerecordExportBreakItems.filter(
+          (b) =>
+            item.announcements.some((a) => a.id === b.announcement.id) &&
+            isSameMinute(b.slot, item.slotTime)
+        );
+        if (bItems.length > 0) {
+          seq.push({
+            kind: 'break',
+            title: `Break ${format(item.slotTime, 'h:mm a')}`,
+            durationSeconds: item.totalDurationSec,
+            durationLabel: formatTime(item.totalDurationSec),
+            slot: item.slotTime,
+            breakItems: bItems,
+          });
+        }
+      }
+    }
+    return seq;
+  }, [playMode, playlistTracks.length, playlistTimeline, prerecordExportBreakItems]);
 
   return (
-    <div className="flex flex-col h-full relative">
-      {(() => {
-        const modeStr = playMode as string;
-        const initialActiveShow = (modeStr === 'Playlist' || modeStr === 'Prerecord' || modeStr === 'Export') ? effectiveShow : (timeline.length > 0 ? (() => {
-          const firstSlot = timeline[0];
-          const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
-          const dayName = daysOrder[firstSlot.getDay()];
-          const hour = firstSlot.getHours();
-          const minute = firstSlot.getMinutes();
-          const activeShows = shows.filter(show => 
-            isTimeInShow(show, dayName, hour, minute)
-          );
-          return activeShows[0] || null;
-        })() : null);
-
-        const initialShade = (modeStr === 'Playlist' || modeStr === 'Prerecord' || modeStr === 'Export')
-          ? (effectiveShow 
-              ? getShowShade(effectiveShow, getSortedShows(shows))
-              : { bg: '#faf5ff', border: '#c084fc', title: modeStr === 'Export' ? 'Export Mode' : modeStr === 'Prerecord' ? 'Prerecord Mode' : 'Playlist Mode' })
-          : (initialActiveShow 
-              ? getShowShade(initialActiveShow, getSortedShows(shows))
-              : { bg: 'var(--show-shade-none-bg, #f1f5f9)', border: 'var(--show-shade-none-border, #cbd5e1)', title: 'No active show scheduled' });
-
-        return (
-          <div 
-            ref={persistentHeaderRef}
-            className="flex items-stretch gap-2 w-full relative min-h-[2.5rem] h-[2.5rem] z-10 shrink-0 mb-0 font-sans"
-            style={{ paddingRight: '4px' }}
-          >
-            <div 
-              ref={persistentLeftStripRef}
-              className="absolute left-0 top-0 bottom-0 w-1 z-10"
-              style={{ backgroundColor: initialShade.bg }}
-              title={initialShade.title}
-            />
-            <div 
-              ref={persistentTextBoxRef}
-              className="text-slate-800 p-1 px-3 rounded-none shadow-sm flex flex-col justify-center text-xs font-black tracking-normal leading-tight ml-1 select-none uppercase border flex-1"
-              style={{ 
-                backgroundColor: initialShade.bg, 
-                borderColor: initialShade.border 
-              }}
-            >
-              <div ref={persistentTitleRef} className="line-clamp-2 font-sans">
-                <span ref={persistentTitleTextRef}>
-                  {(modeStr === 'Playlist' || modeStr === 'Prerecord' || modeStr === 'Export') 
-                    ? (effectiveShow ? effectiveShow.name : (modeStr === 'Export' ? 'Export Mode' : modeStr === 'Prerecord' ? 'Prerecord Mode' : 'Playlist Mode'))
-                    : (initialActiveShow ? initialActiveShow.name : "No Scheduled Show")}
-                </span>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+    <div className="flex flex-col h-full w-full relative overflow-hidden">
+      <div
+        className="flex-1 min-h-0 flex flex-col relative overflow-hidden w-full bg-slate-100/60 tobe-timeline-canvas rec-dark-safe-pills rec-warm-dark-shades"
+      >
+      {playMode === 'Live' ? (
+        topPinnedSpacer && (
+          <PinnedLiveShowBanner
+            spacer={topPinnedSpacer}
+            position="top"
+            onScrollToSpacer={scrollToSpacer}
+          />
+        )
+      ) : (
+        <PersistentModeShowHeader
+          playMode={playMode}
+          effectiveShow={effectiveShow}
+          shows={shows}
+          timeline={timeline}
+          persistentHeaderRef={persistentHeaderRef}
+          persistentLeftStripRef={persistentLeftStripRef}
+          persistentTextBoxRef={persistentTextBoxRef}
+          persistentTitleRef={persistentTitleRef}
+          persistentTitleTextRef={persistentTitleTextRef}
+        />
+      )}
 
       <div 
         ref={scrollContainerRef}
-        className="flex-1 overflow-y-auto pb-4 relative"
+        onScroll={playMode === 'Live' ? handleLiveScrollContainer : undefined}
+        className="w-full flex-1 min-h-0 overflow-y-auto overflow-x-hidden pb-4 relative"
       >
         {(() => {
           const modeStr = playMode as string;
-          const shouldRenderPlaylistView = (modeStr === 'Playlist' || modeStr === 'Export') || 
-            (modeStr === 'Prerecord' && playlistTracks.length > 0);
+          const hasMusicTracks = playlistTracks.some(t => !(t as any).isAnnouncement);
+          const shouldRenderPlaylistView = modeStr === 'Playlist' || 
+            (modeStr === 'Prerecord' && selectedFolderPath !== '__no_playlist__' && hasMusicTracks);
 
           if (shouldRenderPlaylistView) {
-            if (!effectiveShow) {
-              return (
-                <div className="flex flex-col items-center justify-center p-6 text-center bg-slate-50 border border-slate-200 rounded-xl m-4 space-y-3">
-                  <ListMusic className="w-8 h-8 text-purple-600" />
-                  <h3 className="text-sm font-black uppercase text-slate-800 tracking-wider">No Show Selected</h3>
-                  <p className="text-xs text-slate-600 max-w-sm">
-                    Select a show to load its automated music tracks.
-                  </p>
-                </div>
-              );
-            }
-            if (isPlaylistLoading) {
-              return (
-                <div className="flex items-center justify-center p-8 text-purple-700 space-x-2">
-                  <RefreshCw className="w-5 h-5 animate-spin" />
-                  <span className="text-xs font-black uppercase tracking-wider">Assembling Playlist Tracks & Announcements...</span>
-                </div>
-              );
-            }
-            const noMp3sTooltip = `Please place .m3u playlist files or .mp3 tracks inside:\n/medialibrary/${playlistFolderType}/${effectiveShow.nameShort || effectiveShow.name}`;
-            const firstUnplayedIdx = playlistTimeline.findIndex(item => {
-              if (item.type === 'track') return !item.played;
-              if (item.type === 'break') {
-                return item.announcements.some(s => {
-                  const playedLog = logs.find(l => 
-                    l.announcementId === s.id && 
-                    (l.announcementTime === item.slotTime.toISOString() || isSameMinute(parseISO(l.timestamp), item.slotTime)) &&
-                    (l.status === 'played' || l.status === 'backup play')
-                  );
-                  return !playedLog;
-                });
-              }
-              return false;
-            });
-            const unplayedTimelineCards = playlistTimeline.filter(
-              item => (item.type === 'track' && !item.played && !item.cancelled) || item.type === 'break'
-            );
-
             return (
-              <div className="space-y-2 p-2">
-                {playlistTracks.length === 0 && (
-                  <div
-                    key="no-mp3s-card"
-                    id="no-mp3s-indicator"
-                    title={noMp3sTooltip}
-                    className="min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border bg-purple-50 border-purple-200 text-purple-900 select-none w-full cursor-help my-1.5"
-                  >
-                    <span className="text-xs font-black uppercase text-purple-900 tracking-widest font-sans flex items-center gap-1.5">
-                      <ListMusic className="w-3.5 h-3.5 text-purple-700 shrink-0" />
-                      No mp3's found.
-                    </span>
-                  </div>
-                )}
-                {playlistTimeline.map((item, index) => {
-                  if (item.type === 'header') {
-                    return null;
-                  }
+              <PlayerPlaylistDeckView
+                playMode={playMode}
+                effectiveShow={effectiveShow}
+                shows={shows}
+                now={now}
+                logs={logs}
+                isPlaylistLoading={isPlaylistLoading}
+                playlistFolderType={playlistFolderType}
+                playlistTimeline={playlistTimeline}
+                playlistTracks={playlistTracks}
+                playedPlaylistTracks={playedPlaylistTracks}
+                pendingPlayedPlaylistTracksRef={pendingPlayedPlaylistTracksRef}
+                trackMetadataMap={trackMetadataMap}
+                playingStates={playingStates}
+                isAudioPlaying={isAudioPlaying}
+                movedHighlightTrackId={movedHighlightTrackId}
+                resolvedAdminContact={resolvedAdminContact}
+                activeItemRef={activeItemRef}
+                nowSectionRef={nowSectionRef}
+                renderCacheStatusMessage={renderCacheStatusMessage}
+                scrollToNow={scrollToNow}
+                handleMoveTrackUp={handleMoveTrackUp}
+                handleMoveTrackDown={handleMoveTrackDown}
+                handleCancelTrack={handleCancelTrack}
+                handleReactivateTrack={handleReactivateTrack}
+                handleTogglePlayTrack={handleTogglePlayTrack}
+                handleMoveBreakUp={handleMoveBreakUp}
+                handleMoveBreakDown={handleMoveBreakDown}
+                handlePlay={handlePlay}
+                onOpenHelpPopup={setHelpPopupCard}
+              />
+            );
+          }
 
-                  const isNowPosition = index === firstUnplayedIdx || (firstUnplayedIdx === -1 && index === playlistTimeline.length - 1);
-
-                  const nowCard = isNowPosition ? (
-                    <div 
-                      key="now-indicator"
-                      ref={activeItemRef}
-                      className="h-6 flex items-center justify-between px-3 rounded shadow-sm border my-1.5 ml-1 bg-blue-600 border-blue-500 text-white select-none"
-                      id="now-indicator"
-                    >
-                      <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5">
-                        <RadioTower className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                        {modeStr === 'Prerecord' ? 'next' : 'now'}
-                      </span>
-                      {renderCacheStatusMessage()}
-                    </div>
-                  ) : null;
-
-                  if (item.type === 'track') {
-                    const isCurrentlyPlaying = !!playingStates[item.track.id] || isAudioPlaying(item.track.id);
-                    const isPlayedTrack = !!item.played || !!playedPlaylistTracks[item.track.id] || !!playedPlaylistTracks[item.track.fileName] || !!pendingPlayedPlaylistTracksRef.current[item.track.id] || !!pendingPlayedPlaylistTracksRef.current[item.track.fileName];
-                    const playedAtTime = item.playedAt || playedPlaylistTracks[item.track.id]?.playedAt || playedPlaylistTracks[item.track.fileName]?.playedAt || pendingPlayedPlaylistTracksRef.current[item.track.id]?.playedAt || pendingPlayedPlaylistTracksRef.current[item.track.fileName]?.playedAt;
-                    const formattedPlayedAt = playedAtTime ? format(parseISO(playedAtTime), 'h:mm a') : format(new Date(), 'h:mm a');
-                    const isCancelledTrack = !!item.cancelled;
-
-                    const timelineCardIdx = unplayedTimelineCards.findIndex(c => c.id === item.id);
-                    const isTopCardInTimeline = timelineCardIdx === 0;
-                    const isBottomCardInTimeline = timelineCardIdx === unplayedTimelineCards.length - 1;
-
-                    const meta = trackMetadataMap[item.track.streamUrl] ||
-                                 trackMetadataMap[item.track.fileName] ||
-                                 trackMetadataMap[item.track.id];
-
-                    const isParsed = !!meta;
-
-                    const mp3FileName = item.track.fileName || item.track.title || '';
-                    const rawArtist = meta?.artist ? meta.artist.trim() : null;
-                    const rawAlbumArtist = meta?.albumArtist ? meta.albumArtist.trim() : null;
-                    const rawTitle = meta?.title ? meta.title.trim() : null;
-                    const rawAlbum = meta?.album ? meta.album.trim() : null;
-
-                    // Row 1: Artist and (Album Artist)
-                    let row1Text: string | null = null;
-                    if (rawArtist && rawAlbumArtist) {
-                      const normArtist = rawArtist.toLowerCase();
-                      const normAlbumArtist = rawAlbumArtist.toLowerCase();
-                      if (normArtist === normAlbumArtist || normArtist.includes(normAlbumArtist)) {
-                        row1Text = rawArtist;
-                      } else {
-                        row1Text = `${rawArtist} (${rawAlbumArtist})`;
-                      }
-                    } else if (rawArtist) {
-                      row1Text = rawArtist;
-                    } else if (rawAlbumArtist) {
-                      row1Text = rawAlbumArtist;
-                    }
-
-                    // Row 2: Title - Album (Fallback to filename if title and album are blank)
-                    let row2Text: string = mp3FileName;
-                    if (rawTitle && rawAlbum) {
-                      row2Text = `${rawTitle} - ${rawAlbum}`;
-                    } else if (rawTitle) {
-                      row2Text = rawTitle;
-                    } else if (rawAlbum) {
-                      row2Text = rawAlbum;
-                    } else {
-                      row2Text = mp3FileName;
-                    }
-
-                    // Tooltip
-                    const tooltipParts: string[] = [];
-                    if (mp3FileName) tooltipParts.push(`File: ${mp3FileName}`);
-                    if (rawTitle) tooltipParts.push(`Track: ${rawTitle}`);
-                    if (rawArtist) tooltipParts.push(`Artist: ${rawArtist}`);
-                    if (rawAlbumArtist) tooltipParts.push(`Album Artist: ${rawAlbumArtist}`);
-                    if (rawAlbum) tooltipParts.push(`Album: ${rawAlbum}`);
-                    if (!isParsed) tooltipParts.push(`(ID3 Tags: ...parsing...)`);
-
-                    const tooltipText = tooltipParts.join('\n');
-
-                    return (
-                      <Fragment key={item.id}>
-                        {nowCard}
-                        <div 
-                          className={cn(
-                            "rounded border shadow-xs p-2 my-1.5 transition-all flex flex-col gap-0 select-none text-left border-l-[4px]",
-                            item.type !== 'break' && item.track ? "pb-[1px]" : "",
-                            item.isOverrun ? "border-amber-600" : "",
-                            (item.track && item.track.id === movedHighlightTrackId)
-                              ? "ring-2 ring-purple-500/90 shadow-lg scale-[1.01] z-10"
-                              : isCurrentlyPlaying 
-                                ? "ring-1 ring-purple-500/40" 
-                                : isPlayedTrack
-                                  ? "opacity-90"
-                                  : isCancelledTrack
-                                    ? "opacity-75"
-                                    : ""
-                          )}
-                          style={{
-                            backgroundColor: 'var(--playlist-card-bg)',
-                            borderColor: item.isOverrun ? '#d97706' : 'var(--playlist-card-border)',
-                            color: 'var(--playlist-card-text)',
-                            borderLeftColor: isCurrentlyPlaying
-                              ? '#9333ea'
-                              : isPlayedTrack
-                                ? '#10b981'
-                                : isCancelledTrack
-                                  ? '#94a3b8'
-                                  : '#a855f7'
-                          }}
-                          title={tooltipText}
-                        >
-                          {/* Top Header Bar for Playlist card: ListMusic icon + Up/Down/X controls on left, Play button right-justified */}
-                          <div 
-                            className={cn(
-                              "flex justify-between items-center -mx-2 -mt-2 px-2 py-1 rounded-t border-b",
-                              item.isOverrun ? "border-amber-600/50" : "border-slate-200/60 dark:border-slate-700/60"
-                            )}
-                            style={{ backgroundColor: item.isOverrun ? 'rgba(217, 119, 6, 0.15)' : 'var(--playlist-card-header-bg)' }}
-                          >
-                            <div className="flex items-center gap-1.5">
-                              <ListMusic className={cn("w-3.5 h-3.5 shrink-0", item.isOverrun ? "text-amber-600 dark:text-amber-400" : "text-purple-600 dark:text-purple-300")} />
-                              
-                              {/* Up, Down, X, Reactivate controls slid to the left next to list note icon */}
-                              <div className="flex items-center gap-0.5 ml-0.5">
-                                {(!isPlayedTrack && !isCancelledTrack) && (
-                                  <>
-                                    {!isTopCardInTimeline && (
-                                      <button
-                                        onClick={() => handleMoveTrackUp(item.track.id)}
-                                        className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                        title="Move song up in queue"
-                                      >
-                                        <ChevronUp className="w-3 h-3" />
-                                      </button>
-                                    )}
-                                    {!isBottomCardInTimeline && (
-                                      <button
-                                        onClick={() => handleMoveTrackDown(item.track.id)}
-                                        className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                        title="Move song down in queue"
-                                      >
-                                        <ChevronDown className="w-3 h-3" />
-                                      </button>
-                                    )}
-                                    <button
-                                      onClick={() => handleCancelTrack(item.track.id)}
-                                      className="p-0.5 text-slate-600 dark:text-slate-300 hover:text-red-600 hover:bg-red-100 dark:hover:bg-red-950/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                      title="Cancel song (move to bottom)"
-                                    >
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  </>
-                                )}
-
-                                {isCancelledTrack && (
-                                  <button
-                                    onClick={() => handleReactivateTrack(item.track.id)}
-                                    className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors shadow-xs"
-                                    title="Reactivate song to queue"
-                                  >
-                                    <RotateCcw className="w-2.5 h-2.5 text-slate-600 dark:text-slate-300" />
-                                    <span>Reactivate</span>
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Right side: Right-justified circular Play / Pause / Check button */}
-                            <div className="flex items-center gap-1.5 ml-auto">
-                              <button
-                                onClick={() => handleTogglePlayTrack(item.track)}
-                                className={cn(
-                                  "w-5 h-5 rounded-full shrink-0 aspect-square transition-all shadow-xs cursor-pointer flex items-center justify-center p-0 border border-transparent",
-                                  isCurrentlyPlaying
-                                    ? "bg-purple-700 hover:bg-purple-800 text-white"
-                                    : isPlayedTrack
-                                      ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                                      : isCancelledTrack
-                                        ? "bg-slate-400 dark:bg-slate-700 hover:bg-slate-500 text-white"
-                                        : "bg-purple-600 hover:bg-purple-500 text-white"
-                                )}
-                                title={isCurrentlyPlaying ? "Stop track" : isPlayedTrack ? "Replay playlist track" : "Play track"}
-                              >
-                                {isCurrentlyPlaying ? (
-                                  <Square className="w-2.5 h-2.5 fill-current" />
-                                ) : isPlayedTrack ? (
-                                  <CheckCircle className="w-2.5 h-2.5 text-white" />
-                                ) : (
-                                  <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
-                                )}
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* MP3 Information: Top justified, 3 rows fixed min-height for uniform card size */}
-                          <div 
-                            className={cn(
-                              "flex flex-col justify-start items-start text-left w-full font-sans font-normal text-xs leading-snug gap-0.5 pt-[3px] pb-[3px]",
-                              isCurrentlyPlaying ? "text-purple-800 dark:text-purple-200" :
-                              isPlayedTrack ? "text-emerald-950 dark:text-emerald-100" :
-                              isCancelledTrack ? "text-slate-500 dark:text-slate-400 line-through decoration-slate-400/60" :
-                              "text-slate-900 dark:text-slate-100"
-                            )}
-                            title={tooltipText}
-                          >
-                            {!isParsed ? (
-                              <div className="line-clamp-3 break-words font-sans font-normal text-xs w-full">
-                                {mp3FileName}
-                              </div>
-                            ) : (
-                              <>
-                                {row1Text && (
-                                  <div className="line-clamp-1 truncate font-sans font-normal text-xs w-full text-slate-600 dark:text-slate-300">
-                                    {row1Text}
-                                  </div>
-                                )}
-                                <div className={cn("break-words font-sans font-normal text-xs w-full", row1Text ? "line-clamp-2" : "line-clamp-3")}>
-                                  {row2Text}
-                                </div>
-                              </>
-                            )}
-                          </div>
-
-                          {/* Status & Duration row + Waveform visualizer */}
-                          <div className="flex flex-col gap-[1px] pt-0.5">
-                            <div className="flex items-center justify-between gap-1">
-                              <div className="flex items-center gap-1">
-                                {isCurrentlyPlaying ? (
-                                  <>
-                                    <Volume2 className="w-2.5 h-2.5 text-purple-600 animate-pulse" />
-                                    <span className="text-xs font-bold text-purple-600 dark:text-purple-400 uppercase tracking-tighter">
-                                      Playing
-                                    </span>
-                                  </>
-                                ) : isPlayedTrack ? (
-                                  <>
-                                    <CheckCircle className="w-2.5 h-2.5 text-green-500" />
-                                    <span className="text-xs font-bold text-green-600 dark:text-green-400 uppercase tracking-tighter">
-                                      Played {formattedPlayedAt}
-                                    </span>
-                                  </>
-                                ) : isCancelledTrack ? (
-                                  <>
-                                    <AlertCircle className="w-2.5 h-2.5 text-slate-400" />
-                                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter">
-                                      Cancelled
-                                    </span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Clock className="w-2.5 h-2.5 text-slate-500" />
-                                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tighter">
-                                      To be played
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-
-                              {isCurrentlyPlaying ? (
-                                <div className="flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none text-purple-600 dark:text-purple-400">
-                                  <span>{formatTime(playingStates[item.track.id]?.currentTime || 0)}</span>
-                                  <span className="opacity-30">/</span>
-                                  <span>{formatTime(playingStates[item.track.id]?.duration || item.track.durationSeconds || 0)}</span>
-                                </div>
-                              ) : (
-                                <span className="text-xs font-sans font-bold tabular-nums text-slate-500 dark:text-slate-400 leading-none">
-                                  {mp3DurationCache.get(item.track.streamUrl) || availableFilesCache.get(item.track.fileName)?.duration || item.track.durationFormatted}
-                                </span>
-                              )}
-                            </div>
-
-                            <WaveformVisualizer 
-                              url={item.track.streamUrl || item.track.fileName}
-                              currentTime={isCurrentlyPlaying ? (playingStates[item.track.id]?.currentTime || 0) : 0}
-                              duration={playingStates[item.track.id]?.duration || item.track.durationSeconds || 0}
-                              isPlaying={isCurrentlyPlaying}
-                              isPlayed={isPlayedTrack}
-                            />
-                          </div>
-                        </div>
-                      </Fragment>
-                    );
-                  }
-
-                if (item.type === 'break') {
-                  const slot = item.slotTime;
-                  const sForSlot = item.announcements;
-                  const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
-                  const dayName = daysOrder[slot.getDay()];
-                  const hour = slot.getHours();
-                  const minute = slot.getMinutes();
-                  const isPre = false;
-                  const isPresent = isSameMinute(slot, now);
-                  const isPast = isBefore(slot, now) && !isPresent;
-                  const diffSeconds = Math.abs(differenceInSeconds(now, slot));
-
-                  const timelineCardIdx = unplayedTimelineCards.findIndex(c => c.id === item.id);
-                  const isTopBreakInTimeline = timelineCardIdx === 0;
-                  const isBottomBreakInTimeline = timelineCardIdx === unplayedTimelineCards.length - 1;
-                  const isBreakMovedHighlight = item.id === movedHighlightTrackId;
-
-                  return (
-                    <Fragment key={item.id}>
-                      {nowCard}
-                      <div className="space-y-1.5 my-1.5">
-                        {sForSlot.map((s, idx) => {
-                        const playedLog = logs.find(l => 
-                          l.announcementId === s.id && 
-                          (l.announcementTime === slot.toISOString() || isSameMinute(parseISO(l.timestamp), slot)) &&
-                          (l.status === 'played' || l.status === 'backup play')
-                        );
-                        const played = !!playedLog && playedLog.playMode !== 'Export';
-                        const exported = !!playedLog && playedLog.playMode === 'Export';
-                        const slotKey = `${slot.toISOString()}-${s.id}`;
-                        const breakNum = breakIndexMap[slotKey] || (idx + 1);
-                        const customVal = customScriptTimes[slotKey];
-                        const isValid = !customVal || parseCustomTimeText(customVal) !== null;
-                        const activeMp3 = getActiveMp3ForSlot(s, slot);
-                        const isScript = getGatedAssetType(activeMp3) === 'script';
-                        const activeMp3Url = activeMp3?.mp3Url || '';
-                        const status = getMP3Status(activeMp3Url);
-                        const isVerified = isScript ? status.exists : (status.exists && status.valid);
-                        const isCurrentlyPlaying = !!playingStates[slotKey] || isAudioPlaying(slotKey);
-                        const isUpcoming = !played && !exported && !isPast && !isPresent && diffSeconds <= 600 && isAfter(slot, now);
-
-                        const isMissedRecent = isPast && !played && !exported && diffSeconds <= 1800;
-                        const isMissedOld = isPast && !played && !exported && diffSeconds > 1800;
-
-                        const fileInCache = availableFilesCache.get(activeMp3Url);
-                        const activeShows = shows.filter(show => 
-                          isTimeInShow(show, dayName, hour, minute)
-                        );
-                        const activeShow = activeShows[0];
-                        const sortedShows = getSortedShows(shows);
-                        const showShade = activeShow ? getShowShade(activeShow, sortedShows) : null;
-                        const resolvedUrl = fileInCache ? fileInCache.path : activeMp3Url;
-
-                        const cardBorderClass = !isVerified
-                          ? "border-red-500"
-                          : (isBreakMovedHighlight || s.id === movedHighlightTrackId)
-                            ? "ring-2 ring-purple-500/90 shadow-lg scale-[1.01] z-10 border-purple-600"
-                            : isCurrentlyPlaying || isUpcoming
-                              ? "border-purple-600 ring-1 ring-purple-600/30"
-                              : exported
-                                ? "border-emerald-600"
-                                : (isMissedRecent || isMissedOld)
-                                  ? "border-amber-600"
-                                  : played
-                                    ? "border-emerald-600"
-                                    : "border-slate-500";
-
-                        const cardBgClass = !isVerified
-                          ? "bg-[#fef2f2]"
-                          : isCurrentlyPlaying
-                            ? "bg-white"
-                            : isUpcoming
-                              ? "bg-[#faf5ff]"
-                              : exported
-                                ? "bg-[#f0fdf4]"
-                                : (isMissedRecent || isMissedOld)
-                                  ? "bg-[#fffbeb]"
-                                  : played
-                                    ? "bg-white"
-                                    : (isPresent && !played && !exported)
-                                      ? "bg-[#faf5ff]"
-                                      : "bg-white";
-
-                        const cardOpacityClass = (isPast && (played || exported) && !isCurrentlyPlaying)
-                          ? "opacity-75"
-                          : (isMissedRecent || isMissedOld) && !isCurrentlyPlaying
-                            ? "opacity-95"
-                            : "opacity-100";
-
-                        return (
-                          <div key={`${slot.toISOString()}-${s.id}-${idx}`} className="flex items-stretch gap-2 w-full pr-1 relative min-h-[4.5rem]">
-                            {activeShow ? (
-                              <div 
-                                className="absolute left-0 top-[-6px] bottom-[-6px] w-1 animate-fade-in z-10" style={{ backgroundColor: showShade?.bg }} 
-                                title={showShade?.title}
-                              />
-                            ) : null}
-                            <div 
-                              onClick={() => isVerified ? handlePlay(s, slot) : null}
-                              style={{
-                                borderLeftColor: !isVerified
-                                  ? '#f43f5e'
-                                  : isScript
-                                    ? '#3b82f6'
-                                    : '#a855f7'
-                              }}
-                              className={cn(
-                                "flex-1 min-w-0 rounded border shadow-sm p-2 transition-colors flex flex-col gap-1.5 select-none cursor-pointer hover:shadow hover:border-slate-300 active:scale-[99.5%] active:bg-slate-50/30 text-left",
-                                activeShow ? "ml-1" : "", "border-l-[4px] rounded-l-none",
-                                !isScript && isVerified ? "pb-[1px]" : "",
-                                cardBorderClass,
-                                cardBgClass,
-                                cardOpacityClass
-                              )}
-                            >
-                              <div className="flex justify-between items-center bg-slate-50 -mx-2 -mt-2 px-2 py-1 rounded-t border-b border-slate-200/60">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs uppercase font-black text-slate-600 tracking-tighter">
-                                    {format(slot, 'MMM dd')}
-                                  </span>
-
-                                  {playlistTracks.length > 0 && !played && !exported && (
-                                    <div className="flex items-center gap-0.5">
-                                      {!isTopBreakInTimeline && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleMoveBreakUp(item.id);
-                                          }}
-                                          className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                          title="Move announcement break up in queue"
-                                        >
-                                          <ChevronUp className="w-3 h-3" />
-                                        </button>
-                                      )}
-                                      {!isBottomBreakInTimeline && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleMoveBreakDown(item.id);
-                                          }}
-                                          className="p-0.5 text-slate-700 dark:text-slate-200 hover:text-purple-800 dark:hover:text-purple-200 hover:bg-purple-200/60 dark:hover:bg-purple-900/60 rounded border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors"
-                                          title="Move announcement break down in queue"
-                                        >
-                                          <ChevronDown className="w-3 h-3" />
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  <span className="text-xs font-sans font-black tabular-nums text-purple-600">
-                                    {format(slot, 'h:mm a')}
-                                  </span>
-                                </div>
-                                {isCurrentlyPlaying ? (
-                                  <div className="flex items-center gap-1 text-xs font-black uppercase text-purple-600">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-purple-600"></div>
-                                    Playing
-                                  </div>
-                                ) : (isPresent && !played && !exported) ? (
-                                  <span className="text-xs text-white px-1 py-0.5 rounded font-black uppercase leading-none bg-purple-600">Next</span>
-                                ) : isUpcoming ? (
-                                  <span className="text-xs text-white px-1 py-0.5 rounded font-black uppercase leading-none shadow-sm animate-pulse bg-purple-500 shadow-purple-200">Next</span>
-                                ) : null}
-                              </div>
-
-                              <div className="flex items-center justify-between gap-2">
-                                <div className={cn(
-                                  "text-xs font-bold leading-tight break-words line-clamp-2 flex-1",
-                                  isCurrentlyPlaying ? "text-purple-700" : "text-slate-800"
-                                  )}>
-                                  {s.name}
-                                </div>
-                                
-                                {isScript ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handlePlay(s, slot);
-                                    }}
-                                    className={cn(
-                                      "shrink-0 p-1 rounded-full transition-colors shadow-sm cursor-pointer",
-                                      !isVerified ? "bg-red-50 text-red-300" :
-                                      isCurrentlyPlaying ? "bg-slate-900 text-white" :
-                                      (played || exported) ? "bg-slate-100 text-slate-500" :
-                                      isMissedRecent ? "bg-slate-500 text-white" :
-                                      isPresent || isUpcoming ? "bg-purple-600 text-white shadow-md shadow-purple-200" :
-                                      "bg-slate-700 text-white"
-                                    )}
-                                    title={!isVerified ? "Invalid or missing file" : isCurrentlyPlaying ? "Stop Audio" : (played || exported) ? "Read Again" : "Display Script"}
-                                    >
-                                    {!isVerified ? (
-                                      <X className="w-2.5 h-2.5" />
-                                    ) : isCurrentlyPlaying ? (
-                                      <Square className="w-2.5 h-2.5 fill-current" />
-                                    ) : (played || exported) ? (
-                                      <RefreshCw className="w-2.5 h-2.5" />
-                                    ) : (
-                                      <FileText className="w-2.5 h-2.5" />
-                                    )}
-                                  </button>
-                                ) : (
-                                  <div 
-                                    className={cn(
-                                      "shrink-0 p-1 rounded-full transition-colors shadow-sm",
-                                      !isVerified ? "bg-red-50 text-red-300" :
-                                      isCurrentlyPlaying ? "bg-slate-900 text-white" :
-                                      (played || exported) ? "bg-slate-100 text-slate-500" :
-                                      isMissedRecent ? "bg-slate-500 text-white" :
-                                      isPresent || isUpcoming ? "bg-purple-600 text-white shadow-md shadow-purple-200" :
-                                      "bg-slate-700 text-white"
-                                    )}
-                                    title={!isVerified ? "Invalid or missing file" : (played || exported) ? "Play Again" : undefined}
-                                  >
-                                    {!isVerified ? (
-                                      <X className="w-2.5 h-2.5" />
-                                    ) : isCurrentlyPlaying ? (
-                                      <Square className="w-2.5 h-2.5 fill-current" />
-                                    ) : (played || exported) ? (
-                                      <RefreshCw className="w-2.5 h-2.5" />
-                                    ) : (playMode as string) === 'Export' ? (
-                                      <Ear className="w-2.5 h-2.5" />
-                                    ) : (
-                                      <Play className="w-2.5 h-2.5 fill-current" />
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-
-                              <div className="flex flex-col gap-[1px]">
-                                <div className="flex items-center justify-between">
-                                  {isVerified ? (
-                                    <div className="flex flex-col gap-0.5">
-                                      <div className="flex items-center gap-1">
-                                        {exported ? (
-                                          <>
-                                            <CheckCircle className="w-2.5 h-2.5 text-purple-500" />
-                                            <span className="text-xs font-bold uppercase tracking-tighter text-purple-600">
-                                              Exported
-                                            </span>
-                                          </>
-                                        ) : isCurrentlyPlaying ? (
-                                          <>
-                                            <Volume2 className="w-2.5 h-2.5 text-purple-600 animate-pulse" />
-                                            <span className="text-xs font-bold text-purple-600 uppercase tracking-tighter">
-                                              Playing
-                                            </span>
-                                          </>
-                                        ) : played ? (
-                                          <>
-                                            <CheckCircle className="w-2.5 h-2.5 text-green-500" />
-                                            <span className="text-xs font-bold text-green-600 uppercase tracking-tighter">
-                                              {isScript ? (playedLog?.status === 'backup play' ? 'Played' : 'Read') : 'Played'} {playedLog ? format(parseISO(playedLog.logTimeStamp || playedLog.timestamp), 'h:mm a') : format(new Date(), 'h:mm a')}
-                                            </span>
-                                          </>
-                                        ) : isMissedRecent || isMissedOld ? (
-                                          <>
-                                            <AlertCircle className="w-2.5 h-2.5 text-amber-600" />
-                                            <span className="text-xs font-bold text-amber-700 uppercase tracking-tighter">Missed</span>
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Clock className="w-2.5 h-2.5 text-slate-500" />
-                                            <span className="text-xs font-bold text-slate-500 uppercase tracking-tighter">{isScript ? "To be read" : "To be played"}</span>
-                                          </>
-                                        )}
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div className="flex items-center gap-1">
-                                      <AlertCircle className="w-2.5 h-2.5 text-red-500" />
-                                      <span className="text-xs font-bold text-red-600 uppercase tracking-tighter">
-                                        {!status.exists ? "File not found." : (isScript ? "Invalid script file." : "File not mp3.")}
-                                      </span>
-                                    </div>
-                                  )}
-                                  
-                                  {isCurrentlyPlaying ? (
-                                    <div className="flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none text-purple-600">
-                                      <span>{formatTime(playingStates[slotKey]?.currentTime || 0)}</span>
-                                      <span className="opacity-30">/</span>
-                                      <span>{formatTime(playingStates[slotKey]?.duration || 0)}</span>
-                                    </div>
-                                  ) : isVerified ? (
-                                    <span className="text-xs font-sans font-bold tabular-nums text-slate-500 leading-none">
-                                      {isScript ? (activeMp3?.approximateReadTime ? (activeMp3.approximateReadTime.startsWith('~') ? activeMp3.approximateReadTime : `~${activeMp3.approximateReadTime}`) : '-:--') : (mp3DurationCache.get(activeMp3Url) || activeMp3?.duration || '--:--')}
-                                    </span>
-                                  ) : null}
-                                </div>
-
-                                {((!isScript && isVerified) || (isScript && activeMp3?.backupMp3Url && isCurrentlyPlaying)) && (
-                                  <WaveformVisualizer 
-                                    url={isScript ? ((availableFilesCache.get(activeMp3?.backupMp3Url || '')?.path) || activeMp3?.backupMp3Url || '') : resolvedUrl}
-                                    currentTime={isCurrentlyPlaying ? (playingStates[slotKey]?.currentTime || 0) : 0}
-                                    duration={playingStates[slotKey]?.duration || 0}
-                                    isPlaying={isCurrentlyPlaying}
-                                    isPlayed={played || exported}
-                                  />
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      </div>
-                    </Fragment>
-                  );
-                }
-
-                if (item.type === 'show-end') {
-                  return (
-                    <Fragment key={item.id}>
-                      {nowCard}
-                      <div 
-                        className="min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border bg-slate-700 border-slate-600 text-white select-none w-full flex-wrap"
-                        id="show-end-indicator"
-                      >
-                        <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
-                          <Flag className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-                          show end
-                          <span className="text-[10px] text-slate-300 font-sans font-normal tabular-nums">
-                            ({format(item.showEnd, 'h:mm a')})
-                          </span>
-                        </span>
-                        <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-600 text-slate-100 shrink-0 tabular-nums">
-                          {item.status === 'over' ? (
-                            `Over by: ${item.diffFormatted}`
-                          ) : item.status === 'under' ? (
-                            `Under by: ${item.diffFormatted}`
-                          ) : (
-                            `On time (${item.diffFormatted})`
-                          )}
-                        </span>
-                      </div>
-                    </Fragment>
-                  );
-                }
-
-                if (item.type === 'extra-tracks') {
-                  return (
-                    <Fragment key={item.id}>
-                      {nowCard}
-                      <div 
-                        className="min-h-7 py-1 px-3 flex items-center justify-between gap-2 rounded shadow-sm border bg-amber-700 border-amber-600 text-white select-none w-full flex-wrap"
-                        id="extra-tracks-indicator"
-                      >
-                        <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5 flex-wrap">
-                          <ListPlus className="w-3.5 h-3.5 text-amber-200 shrink-0" />
-                          overrun
-                        </span>
-                        <span className="text-xs font-bold font-sans tracking-wide px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-500/50 text-amber-100 shrink-0 tabular-nums">
-                          {`Over by: ${item.extraFormatted}`}
-                        </span>
-                      </div>
-                    </Fragment>
-                  );
-                }
-
-                return null;
-              })}
-            </div>
-          );
-        }
-
-        return timeline.map((slot, index) => {
-          const sForSlot = getAnnouncementsForSlot(slot);
-          const isPre = playMode === 'Prerecord';
-          const isPresent = !isPre && isSameMinute(slot, now);
-
-          const daysOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
-          const dayName = daysOrder[slot.getDay()];
-          const hour = slot.getHours();
-          const minute = slot.getMinutes();
-
-          const activeShows = shows.filter(show => 
-            isTimeInShow(show, dayName, hour, minute)
-          );
-          const activeShow = activeShows[0];
-          const showShade = activeShow ? getShowShade(activeShow, getSortedShows(shows)) : null;
-
-          const startingShows = shows.filter(show => 
-            show.day === dayName && 
-            show.startHour === hour && 
-            show.startMinute === minute
-          );
-
-          const continuingShows = (hour === 0 && minute === 0) ? shows.filter(show => 
-            isTimeInShow(show, dayName, 0, 0) &&
-            !(show.day === dayName && show.startHour === 0 && show.startMinute === 0)
-          ) : [];
-          
-          if (sForSlot.length === 0 && !isPresent && !(isPre && index === 0) && startingShows.length === 0 && continuingShows.length === 0) return null;
-
-          const isPast = !isPre && isBefore(slot, now) && !isPresent;
-          const diffSeconds = !isPre ? Math.abs(differenceInSeconds(now, slot)) : 0;
+          if (playMode === 'Live') {
+            return (
+              <PlayerLiveTimelineView
+                timeline={timeline}
+                shows={shows}
+                effectiveShow={effectiveShow}
+                logs={logs}
+                now={now}
+                nowClock={nowClock}
+                windowBeforeMinutes={windowBeforeMinutes}
+                windowAfterMinutes={windowAfterMinutes}
+                showLookaroundHours={showLookaroundHours}
+                playingStates={playingStates}
+                isAudioPlaying={isAudioPlaying}
+                resolvedAdminContact={resolvedAdminContact}
+                activeItemRef={activeItemRef}
+                nowSectionRef={nowSectionRef}
+                getAnnouncementsForSlot={getAnnouncementsForSlot}
+                renderCacheStatusMessage={renderCacheStatusMessage}
+                scrollToNow={scrollToNow}
+                onPlay={handlePlay}
+                onOpenHelpPopup={setHelpPopupCard}
+              />
+            );
+          }
 
           return (
-            <div 
-              key={slot.toISOString()} 
-              data-slot-time={slot.toISOString()} 
-              className="space-y-2 py-1"
-              style={showShade ? { backgroundColor: showShade.bg } : undefined}
-            >
-              {(!isPre || index !== 0) && startingShows.map(show => {
-                const shade = getShowShade(show, getSortedShows(shows));
-                return (
-                  <div key={`show-start-${show.id}`} className="flex items-stretch gap-2 w-full pr-1 relative min-h-[1.75rem] -mb-2 z-10">
-                    <div 
-                      className="absolute left-0 top-[-6px] bottom-[-6px] w-1 animate-fade-in z-10" style={{ backgroundColor: shade.bg }} 
-                      title={shade.title}
-                    />
-                    <div 
-                      className="text-slate-800 p-1 px-3 rounded-none shadow-sm flex flex-col justify-center text-xs font-black tracking-normal leading-tight ml-1 select-none uppercase border flex-1"
-                      style={{ backgroundColor: shade.bg, borderColor: shade.border }}
-                    >
-                      <div className="line-clamp-2 font-sans">
-                        {show.name}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {(!isPre || index !== 0) && continuingShows.map(show => {
-                const shade = getShowShade(show, getSortedShows(shows));
-                return (
-                  <div key={`show-cont-${show.id}`} className="flex items-stretch gap-2 w-full pr-1 relative min-h-[1.75rem] -mb-2 z-10">
-                    <div 
-                      className="absolute left-0 top-[-6px] bottom-[-6px] w-1 animate-fade-in z-10" style={{ backgroundColor: shade.bg }} 
-                      title={shade.title}
-                    />
-                    <div 
-                      className="text-slate-800 p-1 px-3 rounded-none shadow-sm flex flex-col justify-center text-xs font-black tracking-normal leading-tight ml-1 select-none uppercase border flex-1"
-                      style={{ backgroundColor: shade.bg, borderColor: shade.border }}
-                    >
-                      <div className="line-clamp-2 font-sans">
-                        (cont.) {show.name}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {isPre && index === 0 && (
-                <div className="relative w-full pr-1">
-                  {(() => {
-                    const activeShowsForPre = shows.filter(show => 
-                      isTimeInShow(show, dayName, hour, minute)
-                    );
-                    const activeShowForPre = activeShowsForPre[0];
-                    const shadeForPre = activeShowForPre ? getShowShade(activeShowForPre, getSortedShows(shows)) : null;
-                    return shadeForPre ? (
-                      <div 
-                        className="absolute left-0 top-[-2px] bottom-[-2px] w-1 animate-fade-in z-10" style={{ backgroundColor: shadeForPre.bg }} 
-                        title={shadeForPre.title}
-                      />
-                    ) : null;
-                  })()}
-                  <div 
-                    ref={activeItemRef}
-                    className="bg-emerald-600 h-6 flex items-center justify-between pl-1 pr-3 rounded shadow-sm border border-emerald-500 ml-2"
-                    id="prerecord-start-indicator"
-                  >
-                    <span className="text-xs font-black uppercase text-white tracking-normal font-sans flex items-center gap-1.5 font-sans">
-                      <CassetteTape className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                      Prerecord
-                    </span>
-                    {renderCacheStatusMessage()}
-                  </div>
-                </div>
-              )}
-
-              {isPresent && (
-                <div className="relative w-full pr-1">
-                  {(() => {
-                    const activeShowsForNow = shows.filter(show => 
-                      isTimeInShow(show, dayName, hour, minute)
-                    );
-                    const activeShowForNow = activeShowsForNow[0];
-                    const shadeForNow = activeShowForNow ? getShowShade(activeShowForNow, getSortedShows(shows)) : null;
-                    return shadeForNow ? (
-                      <div 
-                        className="absolute left-0 top-[-2px] bottom-[-2px] w-1 animate-fade-in z-10" style={{ backgroundColor: shadeForNow.bg }} 
-                        title={shadeForNow.title}
-                      />
-                    ) : null;
-                  })()}
-                  <div 
-                    ref={activeItemRef}
-                    className="h-6 flex items-center justify-between px-3 rounded shadow-sm border ml-2 bg-blue-600 border-blue-500"
-                    id="now-indicator"
-                  >
-                    <span className="text-xs font-black uppercase text-white tracking-widest font-sans flex items-center gap-1.5">
-                      <RadioTower className="w-3.5 h-3.5 text-white/90 shrink-0" />
-                      now
-                    </span>
-                    {renderCacheStatusMessage()}
-                  </div>
-                </div>
-              )}
-              
-               {sForSlot.map((s, idx) => {
-                 const playedLog = logs.find(l => 
-                   l.announcementId === s.id && 
-                   (l.announcementTime === slot.toISOString() || isSameMinute(parseISO(l.timestamp), slot)) &&
-                   (l.status === 'played' || l.status === 'backup play')
-                 );
-                 const played = !!playedLog && playedLog.playMode !== 'Export';
-                 const exported = !!playedLog && playedLog.playMode === 'Export';
-                 const slotKey = `${slot.toISOString()}-${s.id}`;
-                 const customVal = customScriptTimes[slotKey];
-                 const isValid = !customVal || parseCustomTimeText(customVal) !== null;
-                 const activeMp3 = getActiveMp3ForSlot(s, slot);
-                 const isScript = getGatedAssetType(activeMp3) === 'script';
-                 const activeMp3Url = activeMp3?.mp3Url || '';
-                 const status = getMP3Status(activeMp3Url);
-                 const isVerified = isScript ? status.exists : (status.exists && status.valid);
-                 const isCurrentlyPlaying = !!playingStates[slotKey] || isAudioPlaying(slotKey);
-                 const isUpcoming = !played && !exported && !isPast && !isPresent && diffSeconds <= 600 && isAfter(slot, now);
-                 
-                 // RECENT MISSED: Less than 30 mins ago, not played or exported
-                 // OLD MISSED: More than 30 mins ago, not played or exported
-                 const isMissedRecent = isPast && !played && !exported && diffSeconds <= 1800;
-                 const isMissedOld = isPast && !played && !exported && diffSeconds > 1800;
-                 
-                 const fileInCache = availableFilesCache.get(activeMp3Url);
-                  const activeShows = shows.filter(show => 
-                    isTimeInShow(show, dayName, hour, minute)
-                  );
-                  const activeShow = activeShows[0];
-                  const sortedShows = getSortedShows(shows);
-                  const showShade = activeShow ? getShowShade(activeShow, sortedShows) : null;
-                 const resolvedUrl = fileInCache ? fileInCache.path : activeMp3Url;
-                 const isCached = mp3BlobCache.has(resolvedUrl) || mp3BlobCache.has(activeMp3Url) || getPlayableUrl(activeMp3Url).startsWith('blob:');
-
-                 const cardBorderClass = !isVerified
-                   ? "border-red-500"
-                   : isCurrentlyPlaying || isUpcoming
-                     ? (isPre ? "border-emerald-600 ring-1 ring-emerald-600/30" : "border-purple-600 ring-1 ring-purple-600/30")
-                     : exported
-                       ? "border-emerald-600"
-                       : (isMissedRecent || isMissedOld)
-                         ? "border-amber-600"
-                         : played
-                           ? "border-emerald-600"
-                           : "border-slate-500";
-
-                 const cardBgClass = !isVerified
-                   ? "bg-[#fef2f2]"
-                   : isCurrentlyPlaying
-                     ? "bg-white"
-                     : isUpcoming
-                       ? (isPre ? "bg-[#f0fdf4]" : "bg-[#faf5ff]")
-                       : exported
-                         ? "bg-[#f0fdf4]"
-                         : (isMissedRecent || isMissedOld)
-                           ? "bg-[#fffbeb]"
-                           : played
-                             ? "bg-white"
-                             : (isPresent && !played && !exported)
-                               ? (isPre ? "bg-[#f0fdf4]" : "bg-[#faf5ff]")
-                               : "bg-white";
-
-                 const cardOpacityClass = (isPast && (played || exported) && !isCurrentlyPlaying)
-                   ? "opacity-75"
-                   : (isMissedRecent || isMissedOld) && !isCurrentlyPlaying
-                     ? "opacity-95"
-                     : "opacity-100";
-                 
-                 return (
-                   <div key={`${slot.toISOString()}-${s.id}-${idx}`} className="flex items-stretch gap-2 w-full pr-1 relative min-h-[4.5rem]">
-                     {(() => {
-                       const activeShows = shows.filter(show => 
-                         isTimeInShow(show, dayName, hour, minute)
-                       );
-                       const activeShow = activeShows[0];
-                       return activeShow ? (
-                         <div 
-                           className="absolute left-0 top-[-6px] bottom-[-6px] w-1 animate-fade-in z-10" style={{ backgroundColor: showShade?.bg }} 
-                           title={showShade?.title}
-                         />
-                       ) : null;
-                     })()}
-                     <div 
-                       onClick={() => isVerified ? handlePlay(s, slot) : null}
-                       style={{
-                         borderLeftColor: !isVerified
-                           ? '#f43f5e'
-                           : isScript
-                             ? '#3b82f6'
-                             : '#a855f7'
-                       }}
-                       className={cn(
-                         "flex-1 min-w-0 rounded border shadow-sm p-2 transition-colors flex flex-col gap-1.5 select-none cursor-pointer hover:shadow hover:border-slate-300 active:scale-[99.5%] active:bg-slate-50/30 text-left",
-                         activeShow ? "ml-1" : "", "border-l-[4px] rounded-l-none",
-                         !isScript && isVerified ? "pb-[1px]" : "",
-                         cardBorderClass,
-                         cardBgClass,
-                         cardOpacityClass
-                       )}
-                     >
-                    {/* Header: Date & Time */}
-                    <div className="flex justify-between items-center bg-slate-50 -mx-2 -mt-2 px-2 py-1 rounded-t">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs uppercase font-black text-slate-600 tracking-tighter">
-                          {format(slot, 'MMM dd')}
-                        </span>
-                        <span className={cn(
-                          "text-xs font-sans font-black tabular-nums",
-                          isMissedRecent && !isCurrentlyPlaying ? "text-amber-800" : (isPre ? "text-emerald-600" : "text-purple-600")
-                        )}>
-                          {format(slot, 'h:mm a')}
-                        </span>
-                      </div>
-                     {isCurrentlyPlaying ? (
-                       <div className={cn(
-                         "flex items-center gap-1 text-xs font-black uppercase",
-                         isPre ? "text-emerald-600" : "text-purple-600"
-                       )}>
-                         <div className={cn("w-1.5 h-1.5 rounded-full", isPre ? "bg-emerald-600" : "bg-purple-600")}></div>
-                         {isPre ? "Prerecord" : "Live"}
-                       </div>
-                     ) : (isPresent && !played && !exported) ? (
-                       <span className={cn("text-xs text-white px-1 py-0.5 rounded font-black uppercase leading-none", isPre ? "bg-emerald-600" : "bg-purple-600")}>Next</span>
-                     ) : isUpcoming ? (
-                       <span className={cn("text-xs text-white px-1 py-0.5 rounded font-black uppercase leading-none shadow-sm animate-pulse", isPre ? "bg-emerald-500 shadow-emerald-200" : "bg-purple-500 shadow-purple-200")}>Next</span>
-                     ) : null}
-                   </div>
-
-                   {/* Track Row: Title + Play/Stop Icon */}
-                   <div className="flex items-center justify-between gap-2">
-                     <div className={cn(
-                       "text-xs font-bold leading-tight break-words line-clamp-2 flex-1",
-                       isCurrentlyPlaying ? (isPre ? "text-emerald-700" : "text-purple-700") : "text-slate-800"
-                     )}>
-                       {s.name}
-                     </div>
-                     
-                     {isScript ? (
-                       <button
-                         type="button"
-                         onClick={(e) => {
-                           e.stopPropagation();
-                           handlePlay(s, slot);
-                         }}
-                         className={cn(
-                           "shrink-0 p-1 rounded-full transition-colors shadow-sm cursor-pointer",
-                           !isVerified ? "bg-red-50 text-red-300" :
-                           isCurrentlyPlaying ? "bg-slate-900 text-white" :
-                           (played || exported) ? "bg-slate-100 text-slate-500" :
-                           isMissedRecent ? "bg-slate-500 text-white" :
-                           isPresent || isUpcoming ? (isPre ? "bg-emerald-600 text-white shadow-md shadow-emerald-200" : "bg-purple-600 text-white shadow-md shadow-purple-200") :
-                           "bg-slate-700 text-white"
-                         )}
-                         title={!isVerified ? "Invalid or missing file" : isCurrentlyPlaying ? "Stop Audio" : (played || exported) ? "Read Again" : "Display Script"}
-                         >
-                         {!isVerified ? (
-                           <X className="w-2.5 h-2.5" />
-                         ) : isCurrentlyPlaying ? (
-                           <Square className="w-2.5 h-2.5 fill-current" />
-                         ) : (played || exported) ? (
-                           <RefreshCw className="w-2.5 h-2.5" />
-                         ) : (
-                           <FileText className="w-2.5 h-2.5" />
-                         )}
-                       </button>
-                     ) : (
-                       <div 
-                         className={cn(
-                           "shrink-0 p-1 rounded-full transition-colors shadow-sm",
-                           !isVerified ? "bg-red-50 text-red-300" :
-                           isCurrentlyPlaying ? "bg-slate-900 text-white" :
-                           (played || exported) ? "bg-slate-100 text-slate-500" :
-                           isMissedRecent ? "bg-slate-500 text-white" :
-                           isPresent || isUpcoming ? (isPre ? "bg-emerald-600 text-white shadow-md shadow-emerald-200" : "bg-purple-600 text-white shadow-md shadow-purple-200") :
-                           "bg-slate-700 text-white"
-                         )}
-                         title={!isVerified ? "Invalid or missing file" : (played || exported) ? "Play Again" : undefined}
-                       >
-                         {!isVerified ? (
-                           <X className="w-2.5 h-2.5" />
-                         ) : isCurrentlyPlaying ? (
-                           <Square className="w-2.5 h-2.5 fill-current" />
-                         ) : (played || exported) ? (
-                           <RefreshCw className="w-2.5 h-2.5" />
-                         ) : (
-                           <Play className="w-2.5 h-2.5 fill-current" />
-                         )}
-                       </div>
-                     )}
-                   </div>
-
-                   {/* Status & Details */}
-                   <div className="flex flex-col gap-[1px]">
-                     <div className="flex items-center justify-between">
-                     {isVerified ? (
-                       <div className="flex flex-col gap-0.5">
-                         <div className="flex items-center gap-1">
-                           {exported ? (
-                             <>
-                               <CheckCircle className={cn("w-2.5 h-2.5", isPre ? "text-emerald-500" : "text-purple-500")} />
-                               <span className={cn("text-xs font-bold uppercase tracking-tighter", isPre ? "text-emerald-600" : "text-purple-600")}>
-                                 Exported
-                               </span>
-                             </>
-                           ) : isCurrentlyPlaying ? (
-                             <>
-                               <Volume2 className="w-2.5 h-2.5 text-purple-600 animate-pulse" />
-                               <span className="text-xs font-bold text-purple-600 uppercase tracking-tighter">
-                                 Playing
-                               </span>
-                             </>
-                           ) : played ? (
-                             <>
-                               <CheckCircle className="w-2.5 h-2.5 text-green-500" />
-                               <span className="text-xs font-bold text-green-600 uppercase tracking-tighter">
-                                 {isScript ? (playedLog?.status === 'backup play' ? 'Played' : 'Read') : 'Played'} {playedLog ? format(parseISO(playedLog.logTimeStamp || playedLog.timestamp), 'h:mm a') : format(new Date(), 'h:mm a')}
-                               </span>
-                             </>
-                           ) : isMissedRecent || isMissedOld ? (
-                             <>
-                               <AlertCircle className="w-2.5 h-2.5 text-amber-600" />
-                               <span className="text-xs font-bold text-amber-700 uppercase tracking-tighter">Missed</span>
-                             </>
-                           ) : (
-                             <>
-                               <Clock className="w-2.5 h-2.5 text-slate-500" />
-                               <span className="text-xs font-bold text-slate-500 uppercase tracking-tighter">{isScript ? "To be read" : "To be played"}</span>
-                             </>
-                           )}
-                         </div>
-                       </div>
-                     ) : (
-                       <div className="flex items-center gap-1">
-                         <AlertCircle className="w-2.5 h-2.5 text-red-500" />
-                         <span className="text-xs font-bold text-red-600 uppercase tracking-tighter">
-                           {!status.exists ? "File not found." : (isScript ? "Invalid script file." : "File not mp3.")}
-                         </span>
-                       </div>
-                     )}
-                     
-                     {isCurrentlyPlaying ? (
-                       <div className={cn("flex items-center gap-1 text-xs font-sans font-bold tabular-nums leading-none", isPre ? "text-emerald-600" : "text-purple-600")}>
-                         <span>{formatTime(playingStates[slotKey]?.currentTime || 0)}</span>
-                         <span className="opacity-30">/</span>
-                         <span>{formatTime(playingStates[slotKey]?.duration || 0)}</span>
-                       </div>
-                     ) : isVerified ? (
-                       <span className="text-xs font-sans font-bold tabular-nums text-slate-500 leading-none">
-                         {isScript ? (activeMp3?.approximateReadTime ? (activeMp3.approximateReadTime.startsWith('~') ? activeMp3.approximateReadTime : `~${activeMp3.approximateReadTime}`) : '-:--') : (mp3DurationCache.get(activeMp3Url) || activeMp3?.duration || '--:--')}
-                       </span>
-                     ) : null}
-                   </div>
-
-                    {((!isScript && isVerified) || (isScript && activeMp3?.backupMp3Url && isCurrentlyPlaying)) && (
-                     <WaveformVisualizer 
-                        url={isScript ? ((availableFilesCache.get(activeMp3?.backupMp3Url || '')?.path) || activeMp3?.backupMp3Url || '') : resolvedUrl}
-                       currentTime={isCurrentlyPlaying ? (playingStates[slotKey]?.currentTime || 0) : 0}
-                       duration={playingStates[slotKey]?.duration || 0}
-                       isPlaying={isCurrentlyPlaying}
-                       isPlayed={played || exported}
-                     />
-                   )}
-                 </div>
-               </div>
-               </div>
-                 );
-              })}
-            </div>
+            <PlayerPrerecordTimelineView
+              playMode={playMode}
+              timeline={timeline}
+              shows={shows}
+              effectiveShow={effectiveShow}
+              logs={logs}
+              now={now}
+              playingStates={playingStates}
+              isAudioPlaying={isAudioPlaying}
+              resolvedAdminContact={resolvedAdminContact}
+              activeItemRef={activeItemRef}
+              nowSectionRef={nowSectionRef}
+              getAnnouncementsForSlot={getAnnouncementsForSlot}
+              renderCacheStatusMessage={renderCacheStatusMessage}
+              scrollToNow={scrollToNow}
+              onPlay={handlePlay}
+              onOpenHelpPopup={setHelpPopupCard}
+            />
           );
-        });
-      })()}
+        })()}
       </div>
+
+      {/* Option 2 Pinned Bottom Show Spacer in Live Mode */}
+      {playMode === 'Live' && bottomPinnedSpacer && (
+        <PinnedLiveShowBanner
+          spacer={bottomPinnedSpacer}
+          position="bottom"
+          onScrollToSpacer={scrollToSpacer}
+        />
+      )}
+      </div>
+
+      {/* Combined Prerecord + Export In-Window 250px Pop-Up Overlay */}
+      {playMode === 'Prerecord' && prerecordDate && (
+        <PrerecordExportPopup
+          isOpen={Boolean(isExportPopupOpen)}
+          onClose={() => onCloseExportPopup && onCloseExportPopup()}
+          show={exportActiveShow || effectiveShow}
+          timeframeStart={prerecordDate}
+          timeframeEnd={addMinutes(prerecordDate, prerecordLengthMinutes)}
+          breakItems={prerecordExportBreakItems}
+          playlistSequence={prerecordExportPlaylistSequence}
+          hasUnloggedBreaks={hasUnlogged}
+          isExporting={false}
+          isLoggingExports={isLoggingExports}
+          onExecuteExport={() => {
+            if (onExecuteExport) {
+              onExecuteExport(itemsToExport, previewText);
+            }
+          }}
+          onMarkAllAsLogged={handleLogExportAsPlayed}
+        />
+      )}
+
+      {helpPopupCard && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-3"
+          onClick={() => setHelpPopupCard(null)}
+        >
+          <div
+            className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-[260px] p-3.5 text-left space-y-2.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-2 border-b border-slate-200 pb-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <HelpCircle className="w-4 h-4 text-purple-600 shrink-0" />
+                <span className="text-xs font-black uppercase tracking-wider text-slate-900 truncate">
+                  Get Help — Media Issue
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHelpPopupCard(null)}
+                className="text-slate-400 hover:text-slate-800 p-0.5 rounded cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="space-y-1 text-xs">
+              <div className="font-bold text-slate-800 break-words">{helpPopupCard.name}</div>
+              <div className="text-slate-500 font-semibold">{helpPopupCard.timeLabel}</div>
+              <div className="text-rose-600 font-bold uppercase tracking-tight">{helpPopupCard.errorLabel}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block">
+                Admin Contact
+              </span>
+              <p className="text-xs font-bold text-slate-800 whitespace-pre-wrap break-words leading-snug">
+                {resolvedAdminContact}
+              </p>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => setHelpPopupCard(null)}
+                className="px-3 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded text-xs font-bold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {renderLiveReadOverlay()}
       {renderFolderChooserModal()}

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import GoogleAuthSection from "./GoogleAuthSection";
 import { cn, extractFolderId } from "../lib/utils";
-import { checkMissingDriveItems } from "../lib/driveService";
+import { getStorageApiHeaders } from "../lib/driveService";
 
 export interface LocationsModalProps {
   isOpen: boolean;
@@ -225,52 +225,58 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (locationMode === "Local") {
+    if (locationMode === "Local" || locationMode === "Drive") {
       setIsCheckingMissing(true);
       try {
+        const draftExtraHeaders: Record<string, string> = {};
+        if (locationMode === "Drive") {
+          if (draftDriveFolderAmp) draftExtraHeaders["x-amp-drive-folder-amp"] = draftDriveFolderAmp;
+          if (draftDriveFolderPreferences) draftExtraHeaders["x-amp-drive-folder-preferences"] = draftDriveFolderPreferences;
+          if (draftDriveFolderAnnouncements || draftDriveFolderMP3s) {
+            draftExtraHeaders["x-amp-drive-folder-announcements"] = draftDriveFolderAnnouncements || draftDriveFolderMP3s;
+          }
+          if (draftDriveFolderEvergreens) draftExtraHeaders["x-amp-drive-folder-evergreens"] = draftDriveFolderEvergreens;
+          if (draftDriveFolderShows) draftExtraHeaders["x-amp-drive-folder-shows"] = draftDriveFolderShows;
+          if (draftDriveFolderLogs) draftExtraHeaders["x-amp-drive-folder-logs"] = draftDriveFolderLogs;
+        }
+        const headers = await getStorageApiHeaders(draftExtraHeaders, locationMode);
         const res = await fetch("/api/check-missing-items", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            localPathAmp: draftLocalPathAmp,
-            localPathCalendar: draftLocalPathCalendar,
-            localPathMP3s: draftLocalPathMediaAnnouncements || draftLocalPathMP3s,
-            localPathMediaAnnouncements: draftLocalPathMediaAnnouncements,
-            localPathMediaEvergreens: draftLocalPathMediaEvergreens,
-            localPathMediaShows: draftLocalPathMediaShows,
-            localPathLogs: draftLocalPathLogs,
-          }),
+          headers,
+          body: JSON.stringify(
+            locationMode === "Local"
+              ? {
+                  mode: "Local",
+                  localPathAmp: draftLocalPathAmp,
+                  localPathCalendar: draftLocalPathCalendar,
+                  localPathMP3s: draftLocalPathMediaAnnouncements || draftLocalPathMP3s,
+                  localPathMediaAnnouncements: draftLocalPathMediaAnnouncements,
+                  localPathMediaEvergreens: draftLocalPathMediaEvergreens,
+                  localPathMediaShows: draftLocalPathMediaShows,
+                  localPathLogs: draftLocalPathLogs,
+                }
+              : {
+                  mode: "Drive",
+                  driveFolderAmp: draftDriveFolderAmp,
+                  driveFolderPreferences: draftDriveFolderPreferences,
+                  driveFolderAnnouncements: draftDriveFolderAnnouncements || draftDriveFolderMP3s,
+                  driveFolderMP3s: draftDriveFolderAnnouncements || draftDriveFolderMP3s,
+                  driveFolderEvergreens: draftDriveFolderEvergreens,
+                  driveFolderShows: draftDriveFolderShows,
+                  driveFolderLogs: draftDriveFolderLogs,
+                }
+          ),
         });
         const data = await res.json();
         setIsCheckingMissing(false);
         if (data.hasMissing) {
           setMissingCheckData({
             missingItems: data.missingItems || [],
-            targetFolderDesc: data.targetFolderDesc || (draftLocalPathAmp || "target folder"),
-          });
-          setShowMissingModal(true);
-          return;
-        }
-      } catch (err) {
-        setIsCheckingMissing(false);
-      }
-    } else if (locationMode === "Drive") {
-      setIsCheckingMissing(true);
-      try {
-        const driveMissing = await checkMissingDriveItems({
-          driveFolderAmp: draftDriveFolderAmp,
-          driveFolderPreferences: draftDriveFolderPreferences,
-          driveFolderAnnouncements: draftDriveFolderAnnouncements || draftDriveFolderMP3s,
-          driveFolderMP3s: draftDriveFolderAnnouncements || draftDriveFolderMP3s,
-          driveFolderEvergreens: draftDriveFolderEvergreens,
-          driveFolderShows: draftDriveFolderShows,
-          driveFolderLogs: draftDriveFolderLogs,
-        });
-        setIsCheckingMissing(false);
-        if (driveMissing.hasMissing) {
-          setMissingCheckData({
-            missingItems: driveMissing.missingItems,
-            targetFolderDesc: driveMissing.targetFolderDesc,
+            targetFolderDesc:
+              data.targetFolderDesc ||
+              (locationMode === "Local"
+                ? draftLocalPathAmp || "target folder"
+                : draftDriveFolderAmp || "target Google Drive folder"),
           });
           setShowMissingModal(true);
           return;

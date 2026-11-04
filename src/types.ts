@@ -9,16 +9,39 @@ export enum AnnouncementType {
   ADVANCED = 'advanced',
 }
 
-export interface TimeGatedMp3 {
-  id: string;
+export interface TimeGatedMediaItem {
   mp3Url: string;
-  startDate: string;
-  endDate?: string;
   assetType?: 'audio' | 'script';
   duration?: string;
   fileSize?: string;
   backupMp3Url?: string;
   approximateReadTime?: string;
+}
+
+export interface TimeGatedMp3 {
+  id: string;
+  startDate: string;
+  endDate?: string;
+  inactivated?: boolean;
+  inactivatedAt?: string;
+  mediaItems?: TimeGatedMediaItem[];
+  // Legacy flat fields accepted on read/input and migrated into mediaItems[0]
+  mp3Url?: string;
+  assetType?: 'audio' | 'script';
+  duration?: string;
+  fileSize?: string;
+  backupMp3Url?: string;
+  approximateReadTime?: string;
+}
+
+export interface ResolvedTimeGatedMp3 extends TimeGatedMediaItem {
+  id: string;
+  gateId?: string;
+  startDate: string;
+  endDate?: string;
+  mediaItems?: TimeGatedMediaItem[];
+  rotationIndex?: number;
+  rotationTotal?: number;
 }
 
 export interface AnnouncementMetadata {
@@ -68,6 +91,14 @@ export interface Announcement {
   validTo?: string | null;
   isDeleted?: boolean;
   revisions?: AnnouncementRevision[];
+  // Virtual Up Next Promo fields
+  isUpNextPromo?: boolean;
+  upNextShowId?: string;
+}
+
+export interface UpNextPromoConfig {
+  enabled: boolean;
+  minutesBefore: number;
 }
 
 export interface LogEntry {
@@ -120,6 +151,7 @@ export interface ShowPlaylistLog {
   cancelledTrackIds: string[];
   unplayedTrackIds: string[];
   breakPositions?: Record<string, number>;
+  breakOrder?: string[];
   trackMetadata?: Record<string, {
     id: string;
     fileName: string;
@@ -166,6 +198,7 @@ export interface ShowRevision {
   host: string;
   description: string;
   active: boolean;
+  includeInUpNext?: boolean;
   validFrom: string;
   validTo: string;
 }
@@ -182,6 +215,7 @@ export interface Show {
   host: string;
   description: string;
   active: boolean;
+  includeInUpNext?: boolean;
   // Temporal Revision & Soft Delete
   validFrom?: string;
   validTo?: string | null;
@@ -244,5 +278,105 @@ export interface LocationPathsOverride {
   logsFile?: string | null;
   announcementsFile?: string | null;
   showsFile?: string | null;
+}
+
+export interface GoogleAuthProfile {
+  email: string;
+  displayName: string;
+}
+
+export interface GoogleAuthConfig {
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  expiresAt?: number | null;
+  userProfile?: GoogleAuthProfile | null;
+}
+
+export interface LocationSettings {
+  mode: 'Local' | 'Drive' | 'Demo';
+  localPathAmp: string;
+  driveFolderAmp?: string;
+  paths?: LocationPathsOverride;
+  localPathMP3s: string;
+  localPathMediaAnnouncements?: string;
+  localPathMediaEvergreens?: string;
+  localPathMediaShows?: string;
+  localPathLogs: string;
+  localPathCalendar: string;
+  driveFolderLogs: string;
+  driveFolderMP3s: string;
+  driveFolderPreferences: string;
+  driveFolderAnnouncements?: string;
+  driveFolderEvergreens?: string;
+  driveFolderShows?: string;
+  googleAuth?: GoogleAuthConfig | null;
+}
+
+export interface MediaAssetFile {
+  name: string;
+  path: string;
+  size?: string | number;
+  duration?: string;
+  approximateReadTime?: string;
+  assetType?: 'audio' | 'script';
+  mtimeMs?: number;
+  modifiedTime?: string;
+  id?: string;
+  webContentLink?: string;
+  mimeType?: string;
+}
+
+export interface LiveReadPayload {
+  name?: string;
+  fileName?: string;
+  announcementId?: string;
+  scheduleId?: string;
+  announcementName?: string;
+  scheduleName?: string;
+  announcementTime?: string;
+  scheduledTime?: string;
+  initialLoggedTime?: string;
+  scriptUrl?: string;
+  scriptText?: string;
+  content?: string;
+  backupMp3Url?: string;
+  approximateReadTime?: string;
+  scheduledFor?: string;
+  slotTime?: string;
+  playMode?: LogEntry['playMode'];
+  showId?: string;
+  showName?: string;
+  hostName?: string;
+  showDateTime?: string;
+  isPreview?: boolean;
+  isTestPopup?: boolean;
+  isReadOnly?: boolean;
+  rotationIndex?: number;
+  rotationTotal?: number;
+  [key: string]: unknown;
+}
+
+export interface ElectronFolderDialogResult {
+  success: boolean;
+  path?: string;
+  cancelled?: boolean;
+  error?: string;
+}
+
+export interface ElectronAPI {
+  spawnLiveRead?: (data: LiveReadPayload) => Promise<unknown>;
+  getLiveReadData?: () => Promise<LiveReadPayload | null>;
+  logLiveReadCommit?: (logEntry: LogEntry) => Promise<unknown>;
+  onLiveReadLogged?: (callback: (logEntry: LogEntry) => void) => () => void;
+  onLiveReadOpened?: (callback: (data: LiveReadPayload) => void) => () => void;
+  onLiveReadClosed?: (callback: () => void) => () => void;
+  focusLiveReadWindow?: () => Promise<unknown>;
+  closeLiveReadWindow?: () => Promise<unknown>;
+  onNavigate?: (callback: (data: { tab: string; subTab?: string }) => void) => () => void;
+  setActiveTabMenu?: (tab: string, subTab?: string) => void;
+  setLiveReadActive?: (active: boolean) => void;
+  selectFolder?: (defaultPath?: string) => Promise<ElectronFolderDialogResult>;
+  browseFolder?: (defaultPath?: string) => Promise<ElectronFolderDialogResult>;
+  openPath?: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
 }
 

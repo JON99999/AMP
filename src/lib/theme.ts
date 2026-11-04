@@ -112,6 +112,52 @@ export const THEMES: Record<string, ThemeDefinition> = {
       playlistCardText: '#e9d5ff',
     },
   },
+  /**
+   * ============================================================================
+   * DEVELOPMENT ARTIFACT & FUTURE USER THEME SCAFFOLDING (ROADMAP #30)
+   * ============================================================================
+   * `dark-test` is intentionally preserved in code as a development method
+   * artifact while hidden from the production footer selector (which exposes
+   * only `light`, `system`, and `dark`).
+   *
+   * 1. FUTURE DEVELOPER MULTI-THEME DESIGN & TESTING WORKFLOW:
+   *    - To test experimental palettes (`dark-test` or additional candidate
+   *      themes) without altering production `light` / `dark` defaults:
+   *      a. Populate or clone a `ThemeDefinition` entry in `THEMES` below and
+   *         mirror any static CSS fallbacks under `[data-theme="<id>"]` in
+   *         `src/index.css`.
+   *      b. Temporarily bypass the `normalizedId` coercion in `applyTheme()`
+   *         and `getResolvedTheme()` (or gate it behind `isAiStudio` / a dev
+   *         query flag such as `?themeLab=1`) so `document.documentElement`
+   *         receives `data-theme="dark-test"`.
+   *      c. Validate readability across all semantic states in `Live_Dev`:
+   *         - Active `Now` cards (Stage 1 Sky, Stage 2 Purple/Emerald, Stage 3
+   *           Amber `#fffbeb`, Stage 4 Rose `#fff1f2`)
+   *         - `Past` Missed cards (`tobe-missed-rose-card`) vs. Missing-Media
+   *           warning cards (`tobe-missed-amber-card`)
+   *         - Odd/even show-spacer borders (`showShadeOddBg`/`Border` and
+   *           `showShadeEvenBg`/`Border`) and `playlistCard*` tokens.
+   *
+   * 2. SCAFFOLDING NEEDED FOR USER-CUSTOMIZABLE THEME ADJUSTMENTS:
+   *    - Base + Token Override Architecture:
+   *      ```ts
+   *      export interface UserThemeCustomization {
+   *        baseTheme: 'light' | 'dark';
+   *        overrides: Partial<ThemeColors>; // Only user-modified tokens stored
+   *        contrastLocked?: boolean;        // Enforce WCAG AA 4.5:1 text contrast
+   *      }
+   *      ```
+   *    - Resolution Pipeline in `applyTheme()`:
+   *      1. Resolve the base theme (`THEMES[baseTheme].colors`).
+   *      2. Merge `userCustomization.overrides` on top of base `ThemeColors`.
+   *      3. Apply the merged key-value map to `document.documentElement` via
+   *         `root.style.setProperty('--' + kebabCase(key), value)`.
+   *    - Persistence & Portability:
+   *      - Store per-workstation preferences in `localStorage` (`amp_user_theme`)
+   *        and optionally persist station-wide presets in `settings/` via atomic
+   *        JSON endpoints so operators can reset to station defaults at any time.
+   * ============================================================================
+   */
   'dark-test': {
     id: 'dark-test',
     name: 'Dark Test',
@@ -193,7 +239,7 @@ export function getResolvedTheme(themeId: ThemeId): 'light' | 'dark' | 'dark-tes
     return 'light';
   }
   if (themeId === 'dark-test') {
-    return 'dark-test';
+    return 'dark';
   }
   return themeId === 'dark' ? 'dark' : 'light';
 }
@@ -221,17 +267,18 @@ function setupSystemThemeListener() {
 }
 
 export function applyTheme(themeId: ThemeId): ThemeDefinition {
-  activeThemeId = themeId;
+  const normalizedId: ThemeId = themeId === 'dark-test' ? 'dark' : themeId;
+  activeThemeId = normalizedId;
   setupSystemThemeListener();
 
   const root = document.documentElement;
-  const resolved = getResolvedTheme(themeId);
+  const resolved = getResolvedTheme(normalizedId);
   const theme = THEMES[resolved] || THEMES.dark;
 
   root.setAttribute('data-theme', resolved);
-  root.setAttribute('data-theme-mode', themeId);
+  root.setAttribute('data-theme-mode', normalizedId);
 
-  if (resolved === 'dark' || resolved === 'dark-test') {
+  if (resolved === 'dark') {
     root.classList.add('dark');
     root.style.colorScheme = 'dark';
   } else {
@@ -246,17 +293,20 @@ export function applyTheme(themeId: ThemeId): ThemeDefinition {
   });
 
   try {
-    localStorage.setItem('amp_theme', themeId);
+    localStorage.setItem('amp_theme', normalizedId);
   } catch (e) {
     // Local storage unavailable or restricted
   }
 
-  return THEMES[themeId] || theme;
+  return THEMES[normalizedId] || theme;
 }
 
 export function getInitialTheme(): ThemeId {
   try {
     const saved = localStorage.getItem('amp_theme');
+    if (saved === 'dark-test') {
+      return 'dark';
+    }
     if (saved && (saved === 'system' || THEMES[saved])) {
       return saved as ThemeId;
     }

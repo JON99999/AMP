@@ -16,7 +16,7 @@ import {
 import { cn } from "../lib/utils";
 import { Show, DiscoveredFolderItem, DiscoverFoldersResponse } from "../types";
 import { selectFolder } from "../lib/nativeDialog";
-import { getSavedSettings } from "../lib/driveService";
+import { getStorageApiHeaders } from "../lib/driveService";
 
 export interface FolderChooserModalProps {
   isOpen: boolean;
@@ -69,10 +69,11 @@ export const FolderChooserModal: React.FC<FolderChooserModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       if (currentSelectedFolderPath === "__no_playlist__") {
-        setIsNoPlaylist(true);
+        // Pre-select the show's default folder (".") when opening the chooser so clicking "Load Playlist" loads the default folder immediately, while still allowing the user to select "No Playlist".
+        setIsNoPlaylist(false);
         setIsExternal(false);
         setExternalPath(null);
-        setSelectedRelPath("__no_playlist__");
+        setSelectedRelPath(".");
       } else if (isExternalFolder && externalAbsolutePath) {
         setIsExternal(true);
         setExternalPath(externalAbsolutePath);
@@ -96,39 +97,24 @@ export const FolderChooserModal: React.FC<FolderChooserModalProps> = ({
     setError(null);
 
     try {
-      const settings = getSavedSettings();
-      if (settings.mode === "Local") {
-        const queryParams = new URLSearchParams({
-          folderType,
-          showName: show.name || "",
-          showNameShort: show.nameShort || "",
-          showId: show.id || "",
-        });
-        const res = await fetch(`/api/shows/discover-folders?${queryParams.toString()}`);
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || "Failed to discover show folders");
-        }
-        const data: DiscoverFoldersResponse = await res.json();
-        setDiscoveredFolders(data.folders || []);
-        setDefaultFolderName(data.defaultFolderName || mediaFlavorFolder);
-        if (data.defaultFolderPath) {
-          setDefaultFolderPath(data.defaultFolderPath);
-        }
-      } else {
-        // Fallback for Drive / Demo mode: represent default root folder
-        setDiscoveredFolders([
-          {
-            id: "root",
-            name: "Top Level (Root)",
-            relPath: ".",
-            fileCount: 0,
-            isRoot: true,
-            hasM3u: false,
-            depth: 0,
-          },
-        ]);
-        setDefaultFolderName(mediaFlavorFolder);
+      const showFolderLabel = show.nameShort || show.name || "Show";
+      const queryParams = new URLSearchParams({
+        folderType: isEvergreenMode ? "Evergreens" : "Playlists",
+        showName: show.name || "",
+        showNameShort: show.nameShort || "",
+        showId: show.id || "",
+      });
+      const headers = await getStorageApiHeaders();
+      const res = await fetch(`/api/shows/discover-folders?${queryParams.toString()}`, { headers });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to discover show folders");
+      }
+      const data: DiscoverFoldersResponse = await res.json();
+      setDiscoveredFolders(data.folders || []);
+      setDefaultFolderName(data.defaultFolderName || `${mediaFlavorFolder}/${showFolderLabel}`);
+      if (data.defaultFolderPath) {
+        setDefaultFolderPath(data.defaultFolderPath);
       }
     } catch (err: any) {
       console.error("Error discovering folders:", err);
@@ -435,170 +421,6 @@ export const FolderChooserModal: React.FC<FolderChooserModalProps> = ({
                         </div>
                       )}
                     </div>
-                  </div>
-
-                  {/* Bring your own folder / External USB */}
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <div className="flex items-center justify-between mb-1.5 gap-2">
-                      <span className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 truncate">
-                        Custom Folder/USB: {customFolderIdentifier || "None Selected"}
-                      </span>
-                    </div>
-
-                    <div className="flex gap-2 mb-2">
-                      <button
-                        type="button"
-                        onClick={handleBrowseCustomFolder}
-                        className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-600 rounded text-xs font-bold uppercase transition cursor-pointer"
-                      >
-                        Browse
-                      </button>
-                      {externalPath && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenPath(externalPath)}
-                          className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/60 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700 rounded text-xs font-bold uppercase transition cursor-pointer"
-                        >
-                          Open
-                        </button>
-                      )}
-                    </div>
-
-                    {customLoading ? (
-                      <div className="py-3 flex items-center justify-center space-x-2 text-purple-600 dark:text-purple-400 text-xs">
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Scanning Custom Folder...</span>
-                      </div>
-                    ) : customDiscoveredFolders.length > 0 ? (
-                      <div className="space-y-1.5">
-                        {customDiscoveredFolders.map((item) => {
-                          const isCurrentActive =
-                            isExternalFolder &&
-                            externalAbsolutePath === externalPath &&
-                            (selectedRelPath === item.relPath ||
-                              (item.isRoot && (!selectedRelPath || selectedRelPath === ".")));
-                          const isSelected =
-                            isExternal && !isNoPlaylist && selectedRelPath === item.relPath;
-                          const depth = item.depth || 0;
-                          const isPlaylistItem = item.itemType === "playlist";
-
-                          let fileCountLabel = `${item.fileCount} ${item.fileCount === 1 ? "file" : "files"}`;
-                          if (isPlaylistItem) {
-                            const total = item.totalTracks || item.fileCount;
-                            const missing = item.missingCount || 0;
-                            if (missing > 0) {
-                              fileCountLabel = `${total} tracks, ${missing} missing`;
-                            } else {
-                              fileCountLabel = `${total} ${total === 1 ? "track" : "tracks"}`;
-                            }
-                          }
-
-                          return (
-                            <div
-                              key={item.id}
-                              onClick={() => handleSelectCustomItem(item.relPath)}
-                              style={{ marginLeft: `${depth * 16}px` }}
-                              className={cn(
-                                "p-2 rounded-lg border text-left cursor-pointer transition-all flex items-center justify-between gap-2 select-none",
-                                isSelected
-                                  ? "bg-purple-50/90 dark:bg-purple-950/60 border-purple-500 ring-2 ring-purple-500/30 font-bold"
-                                  : "bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-600 hover:bg-purple-50/30"
-                              )}
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                {depth > 0 && (
-                                  <CornerDownRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                )}
-                                <span
-                                  className={cn(
-                                    "p-1.5 rounded-md shrink-0",
-                                    isPlaylistItem
-                                      ? "bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300"
-                                      : item.isRoot
-                                        ? "bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300"
-                                        : "bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200"
-                                  )}
-                                >
-                                  {isPlaylistItem ? (
-                                    <ListMusic className="w-4 h-4" />
-                                  ) : (
-                                    <Folder className="w-4 h-4" />
-                                  )}
-                                </span>
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
-                                      {item.name}
-                                    </span>
-                                    {isCurrentActive && (
-                                      <span className="px-1.5 py-0.2 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700 rounded text-[9px] font-black uppercase tracking-tight">
-                                        Current
-                                      </span>
-                                    )}
-                                    {item.hasM3u && !isPlaylistItem && (
-                                      <span className="px-1.5 py-0.2 bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700 rounded text-[9px] font-black uppercase tracking-tight">
-                                        M3U
-                                      </span>
-                                    )}
-                                  </div>
-                                  <span
-                                    className={cn(
-                                      "text-[11px] font-mono",
-                                      isPlaylistItem && (item.missingCount || 0) > 0
-                                        ? "text-amber-600 dark:text-amber-400 font-bold"
-                                        : "text-slate-500 dark:text-slate-400"
-                                    )}
-                                  >
-                                    {fileCountLabel}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {isSelected && (
-                                <Check className="w-4 h-4 text-purple-600 dark:text-purple-400 shrink-0 font-bold" />
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div
-                        onClick={handleBrowseCustomFolder}
-                        className={cn(
-                          "p-2.5 rounded-lg border text-left cursor-pointer transition-all flex items-center justify-between gap-2 select-none",
-                          isExternal
-                            ? "bg-purple-50/90 dark:bg-purple-950/60 border-purple-500 ring-2 ring-purple-500/30 font-bold"
-                            : "bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-600 hover:bg-purple-50/30"
-                        )}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="p-1.5 rounded-md bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 shrink-0">
-                            <HardDrive className="w-4 h-4" />
-                          </span>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
-                                {externalPath ? externalPath : "Browse Folder (USB / Custom)..."}
-                              </span>
-                              {isExternalFolder && isExternal && (
-                                <span className="px-1.5 py-0.2 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700 rounded text-[9px] font-black uppercase tracking-tight">
-                                  Current
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                              {externalPath
-                                ? "Custom external folder selected"
-                                : "Click to select a folder outside media structure"}
-                            </span>
-                          </div>
-                        </div>
-
-                        {isExternal && (
-                          <Check className="w-4 h-4 text-purple-600 dark:text-purple-400 shrink-0 font-bold" />
-                        )}
-                      </div>
-                    )}
                   </div>
 
                   {/* No Playlist option */}

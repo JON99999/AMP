@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { cn, formatTime12, parseTo24HourTime } from '../lib/utils';
 
 export interface MilitaryTimeInputProps {
@@ -22,9 +22,12 @@ export function MilitaryTimeInput({
   disabled,
 }: MilitaryTimeInputProps) {
   const [localVal, setLocalVal] = useState(value ? formatTime12(value) : '');
+  const isFocusedRef = useRef(false);
 
   useEffect(() => {
-    setLocalVal(value ? formatTime12(value) : '');
+    if (!isFocusedRef.current) {
+      setLocalVal(value ? formatTime12(value) : '');
+    }
   }, [value]);
 
   const commitValue = () => {
@@ -51,7 +54,26 @@ export function MilitaryTimeInput({
     }
   };
 
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nextVal = e.target.value;
+    setLocalVal(nextVal);
+    const trimmed = nextVal.trim();
+    if (!trimmed) {
+      onChange('');
+      return;
+    }
+    const parsed24 = parseTo24HourTime(trimmed);
+    if (parsed24) {
+      onChange(parsed24);
+    }
+  };
+
+  const handleFocus = () => {
+    isFocusedRef.current = true;
+  };
+
   const handleBlur = () => {
+    isFocusedRef.current = false;
     commitValue();
   };
 
@@ -66,7 +88,8 @@ export function MilitaryTimeInput({
       <input
         type="text"
         value={localVal}
-        onChange={(e) => setLocalVal(e.target.value)}
+        onChange={handleChange}
+        onFocus={handleFocus}
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}

@@ -14,7 +14,10 @@ import {
   isContiguousMidnightTransition,
   computeBackfilledEndTime,
   getNextGapAutoFillStart,
+  getGateMediaItems,
+  isGateExpiredOrInactivated,
 } from './utils';
+import { TimeGatedMediaItem } from '../types';
 
 export interface SchedulePresetOption {
   id: string;
@@ -37,7 +40,14 @@ export interface SchedulePresetOption {
 }
 
 export interface AnnouncementPlacementModalState {
-  pendingFile?: { name: string; duration?: string | number; path?: string };
+  pendingFile?: {
+    name: string;
+    duration?: string | number;
+    path?: string;
+    approximateReadTime?: string;
+    backupMp3Url?: string;
+  };
+  pendingMediaItems?: TimeGatedMediaItem[];
   inferredAssetType?: 'audio' | 'script';
   nextIndex: number;
   presets: SchedulePresetOption[];
@@ -61,30 +71,35 @@ export function computeSchedulePlacementOptions(
 
   const nowDate = getDatePart(nowIso);
   const nowTime = getTimePart(nowIso) || '00:00';
+  const profStartIso = profileStartDate ? formatToDatetimeLocal(profileStartDate) : '';
+  const effectiveLeadStartIso = profStartIso && profStartIso > nowIso ? profStartIso : (profStartIso || nowIso);
+  const leadStartDate = getDatePart(effectiveLeadStartIso) || nowDate;
+  const leadStartTime = getTimePart(effectiveLeadStartIso) || nowTime;
+  const isLeadFromNow = effectiveLeadStartIso === nowIso && (!profStartIso || profStartIso <= nowIso);
 
   const getItemTitle = (m?: TimeGatedMp3) => {
     if (!m) return 'File';
-    if (m.mp3Url) return getFilenameFromUrlOrPath(m.mp3Url);
+    const items = getGateMediaItems(m);
+    if (items[0]?.mp3Url) return getFilenameFromUrlOrPath(items[0].mp3Url);
     return 'File';
   };
 
-  // 1. Check for leading gap from now() to first forward-looking startDate
-  const firstForwardItem = sorted.find(m => m.startDate && formatToDatetimeLocal(m.startDate) > nowIso);
-  const activeCurrentItem = sorted.find(m => {
-    const s = m.startDate ? formatToDatetimeLocal(m.startDate) : '';
-    const e = m.endDate ? formatToDatetimeLocal(m.endDate) : '';
-    if (s && s <= nowIso) {
-      if (!e || e > nowIso) return true;
-    }
-    return false;
-  });
+  const activeSorted = sorted.filter(
+    m => !isGateExpiredOrInactivated(m, nowIso)
+  );
 
+  // 1. Check for leading gap from effective schedule start to first active/upcoming gate's startDate
+  const firstItem = activeSorted[0];
+  const firstItemStart = firstItem?.startDate ? formatToDatetimeLocal(firstItem.startDate) : '';
   let hasLeadingGap = false;
-  if (firstForwardItem && (!activeCurrentItem || sorted.indexOf(firstForwardItem) === 0)) {
-    const fIdx = sorted.indexOf(firstForwardItem) + 1;
-    const fTitle = getItemTitle(firstForwardItem);
-    const fStart = formatToDatetimeLocal(firstForwardItem.startDate);
-    const backfillEnd = computeBackfilledEndTime(fStart);
+  if (
+    firstItem &&
+    firstItemStart &&
+    firstItemStart > effectiveLeadStartIso &&
+    !isContiguousMidnightTransition(effectiveLeadStartIso, firstItemStart)
+  ) {
+    const fTitle = getItemTitle(firstItem);
+    const backfillEnd = computeBackfilledEndTime(firstItemStart);
     const fEndDate = getDatePart(backfillEnd);
     const fEndTime = getTimePart(backfillEnd) || '00:00';
 
@@ -92,23 +107,23 @@ export function computeSchedulePlacementOptions(
 
     presets.push({
       id: 'leading-gap',
-      label: `Before #${fIdx} ${fTitle}`,
-      displayStartDate: nowDate,
-      displayStartTime: nowTime,
+      label: `Before #1 ${fTitle}`,
+      displayStartDate: leadStartDate,
+      displayStartTime: leadStartTime,
       displayEndDate: fEndDate,
       displayEndTime: fEndTime,
-      startDate: nowDate,
-      startTime: nowTime,
+      startDate: leadStartDate,
+      startTime: leadStartTime,
       endDate: fEndDate,
       endTime: fEndTime,
-      isLeadingGap: true,
+      isLeadingGap: isLeadFromNow,
     });
   }
 
-  // 2. Any subsequent gaps between announcements
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const item = sorted[i];
-    const nextItem = sorted[i + 1];
+  // 2. Any subsequent gaps between active/upcoming announcements
+  for (let i = 0; i < activeSorted.length - 1; i++) {
+    const item = activeSorted[i];
+    const nextItem = activeSorted[i + 1];
     if (item.endDate && item.endDate.trim() && nextItem.startDate && nextItem.startDate.trim()) {
       const itemEnd = formatToDatetimeLocal(item.endDate);
       const nextStart = formatToDatetimeLocal(nextItem.startDate);
@@ -133,33 +148,36 @@ export function computeSchedulePlacementOptions(
     }
   }
 
-  // 3. Trailing Option (after the last item)
-  const lastItem = sorted[sorted.length - 1];
+  // 3. Trailing Option (after the last active/upcoming item, or starting now if all gates are archived)
+  const lastItem = activeSorted[activeSorted.length - 1];
   if (lastItem) {
-    const lastIdx = sorted.length;
+    const lastIdx = sorted.findIndex(m => m.id === lastItem.id) + 1;
     const lastTitle = getItemTitle(lastItem);
+    const profEnd = profileEndDate ? formatToDatetimeLocal(profileEndDate) : '';
     if (lastItem.endDate && lastItem.endDate.trim()) {
       const lastEnd = formatToDatetimeLocal(lastItem.endDate);
       const autoFillStart = getNextGapAutoFillStart(lastEnd);
-      const profEnd = profileEndDate ? formatToDatetimeLocal(profileEndDate) : '';
-      const autoFillProfEnd = profEnd ? computeBackfilledEndTime(profEnd) : '';
+      const validProfEnd =
+        profEnd && profEnd >= autoFillStart.startIso && !isContiguousMidnightTransition(lastEnd, profEnd)
+          ? profEnd
+          : '';
       presets.push({
         id: 'trailing-end',
         label: `After #${lastIdx} ${lastTitle}`,
         displayStartDate: autoFillStart.startDate,
         displayStartTime: autoFillStart.startTime,
-        displayEndDate: autoFillProfEnd ? getDatePart(autoFillProfEnd) : '',
-        displayEndTime: autoFillProfEnd ? (getTimePart(autoFillProfEnd) || '00:00') : '',
+        displayEndDate: validProfEnd ? getDatePart(validProfEnd) : '',
+        displayEndTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
         startDate: autoFillStart.startDate,
         startTime: autoFillStart.startTime,
-        endDate: autoFillProfEnd ? getDatePart(autoFillProfEnd) : '',
-        endTime: autoFillProfEnd ? (getTimePart(autoFillProfEnd) || '00:00') : '',
+        endDate: validProfEnd ? getDatePart(validProfEnd) : '',
+        endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
       });
     } else {
       // Open-ended last item -> 1 week forward transition option
       const lastFormatted = lastItem.startDate
         ? formatToDatetimeLocal(lastItem.startDate)
-        : (profileStartDate ? formatToDatetimeLocal(profileStartDate) : '');
+        : (profStartIso || '');
       const lastSetTime = lastFormatted ? (getTimePart(lastFormatted) || '00:00') : '00:00';
       const lastSetDate = lastFormatted ? getDatePart(lastFormatted) : nowDate;
 
@@ -174,6 +192,8 @@ export function computeSchedulePlacementOptions(
         }
       }
       const suggestedTime = lastSetTime;
+      const suggestedIso = `${suggestedDate}T${suggestedTime}`;
+      const validProfEnd = profEnd && profEnd >= suggestedIso ? profEnd : '';
 
       presets.push({
         id: 'trailing-1week',
@@ -184,13 +204,29 @@ export function computeSchedulePlacementOptions(
         startTime: suggestedTime,
         suggestedStartDate: suggestedDate,
         suggestedStartTime: suggestedTime,
-        endDate: '',
-        endTime: '',
+        endDate: validProfEnd ? getDatePart(validProfEnd) : '',
+        endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
         transitionMp3Id: lastItem.id,
         transitionMp3Index: lastIdx,
         referenceStartDate: lastFormatted || `${nowDate}T${nowTime}`,
       });
     }
+  } else if (sorted.length > 0) {
+    const profEnd = profileEndDate ? formatToDatetimeLocal(profileEndDate) : '';
+    const validProfEnd = profEnd && profEnd >= effectiveLeadStartIso ? profEnd : '';
+    presets.push({
+      id: 'start-now',
+      label: 'Start Now',
+      displayStartDate: leadStartDate,
+      displayStartTime: leadStartTime,
+      displayEndDate: validProfEnd ? getDatePart(validProfEnd) : '',
+      displayEndTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
+      startDate: leadStartDate,
+      startTime: leadStartTime,
+      endDate: validProfEnd ? getDatePart(validProfEnd) : '',
+      endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
+      isLeadingGap: isLeadFromNow,
+    });
   }
 
   // 4. "Enter My Own" option

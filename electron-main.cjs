@@ -254,6 +254,19 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
     ]
   };
 
+  const editMenu = {
+    label: 'Edit',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' }
+    ]
+  };
+
   const viewMenu = {
     label: 'View',
     submenu: [
@@ -375,7 +388,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: `Version 0.18.0\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
+              detail: `Version 0.20.0\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
             });
           }
         }
@@ -386,6 +399,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
   const template = [
     ...(macAppMenu ? [macAppMenu] : []),
     fileMenu,
+    editMenu,
     viewMenu,
     windowMenu,
     helpMenu
@@ -393,6 +407,35 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
 
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
+}
+
+function attachEditContextMenu(win) {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.on('context-menu', (event, params) => {
+    const { isEditable, selectionText, editFlags } = params;
+    const hasSelection = typeof selectionText === 'string' && selectionText.trim().length > 0;
+    if (!isEditable && !hasSelection) return;
+
+    const menuItems = isEditable
+      ? [
+          { role: 'undo', enabled: editFlags.canUndo },
+          { role: 'redo', enabled: editFlags.canRedo },
+          { type: 'separator' },
+          { role: 'cut', enabled: editFlags.canCut },
+          { role: 'copy', enabled: editFlags.canCopy },
+          { role: 'paste', enabled: editFlags.canPaste },
+          { type: 'separator' },
+          { role: 'selectAll', enabled: editFlags.canSelectAll }
+        ]
+      : [
+          { role: 'copy', enabled: editFlags.canCopy },
+          { type: 'separator' },
+          { role: 'selectAll', enabled: editFlags.canSelectAll }
+        ];
+
+    const contextMenu = Menu.buildFromTemplate(menuItems);
+    contextMenu.popup({ window: win });
+  });
 }
 
 ipcMain.on('set-active-tab-menu', (event, { tab, subTab }) => {
@@ -492,6 +535,7 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow(windowOptions);
+  attachEditContextMenu(mainWindow);
 
   // Active polling inter-process status loop to load as soon as port is listening
   function loadAppWhenReady(port, url, win, attempts = 0) {
@@ -639,6 +683,7 @@ global.spawnLiveRead = async (data) => {
   });
 
   liveReadWindow.setMenu(null);
+  attachEditContextMenu(liveReadWindow);
 
   // Load the web app with a special query parameter indicating it is a popout
   const popoutUrl = `http://127.0.0.1:${serverPort}/?popout=true`;

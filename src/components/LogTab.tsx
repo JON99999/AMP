@@ -14,6 +14,7 @@ import * as XLSX from 'xlsx';
 import { Announcement, LogEntry, Show } from '../types';
 import { cn, getMP3Status, classifyMediaAsset } from '../lib/utils';
 import { reconcileScheduleAndLogs, toCanonicalDateString } from '../lib/temporalReconciliation';
+import { toStationDateParts, getStationTimezone } from '../lib/compatibility';
 
 export const getLogAssetType = (log: LogEntry): 'audio' | 'script' => {
   return classifyMediaAsset(log.mp3Name, log.assetType);
@@ -29,25 +30,25 @@ type SortField = 'timestamp' | 'mp3Name' | 'announcementName' | 'announcementId'
 type SortOrder = 'asc' | 'desc';
 
 function formatLogTime(dateVal: string | number | Date, width: number): { dateStr: string; timeStr: string } {
-  const d = new Date(dateVal);
-  if (isNaN(d.getTime())) {
+  const parts = toStationDateParts(dateVal, getStationTimezone());
+  if (!parts) {
     return { dateStr: '-', timeStr: '-' };
   }
 
-  const yyyy = d.getFullYear();
+  const yyyy = parts.year;
   const yy = String(yyyy).slice(-2);
-  const m = d.getMonth() + 1; // 1-12
+  const m = parts.month; // 1-12
   const mm = String(m).padStart(2, '0');
-  const day = d.getDate(); // 1-31
+  const day = parts.day; // 1-31
   const dd = String(day).padStart(2, '0');
 
-  const h = d.getHours(); // 0-23
+  const h = parts.hour; // 0-23
   const h12 = h % 12 === 0 ? 12 : h % 12;
   const hh12 = String(h12).padStart(2, '0');
   const ampm = h >= 12 ? 'PM' : 'AM';
-  const min = d.getMinutes();
+  const min = parts.minute;
   const minStr = String(min).padStart(2, '0');
-  const sec = d.getSeconds();
+  const sec = parts.second;
   const secStr = String(sec).padStart(2, '0');
 
   let dateStr = `${yyyy}-${mm}-${dd}`;

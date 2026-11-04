@@ -108,6 +108,11 @@
   color-scheme: dark;
 }
 
+/*
+ * DEVELOPMENT METHOD ARTIFACT (ROADMAP #30):
+ * Preserved for multi-theme testing and future user-customizable theme overrides.
+ * See architectural guidance in `src/lib/theme.ts` for activation and token-merge scaffolding.
+ */
 [data-theme="dark-test"] {
   /* Font / Text Colors */
   --fg-primary: #f8fafc;      /* slate-50 */
@@ -271,32 +276,29 @@
   }
 }
 
-/* Collapse horizontal mode controls into vertical selector */
+/* Collapse horizontal mode controls into vertical icon stack selector */
 @media (max-width: 310px) {
   .mode-horizontal-group {
     display: none !important;
   }
   .mode-vertical-group {
-    display: block !important;
+    display: flex !important;
+  }
+  .mode-vertical-group:not(:hover):not(.is-expanded) .mode-vertical-text {
+    display: none !important;
+  }
+  .mode-vertical-group:hover .mode-vertical-text,
+  .mode-vertical-group.is-expanded .mode-vertical-text {
+    display: inline !important;
   }
   .mode-vertical-spacer {
-    width: 95px;
+    width: 31px;
   }
 }
 
 @media (min-width: 311px) {
   .mode-vertical-group {
     display: none !important;
-  }
-}
-
-/* Before collapsing vertical control to icons only, show icons + descriptive text. At <= 250px, collapse text to icons only */
-@media (max-width: 250px) {
-  .mode-vertical-text {
-    display: none !important;
-  }
-  .mode-vertical-spacer {
-    width: 31px;
   }
 }
 
@@ -390,6 +392,9 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .disable-animations.opt-pointer-events-neutralization.layout-wrapper a,
 .disable-animations.opt-pointer-events-neutralization.layout-wrapper [role="button"],
 .disable-animations.opt-pointer-events-neutralization.layout-wrapper .interactive-item,
+.disable-animations.opt-pointer-events-neutralization.layout-wrapper .interactive-item *:not(.pointer-events-none),
+.disable-animations.opt-pointer-events-neutralization.layout-wrapper .mode-vertical-group,
+.disable-animations.opt-pointer-events-neutralization.layout-wrapper .mode-vertical-group *:not(.pointer-events-none),
 .disable-animations.opt-pointer-events-neutralization.layout-wrapper .card,
 .disable-animations.opt-pointer-events-neutralization.layout-wrapper .overflow-y-auto,
 .disable-animations.opt-pointer-events-neutralization.layout-wrapper .overflow-x-auto,
@@ -565,6 +570,116 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   background-color: #0f172a !important;
 }
 
+/* To-Be Missed, File Not Found, and Invalid alert cards in Dark & Dark Test modes */
+[data-theme="dark"] .bg-\[\#fff1f2\],
+.dark .bg-\[\#fff1f2\],
+[data-theme="dark-test"] .bg-\[\#fff1f2\],
+[data-theme="dark"] .tobe-alert-card,
+.dark .tobe-alert-card,
+[data-theme="dark-test"] .tobe-alert-card {
+  background-color: #28111c !important;
+  border-top-color: #e11d48 !important;
+  border-right-color: #e11d48 !important;
+  border-bottom-color: #e11d48 !important;
+}
+
+[data-theme="dark"] .tobe-alert-card > .rounded-t.bg-slate-50,
+.dark .tobe-alert-card > .rounded-t.bg-slate-50,
+[data-theme="dark-test"] .tobe-alert-card > .rounded-t.bg-slate-50 {
+  background-color: #381524 !important;
+  border-bottom: 1px solid #881337 !important;
+}
+
+/* Live_Dev Recommendation #7: Semantic Amber Missed Card in Dark & Darker modes */
+[data-theme="dark"] .tobe-missed-amber-card,
+.dark .tobe-missed-amber-card,
+[data-theme="dark-test"] .tobe-missed-amber-card {
+  background-color: #271a0c !important;
+  border-top-color: #f59e0b !important;
+  border-right-color: #f59e0b !important;
+  border-bottom-color: #f59e0b !important;
+}
+
+[data-theme="dark"] .tobe-missed-amber-card > .rounded-t.bg-slate-50,
+.dark .tobe-missed-amber-card > .rounded-t.bg-slate-50,
+[data-theme="dark-test"] .tobe-missed-amber-card > .rounded-t.bg-slate-50 {
+  background-color: #36220e !important;
+  border-bottom: 1px solid #92400e !important;
+}
+
+/* Live_Dev Recommendation #4: Distinct Header Pills in Card Headers */
+.rec-distinct-header-pill {
+  border: 1px solid #cbd5e1;
+}
+
+[data-theme="dark"] .rec-distinct-header-pill,
+.dark .rec-distinct-header-pill,
+[data-theme="dark-test"] .rec-distinct-header-pill {
+  background-color: #0f172a !important;
+  color: #e2e8f0 !important;
+  border: 1px solid #475569 !important;
+}
+
+/* Live_Dev Recommendation #5: High-Contrast Pinned Show Banner Badges in Dark Modes */
+[data-theme="dark"] .rec-pinned-next-badge,
+.dark .rec-pinned-next-badge,
+[data-theme="dark-test"] .rec-pinned-next-badge {
+  background-color: rgba(88, 28, 135, 0.55) !important;
+  color: #e9d5ff !important;
+  border-color: #a855f7 !important;
+}
+
+[data-theme="dark"] .rec-pinned-current-badge,
+.dark .rec-pinned-current-badge,
+[data-theme="dark-test"] .rec-pinned-current-badge {
+  background-color: rgba(15, 23, 42, 0.7) !important;
+  color: #e2e8f0 !important;
+  border-color: #64748b !important;
+}
+
+/* Live_Dev Recommendation #6: Dark-Safe Opacity Pill & Muted Action Button Variants */
+[data-theme="dark"] .rec-dark-safe-pills .rec-muted-action-btn,
+.dark .rec-dark-safe-pills .rec-muted-action-btn,
+[data-theme="dark-test"] .rec-dark-safe-pills .rec-muted-action-btn {
+  background-color: #1e293b !important;
+  color: #cbd5e1 !important;
+  border-color: #475569 !important;
+}
+
+[data-theme="dark"] .rec-dark-safe-pills .border-slate-200\/80,
+.dark .rec-dark-safe-pills .border-slate-200\/80,
+[data-theme="dark-test"] .rec-dark-safe-pills .border-slate-200\/80 {
+  border-color: #334155 !important;
+}
+
+/* Live_Dev Recommendation #8 & Dark Canvas Background: Warm Dark Mode Show Shade Separation & Darker Gray Behind Cards/Now Segments */
+[data-theme="dark"] .tobe-timeline-canvas,
+.dark .tobe-timeline-canvas,
+[data-theme="dark-test"] .tobe-timeline-canvas {
+  background-color: #020617 !important;
+}
+
+[data-theme="dark"] .tobe-now-segment,
+.dark .tobe-now-segment,
+[data-theme="dark-test"] .tobe-now-segment {
+  background-color: #090d16 !important;
+}
+
+[data-theme="dark"] .rec-warm-dark-shades,
+.dark .rec-warm-dark-shades {
+  --show-shade-odd-bg: #231f14;
+  --show-shade-odd-border: #9a8442;
+  --show-shade-even-bg: #11151d;
+  --show-shade-even-border: #475569;
+}
+
+[data-theme="dark-test"] .tobe-timeline-canvas {
+  --show-shade-odd-bg: #161618;
+  --show-shade-odd-border: #3f3f37;
+  --show-shade-even-bg: #23260c;
+  --show-shade-even-border: #52581B;
+}
+
 [data-theme="dark"] .rounded-t.bg-slate-100,
 .dark .rounded-t.bg-slate-100,
 [data-theme="dark-test"] .rounded-t.bg-slate-100,
@@ -628,6 +743,9 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   color: #c084fc !important;
 }
 
+[data-theme="dark"] .text-emerald-800,
+.dark .text-emerald-800,
+[data-theme="dark-test"] .text-emerald-800,
 [data-theme="dark"] .text-emerald-700,
 .dark .text-emerald-700,
 [data-theme="dark-test"] .text-emerald-700,
@@ -644,6 +762,27 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .dark .text-green-600,
 [data-theme="dark-test"] .text-green-600 {
   color: #4ade80 !important;
+}
+
+[data-theme="dark"] .text-rose-700,
+.dark .text-rose-700,
+[data-theme="dark-test"] .text-rose-700,
+[data-theme="dark"] .text-rose-600,
+.dark .text-rose-600,
+[data-theme="dark-test"] .text-rose-600 {
+  color: #fda4af !important;
+}
+
+[data-theme="dark"] .text-red-700,
+.dark .text-red-700,
+[data-theme="dark-test"] .text-red-700,
+[data-theme="dark"] .text-red-600,
+.dark .text-red-600,
+[data-theme="dark-test"] .text-red-600,
+[data-theme="dark"] .text-red-500,
+.dark .text-red-500,
+[data-theme="dark-test"] .text-red-500 {
+  color: #fca5a5 !important;
 }
 
 [data-theme="dark"] .text-amber-700,
@@ -1157,6 +1296,293 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
 .disable-animations .animate-card-text-fade {
   animation: none !important;
+}
+
+/* ============================================================================
+ * ROADMAP #17: DJ ATTENTION FLASHING INDICATORS & ESCALATING CARD URGENCY
+ * Note: Essential broadcast DJ alerts are intentionally NOT suppressed by
+ * .disable-animations (which only targets non-essential decorative transitions).
+ * ============================================================================ */
+
+@keyframes ampNowAdded1A {
+  0%, 100% {
+    border-color: #059669;
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0);
+  }
+  50% {
+    border-color: #0ea5e9;
+    box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.55), 0 0 14px rgba(14, 165, 233, 0.45);
+  }
+}
+
+@keyframes ampNowAddedHeader1A {
+  0%, 100% {
+    background-color: #059669;
+    border-bottom-color: #10b981;
+  }
+  50% {
+    background-color: #0284c7;
+    border-bottom-color: #38bdf8;
+  }
+}
+
+@keyframes ampNowAddedBody1B {
+  0%, 100% {
+    box-shadow: inset 0 0 0 0 rgba(16, 185, 129, 0);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: inset 0 0 0 999px rgba(56, 189, 248, 0.28);
+    filter: brightness(1.18);
+  }
+}
+
+@keyframes ampNowLeaving2A {
+  0%, 100% {
+    border-color: #059669;
+    box-shadow: 0 0 0 0 rgba(225, 29, 72, 0);
+  }
+  50% {
+    border-color: #e11d48;
+    box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.65), 0 0 16px rgba(225, 29, 72, 0.5);
+  }
+}
+
+@keyframes ampNowLeavingHeader2A {
+  0%, 100% {
+    background-color: #059669;
+    border-bottom-color: #10b981;
+  }
+  50% {
+    background-color: #e11d48;
+    border-bottom-color: #fb7185;
+  }
+}
+
+@keyframes ampNowLeavingFrame2B {
+  0%, 100% {
+    border-color: #059669;
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0);
+  }
+  50% {
+    border-color: #f43f5e;
+    box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.7), inset 0 0 0 2px rgba(244, 63, 94, 0.45);
+  }
+}
+
+@keyframes ampNowLeavingText2B {
+  0%, 100% {
+    color: #ffffff;
+  }
+  50% {
+    color: #fde047;
+  }
+}
+
+@keyframes ampCardEntryFlash {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.75), inset 0 0 0 1px rgba(14, 165, 233, 0.5);
+  }
+}
+
+@keyframes ampCardStage2Pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 2.5px rgba(16, 185, 129, 0.55), inset 0 0 8px rgba(16, 185, 129, 0.18);
+  }
+}
+
+@keyframes ampCardStage3Pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.15);
+    border-top-color: #f59e0b;
+    border-right-color: #f59e0b;
+    border-bottom-color: #f59e0b;
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.75), inset 0 0 10px rgba(245, 158, 11, 0.25);
+    border-top-color: #d97706;
+    border-right-color: #d97706;
+    border-bottom-color: #d97706;
+  }
+}
+
+@keyframes ampCardStage4Strobe {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(225, 29, 72, 0.35);
+    border-top-color: #e11d48;
+    border-right-color: #e11d48;
+    border-bottom-color: #e11d48;
+  }
+  50% {
+    box-shadow: 0 0 0 3.5px rgba(244, 63, 94, 0.9), inset 0 0 14px rgba(244, 63, 94, 0.38);
+    border-top-color: #fda4af;
+    border-right-color: #fda4af;
+    border-bottom-color: #fda4af;
+  }
+}
+
+/* Override .disable-animations for essential DJ broadcast attention alerts */
+:root {
+  --amp-pulse-duration: 1s;
+}
+
+/* Synchronize any .animate-pulse inside To-Be timeline to the unified 1s beat */
+.tobe-timeline-canvas .animate-pulse,
+.disable-animations.opt-css-animations .tobe-timeline-canvas .animate-pulse {
+  animation-duration: var(--amp-pulse-duration, 1s) !important;
+  animation-timing-function: ease-in-out !important;
+}
+
+/* #1 Merged (1A Header & Frame Halo + 1B Interior Body Wash synchronized on 1s master beat) */
+.amp-now-flash-added-merged,
+.disable-animations.opt-css-animations .amp-now-flash-added-merged {
+  animation: ampNowAdded1A var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+.amp-now-flash-added-merged > .amp-now-header,
+.disable-animations.opt-css-animations .amp-now-flash-added-merged > .amp-now-header {
+  animation: ampNowAddedHeader1A var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+.amp-now-flash-added-merged .amp-now-body,
+.disable-animations.opt-css-animations .amp-now-flash-added-merged .amp-now-body {
+  animation: ampNowAddedBody1B var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+/* #2 Option 2A (Synchronized on 1s master beat) */
+.amp-now-flash-leaving-2a,
+.disable-animations.opt-css-animations .amp-now-flash-leaving-2a {
+  animation: ampNowLeaving2A var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+.amp-now-flash-leaving-2a > .amp-now-header,
+.disable-animations.opt-css-animations .amp-now-flash-leaving-2a > .amp-now-header {
+  animation: ampNowLeavingHeader2A var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+/* #2 Pause Gap Highlight "ON" State (Stays full highlighted during pause gap) */
+.amp-now-static-leaving-2a {
+  border-color: #e11d48 !important;
+  box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.65), 0 0 16px rgba(225, 29, 72, 0.5) !important;
+}
+
+.amp-now-static-leaving-2a > .amp-now-header {
+  background-color: #e11d48 !important;
+  border-bottom-color: #fb7185 !important;
+}
+
+/* Per-Card Animated Urgency Classes (All locked to the same 1s master beat) */
+.amp-card-entry-pulse,
+.disable-animations.opt-css-animations .amp-card-entry-pulse {
+  animation: ampCardEntryFlash var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+/* Stage 2 (Due): Border-only pulse (locked to 1s master beat) */
+.amp-card-stage2-pulse,
+.disable-animations.opt-css-animations .amp-card-stage2-pulse {
+  animation: ampCardStage2Pulse var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+/* Stage 3 (Amber / Overdue): Border-only amber flash (locked to 1s master beat) */
+.amp-card-stage3-pulse,
+.disable-animations.opt-css-animations .amp-card-stage3-pulse {
+  animation: ampCardStage3Pulse var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+/* Stage 4 (Leaving / Rose): Full urgent rose surface + strobe (locked to 1s master beat) */
+.amp-card-stage4-strobe,
+.disable-animations.opt-css-animations .amp-card-stage4-strobe {
+  animation: ampCardStage4Strobe var(--amp-pulse-duration, 1s) ease-in-out infinite !important;
+}
+
+/* #4 Blink-Only Mode: 0.5s Full On / 0.5s Full Off with zero intermediate transition color calculations */
+.amp-blink-only-mode *,
+.amp-blink-only-mode *::before,
+.amp-blink-only-mode *::after {
+  transition: none !important;
+}
+
+.amp-blink-only-mode .animate-pulse,
+.amp-blink-only-mode .amp-now-flash-added-merged,
+.amp-blink-only-mode .amp-now-flash-added-merged > .amp-now-header,
+.amp-blink-only-mode .amp-now-flash-added-merged .amp-now-body,
+.amp-blink-only-mode .amp-now-flash-leaving-2a,
+.amp-blink-only-mode .amp-now-flash-leaving-2a > .amp-now-header,
+.amp-blink-only-mode .amp-card-entry-pulse,
+.amp-blink-only-mode .amp-card-stage2-pulse,
+.amp-blink-only-mode .amp-card-stage3-pulse,
+.amp-blink-only-mode .amp-card-stage4-strobe,
+.disable-animations.opt-css-animations.amp-blink-only-mode .animate-pulse,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-now-flash-added-merged,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-now-flash-added-merged > .amp-now-header,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-now-flash-added-merged .amp-now-body,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-now-flash-leaving-2a,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-now-flash-leaving-2a > .amp-now-header,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-card-entry-pulse,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-card-stage2-pulse,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-card-stage3-pulse,
+.disable-animations.opt-css-animations.amp-blink-only-mode .amp-card-stage4-strobe,
+.disable-animations.opt-css-animations .amp-blink-only-mode .animate-pulse,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-now-flash-added-merged,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-now-flash-added-merged > .amp-now-header,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-now-flash-added-merged .amp-now-body,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-now-flash-leaving-2a,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-now-flash-leaving-2a > .amp-now-header,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-card-entry-pulse,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-card-stage2-pulse,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-card-stage3-pulse,
+.disable-animations.opt-css-animations .amp-blink-only-mode .amp-card-stage4-strobe {
+  animation-timing-function: steps(1, end) !important;
+  transition: none !important;
+}
+
+.tobe-card-urgency-4 {
+  background-color: #fff1f2 !important;
+  border-top-color: #e11d48 !important;
+  border-right-color: #e11d48 !important;
+  border-bottom-color: #e11d48 !important;
+}
+
+.tobe-card-urgency-4 > .rounded-t {
+  background-color: #ffe4e6 !important;
+  border-bottom-color: #fda4af !important;
+}
+
+[data-theme="dark"] .tobe-card-urgency-4,
+.dark .tobe-card-urgency-4,
+[data-theme="dark-test"] .tobe-card-urgency-4 {
+  background-color: #380e1e !important;
+  border-top-color: #f43f5e !important;
+  border-right-color: #f43f5e !important;
+  border-bottom-color: #f43f5e !important;
+}
+
+[data-theme="dark"] .tobe-card-urgency-4 > .rounded-t,
+.dark .tobe-card-urgency-4 > .rounded-t,
+[data-theme="dark-test"] .tobe-card-urgency-4 > .rounded-t {
+  background-color: #501229 !important;
+  border-bottom-color: #be123c !important;
+}
+
+[data-theme="dark"] .tobe-card-urgency-4 .text-rose-700,
+.dark .tobe-card-urgency-4 .text-rose-700,
+[data-theme="dark-test"] .tobe-card-urgency-4 .text-rose-700,
+[data-theme="dark"] .tobe-card-urgency-4 .text-rose-900,
+.dark .tobe-card-urgency-4 .text-rose-900,
+[data-theme="dark-test"] .tobe-card-urgency-4 .text-rose-900 {
+  color: #fecdd3 !important;
+}
+
+[data-theme="dark"] .tobe-card-urgency-4 .text-rose-600,
+.dark .tobe-card-urgency-4 .text-rose-600,
+[data-theme="dark-test"] .tobe-card-urgency-4 .text-rose-600 {
+  color: #fb7185 !important;
 }
 
 

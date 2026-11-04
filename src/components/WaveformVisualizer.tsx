@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { mp3WaveformCache, extractWaveformForUrl, mp3DurationCache } from '../lib/driveService';
+import { extractWaveformForUrl } from '../lib/driveService';
+import { mp3WaveformCache, mp3DurationCache, availableFilesCache, driveFileNameCache } from '../lib/audioCache';
 
 interface WaveformVisualizerProps {
   url: string;
@@ -46,16 +47,28 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
   const autoBarsCount = Math.max(1, Math.floor((availableInnerWidth + BAR_GAP_PX) / pitch));
   const effectiveBarsCount = customBarsCount ? Math.min(customBarsCount, autoBarsCount) : autoBarsCount;
 
+  const lookupCachedPeaks = (targetUrl: string): number[] | null => {
+    if (!targetUrl) return null;
+    const resolved = availableFilesCache.get(targetUrl)?.path;
+    const mappedName = driveFileNameCache.get(targetUrl) || (resolved ? driveFileNameCache.get(resolved) : undefined);
+    return (
+      mp3WaveformCache.get(targetUrl) ||
+      (resolved ? mp3WaveformCache.get(resolved) : undefined) ||
+      (mappedName ? mp3WaveformCache.get(mappedName) : undefined) ||
+      null
+    );
+  };
+
   const [cachedPeaks, setCachedPeaks] = useState<number[] | null>(() => {
-    return mp3WaveformCache.get(url) || null;
+    return lookupCachedPeaks(url);
   });
 
   useEffect(() => {
     let isMounted = true;
-    const existing = mp3WaveformCache.get(url);
+    const existing = lookupCachedPeaks(url);
     if (existing) {
       setCachedPeaks(existing);
-    } else if (url) {
+    } else if (url && !url.startsWith('mock-')) {
       extractWaveformForUrl(url).then((peaks) => {
         if (isMounted && peaks && peaks.length > 0) {
           setCachedPeaks(peaks);
@@ -64,9 +77,19 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
     }
 
     const handleCached = (e: Event) => {
-      const customEv = e as CustomEvent<{ url: string; peaks: number[] }>;
-      if (customEv.detail && customEv.detail.url === url && isMounted) {
-        setCachedPeaks(customEv.detail.peaks);
+      const customEv = e as CustomEvent<{ url: string; resolvedUrl?: string; fileName?: string; peaks: number[] }>;
+      if (!customEv.detail || !isMounted) return;
+      const d = customEv.detail;
+      const resolved = availableFilesCache.get(url)?.path;
+      const mappedName = driveFileNameCache.get(url) || (resolved ? driveFileNameCache.get(resolved) : undefined);
+      if (
+        d.url === url ||
+        d.resolvedUrl === url ||
+        d.fileName === url ||
+        (resolved && (d.url === resolved || d.resolvedUrl === resolved)) ||
+        (mappedName && (d.url === mappedName || d.fileName === mappedName))
+      ) {
+        setCachedPeaks(d.peaks);
       }
     };
 
@@ -99,7 +122,12 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
 
   let effectiveDuration = duration;
   if ((!effectiveDuration || effectiveDuration <= 0) && url) {
-    const cached = mp3DurationCache.get(url);
+    const resolved = availableFilesCache.get(url)?.path;
+    const mappedName = driveFileNameCache.get(url) || (resolved ? driveFileNameCache.get(resolved) : undefined);
+    const cached =
+      mp3DurationCache.get(url) ||
+      (resolved ? mp3DurationCache.get(resolved) : undefined) ||
+      (mappedName ? mp3DurationCache.get(mappedName) : undefined);
     if (cached) {
       const parts = cached.split(':');
       if (parts.length === 2) {

@@ -1,4 +1,4 @@
-import { Announcement, AnnouncementType, Show, TimeGatedMp3 } from '../types';
+import { Announcement, AnnouncementType, MediaAssetFile, Show, TimeGatedMp3 } from '../types';
 import {
   formatToDatetimeLocal,
   getCurrentDatetimeLocal,
@@ -7,9 +7,10 @@ import {
   formatDuration,
   validateTimeGatedMp3s,
   formatTime12,
-  classifyMediaAsset
+  classifyMediaAsset,
+  getGateMediaItems
 } from './utils';
-import { driveFileNameCache, availableFilesCache, mp3DurationCache } from './driveService';
+import { driveFileNameCache, availableFilesCache, mp3DurationCache, syncMediaCatalogFiles } from './audioCache';
 
 export type ScheduleIssueType = 'missing_media' | 'overlap' | 'gap';
 export type ScheduleIssueSeverity = 'critical' | 'warning' | 'info';
@@ -57,18 +58,33 @@ export interface ScheduleDiagnosticsResult {
 }
 
 /**
- * Parses duration string (e.g. "01:30", "00:45", "90", "1:15:30") or number into seconds.
+ * Parses duration string (e.g. "01:30", "00:45", "0m30s", "30s", "90", "1:15:30") or number into seconds.
  */
 export function parseDurationToSeconds(duration?: string | number): number {
   if (duration === undefined || duration === null || duration === '') return 0;
   if (typeof duration === 'number') {
     return isNaN(duration) || duration < 0 ? 0 : duration;
   }
-  const clean = String(duration).trim();
+  const clean = String(duration).replace(/^~\s*/, '').trim();
   if (!clean) return 0;
 
+  const minSecMatch = clean.match(/^(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s(?:ec(?:ond)?s?)?$/i);
+  if (minSecMatch) {
+    return (parseInt(minSecMatch[1], 10) || 0) * 60 + (parseInt(minSecMatch[2], 10) || 0);
+  }
+
+  const onlyMinMatch = clean.match(/^(\d+)\s*m(?:in(?:ute)?s?)?$/i);
+  if (onlyMinMatch) {
+    return (parseInt(onlyMinMatch[1], 10) || 0) * 60;
+  }
+
+  const onlySecMatch = clean.match(/^(\d+)\s*s(?:ec(?:ond)?s?)?$/i);
+  if (onlySecMatch) {
+    return parseInt(onlySecMatch[1], 10) || 0;
+  }
+
   if (clean.includes(':')) {
-    const parts = clean.split(':').map(p => parseFloat(p));
+    const parts = clean.split(':').map(p => (p === '' ? 0 : parseFloat(p)));
     if (parts.some(p => isNaN(p))) return 0;
     if (parts.length === 2) {
       return (parts[0] * 60) + parts[1];
@@ -89,20 +105,24 @@ export function resolveEffectiveDurationSeconds(
   announcement: Announcement,
   activeMp3?: TimeGatedMp3 | null
 ): number {
-  // 1. Check active timeGatedMp3 duration
-  if (activeMp3?.duration) {
-    const d = parseDurationToSeconds(activeMp3.duration);
+  const firstMediaItem = activeMp3 ? getGateMediaItems(activeMp3)[0] : undefined;
+  const effDur = activeMp3?.duration || firstMediaItem?.duration;
+  const effApprox = activeMp3?.approximateReadTime || firstMediaItem?.approximateReadTime;
+  const candidateUrl = activeMp3?.mp3Url || firstMediaItem?.mp3Url;
+
+  // 1. Check active timeGatedMp3 / mediaItem duration
+  if (effDur) {
+    const d = parseDurationToSeconds(effDur);
     if (d > 0) return d;
   }
 
   // 2. Check read time if script
-  if (activeMp3?.approximateReadTime) {
-    const d = parseDurationToSeconds(activeMp3.approximateReadTime);
+  if (effApprox) {
+    const d = parseDurationToSeconds(effApprox);
     if (d > 0) return d;
   }
 
   // 3. Check cached duration from driveService duration cache or availableFilesCache
-  const candidateUrl = activeMp3?.mp3Url;
   if (candidateUrl) {
     const cachedStr = mp3DurationCache.get(candidateUrl);
     if (cachedStr) {
@@ -110,8 +130,17 @@ export function resolveEffectiveDurationSeconds(
       if (d > 0) return d;
     }
 
-    const fname = getFilenameFromUrlOrPath(candidateUrl).toLowerCase();
-    const driveFile = availableFilesCache.get(fname);
+    const rawFname = getFilenameFromUrlOrPath(candidateUrl);
+    const fnameLower = rawFname.toLowerCase();
+    let driveFile = availableFilesCache.get(rawFname) || availableFilesCache.get(fnameLower);
+    if (!driveFile) {
+      for (const [key, val] of availableFilesCache.entries()) {
+        if (key.toLowerCase() === fnameLower) {
+          driveFile = val;
+          break;
+        }
+      }
+    }
     if (driveFile?.duration) {
       const d = parseDurationToSeconds(driveFile.duration);
       if (d > 0) return d;
@@ -121,82 +150,13 @@ export function resolveEffectiveDurationSeconds(
   return 0;
 }
 
-/**
- * Resolves all TimeGatedMp3 entries that match a specific timestamp for a given announcement.
- * Returns an array of matching active entries.
- * - If 0 entries match -> returns empty array [] (indicates a schedule gap or no media).
- * - If 1 entry matches -> returns [entry] (normal valid state).
- * - If >1 entries match -> returns [entry1, entry2, ...] (indicates dual-media collision).
- */
-export function getMatchingMp3sForSlot(
-  announcement: Announcement,
-  slotDateMs: number,
-  localIsoStr: string
-): TimeGatedMp3[] {
-  const timeGated = announcement.timeGatedMp3s || [];
-  if (timeGated.length === 0) {
-    return [];
-  }
+import {
+  getMatchingMp3sForSlot,
+  isAnnouncementActiveInHour,
+} from './scheduleEngine';
 
-  const matching: TimeGatedMp3[] = [];
+export { getMatchingMp3sForSlot, isAnnouncementActiveInHour };
 
-  for (const item of timeGated) {
-    const itemStartMs = item.startDate ? new Date(formatToDatetimeLocal(item.startDate)).getTime() : NaN;
-    const itemEndMs = item.endDate ? new Date(formatToDatetimeLocal(item.endDate)).getTime() : NaN;
-
-    // Check if slot falls within this card's active window
-    const afterStart = isNaN(itemStartMs) || slotDateMs >= itemStartMs;
-    const beforeEnd = isNaN(itemEndMs) || slotDateMs <= itemEndMs;
-
-    if (afterStart && beforeEnd) {
-      matching.push(item);
-    }
-  }
-
-  return matching;
-}
-
-/**
- * Evaluates whether an announcement is scheduled on a given Date and Hour.
- */
-export function isAnnouncementActiveInHour(
-  s: Announcement,
-  date: Date,
-  hour: number,
-  localDateStr: string,
-  dayOfWeek: number
-): boolean {
-  if (s.enabled === false) return false;
-
-  // Check overall date range bounds
-  if (s.startDate) {
-    const startLocal = formatToDatetimeLocal(s.startDate);
-    const slotLocal = `${localDateStr}T${hour.toString().padStart(2, '0')}:${(s.minute || 0).toString().padStart(2, '0')}`;
-    if (slotLocal < startLocal) return false;
-  }
-  if (s.endDate) {
-    const endLocal = formatToDatetimeLocal(s.endDate);
-    const slotLocal = `${localDateStr}T${hour.toString().padStart(2, '0')}:${(s.minute || 0).toString().padStart(2, '0')}`;
-    if (slotLocal > endLocal) return false;
-  }
-
-  if (s.type === AnnouncementType.ONE_TIME) {
-    if (!s.date || !s.time) return false;
-    const sHour = parseInt(s.time, 10);
-    return s.date === localDateStr && sHour === hour;
-  }
-
-  if (s.type === AnnouncementType.BASIC_HOURLY) {
-    return true;
-  }
-
-  if (s.type === AnnouncementType.ADVANCED) {
-    if (!s.gridRules || s.gridRules.length === 0) return false;
-    return s.gridRules.includes(`${dayOfWeek}-${hour}`);
-  }
-
-  return false;
-}
 
 export interface EvaluateScheduleDiagnosticsParams {
   announcements: Announcement[];
@@ -206,7 +166,7 @@ export interface EvaluateScheduleDiagnosticsParams {
   endDate?: Date;
   lookaheadDays?: number;
   includePastHours?: boolean;
-  mediaFiles?: Array<{ name: string; path?: string; size?: string; duration?: string } | any>;
+  mediaFiles?: Array<Partial<MediaAssetFile> & { name: string }>;
 }
 
 /**
@@ -223,20 +183,8 @@ export function evaluateScheduleDiagnostics({
   includePastHours = false,
   mediaFiles
 }: EvaluateScheduleDiagnosticsParams): ScheduleDiagnosticsResult {
-  // Synchronously seed file caches if mediaFiles were provided
   if (mediaFiles && mediaFiles.length > 0) {
-    mediaFiles.forEach(f => {
-      if (f && f.name) {
-        availableFilesCache.set(f.name, {
-          path: f.path || f.name,
-          size: f.size || '0.1 MB',
-          duration: f.duration || ''
-        });
-        if (f.path) {
-          driveFileNameCache.set(f.path, f.name);
-        }
-      }
-    });
+    syncMediaCatalogFiles(mediaFiles);
   }
 
   const issues: ScheduleIssue[] = [];
@@ -331,7 +279,9 @@ export function evaluateScheduleDiagnostics({
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-  const activeAnnouncements = announcements.filter(s => s.enabled !== false);
+  const activeAnnouncements = announcements.filter(
+    s => s.enabled !== false || Boolean(s.endDate && s.endDate.trim())
+  );
 
   // Timeline Slot Analysis: Evaluate each realized instance of an announcement in the calendar
   for (let dayOffset = 0; dayOffset < totalDays; dayOffset++) {
@@ -423,9 +373,13 @@ export function evaluateScheduleDiagnostics({
           continue;
         }
 
-        // Case B: Dual Media Collision (More than one file is scheduled to play simultaneously for this single announcement)
+        // Case B: Dual Media Collision (More than one time-gate window is scheduled to play simultaneously for this single announcement)
         if (matchingEntries.length > 1) {
-          const fileNames = matchingEntries.map(m => m.mp3Url ? getFilenameFromUrlOrPath(m.mp3Url) : '(no file)').join(' AND ');
+          const fileNames = matchingEntries.map(m => {
+            const firstItem = getGateMediaItems(m)[0];
+            return firstItem?.mp3Url ? getFilenameFromUrlOrPath(firstItem.mp3Url) : '(no file)';
+          }).join(' AND ');
+          const firstEntryMedia = getGateMediaItems(matchingEntries[0])[0];
           addIssue({
             id: `overlap_${s.id}_${dayKey}_${hour}_${minute}`,
             type: 'overlap',
@@ -439,15 +393,16 @@ export function evaluateScheduleDiagnostics({
             announcementId: s.id,
             announcementName: s.name,
             announcementType: s.type,
-            fileName: matchingEntries[0]?.mp3Url,
+            fileName: firstEntryMedia?.mp3Url,
             description: `"${s.name}" has an overlap with ${fileNames}.`,
             suggestedAction: 'Adjust transition dates/times so only one file is active at this slot.'
           });
         }
 
-        // Case C: For each active matching file in this slot, verify that the media file is valid and present on disk/Drive
+        // Case C: For each active matching gate in this slot, verify that all rotating media files in the gate are valid and present on disk/Drive
         for (const entry of matchingEntries) {
-          if (!entry.mp3Url || entry.mp3Url.trim() === '') {
+          const entryItems = getGateMediaItems(entry);
+          if (entryItems.length === 0) {
             addIssue({
               id: `empty_file_${s.id}_${entry.id}_${dayKey}_${hour}_${minute}`,
               type: 'missing_media',
@@ -467,73 +422,96 @@ export function evaluateScheduleDiagnostics({
             continue;
           }
 
-          const status = getMP3Status(entry.mp3Url);
-          const entryIsScript = classifyMediaAsset(entry.mp3Url, entry.assetType) === 'script';
+          for (let itemIdx = 0; itemIdx < entryItems.length; itemIdx++) {
+            const mItem = entryItems[itemIdx];
+            if (!mItem.mp3Url || mItem.mp3Url.trim() === '') {
+              addIssue({
+                id: `empty_file_${s.id}_${entry.id}_${itemIdx}_${dayKey}_${hour}_${minute}`,
+                type: 'missing_media',
+                severity: 'critical',
+                timestamp: slotDateTime.toISOString(),
+                timeLabel,
+                slotId,
+                dayKey,
+                hour,
+                minute,
+                announcementId: s.id,
+                announcementName: s.name,
+                announcementType: s.type,
+                description: `"${s.name}" has no media assigned at this time.`,
+                suggestedAction: 'Click "Choose" to select an audio or script file.'
+              });
+              continue;
+            }
 
-          if (!status.exists) {
-            addIssue({
-              id: `missing_file_${s.id}_${entry.id}_${dayKey}_${hour}_${minute}`,
-              type: 'missing_media',
-              severity: 'critical',
-              timestamp: slotDateTime.toISOString(),
-              timeLabel,
-              slotId,
-              dayKey,
-              hour,
-              minute,
-              announcementId: s.id,
-              announcementName: s.name,
-              announcementType: s.type,
-              fileName: entry.mp3Url,
-              fileStatus: status,
-              description: `Missing File: "${status.filename || entry.mp3Url}" scheduled for "${s.name}" was not found in storage or media cache.`,
-              suggestedAction: 'Upload the missing audio file to your media folder or select an available track.'
-            });
-          } else if (!entryIsScript && !status.valid) {
-            addIssue({
-              id: `invalid_file_${s.id}_${entry.id}_${dayKey}_${hour}_${minute}`,
-              type: 'missing_media',
-              severity: 'warning',
-              timestamp: slotDateTime.toISOString(),
-              timeLabel,
-              slotId,
-              dayKey,
-              hour,
-              minute,
-              announcementId: s.id,
-              announcementName: s.name,
-              announcementType: s.type,
-              fileName: entry.mp3Url,
-              fileStatus: status,
-              description: `File format warning: "${status.filename}" may not be a valid audio file.`,
-              suggestedAction: 'Verify audio encoding or re-upload as a standard MP3.'
-            });
-          }
+            const status = getMP3Status(mItem.mp3Url);
+            const entryIsScript = classifyMediaAsset(mItem.mp3Url, mItem.assetType) === 'script';
 
-          // Check backup audio file if script mode
-          if (entryIsScript && entry.backupMp3Url) {
-            const bUrl = entry.backupMp3Url;
-            if (bUrl) {
-              const bStatus = getMP3Status(bUrl);
-              if (!bStatus.exists) {
-                addIssue({
-                  id: `missing_backup_${s.id}_${entry.id}_${dayKey}_${hour}_${minute}`,
-                  type: 'missing_media',
-                  severity: 'warning',
-                  timestamp: slotDateTime.toISOString(),
-                  timeLabel,
-                  slotId,
-                  dayKey,
-                  hour,
-                  minute,
-                  announcementId: s.id,
-                  announcementName: s.name,
-                  announcementType: s.type,
-                  fileName: bUrl,
-                  fileStatus: bStatus,
-                  description: `Missing Backup Audio: "${bStatus.filename || bUrl}" attached to script was not found.`,
-                  suggestedAction: 'Upload the backup audio track or clear backup URL if not needed.'
-                });
+            if (!status.exists) {
+              addIssue({
+                id: `missing_file_${s.id}_${entry.id}_${itemIdx}_${dayKey}_${hour}_${minute}`,
+                type: 'missing_media',
+                severity: 'critical',
+                timestamp: slotDateTime.toISOString(),
+                timeLabel,
+                slotId,
+                dayKey,
+                hour,
+                minute,
+                announcementId: s.id,
+                announcementName: s.name,
+                announcementType: s.type,
+                fileName: mItem.mp3Url,
+                fileStatus: status,
+                description: `Missing File: "${status.filename || mItem.mp3Url}" scheduled for "${s.name}" was not found in storage or media cache.`,
+                suggestedAction: 'Upload the missing audio file to your media folder or select an available track.'
+              });
+            } else if (!entryIsScript && !status.valid) {
+              addIssue({
+                id: `invalid_file_${s.id}_${entry.id}_${itemIdx}_${dayKey}_${hour}_${minute}`,
+                type: 'missing_media',
+                severity: 'warning',
+                timestamp: slotDateTime.toISOString(),
+                timeLabel,
+                slotId,
+                dayKey,
+                hour,
+                minute,
+                announcementId: s.id,
+                announcementName: s.name,
+                announcementType: s.type,
+                fileName: mItem.mp3Url,
+                fileStatus: status,
+                description: `File format warning: "${status.filename}" may not be a valid audio file.`,
+                suggestedAction: 'Verify audio encoding or re-upload as a standard MP3.'
+              });
+            }
+
+            // Check backup audio file if script mode
+            if (entryIsScript && mItem.backupMp3Url) {
+              const bUrl = mItem.backupMp3Url;
+              if (bUrl) {
+                const bStatus = getMP3Status(bUrl);
+                if (!bStatus.exists) {
+                  addIssue({
+                    id: `missing_backup_${s.id}_${entry.id}_${itemIdx}_${dayKey}_${hour}_${minute}`,
+                    type: 'missing_media',
+                    severity: 'warning',
+                    timestamp: slotDateTime.toISOString(),
+                    timeLabel,
+                    slotId,
+                    dayKey,
+                    hour,
+                    minute,
+                    announcementId: s.id,
+                    announcementName: s.name,
+                    announcementType: s.type,
+                    fileName: bUrl,
+                    fileStatus: bStatus,
+                    description: `Missing Backup Audio: "${bStatus.filename || bUrl}" attached to script was not found.`,
+                    suggestedAction: 'Upload the backup audio track or clear backup URL if not needed.'
+                  });
+                }
               }
             }
           }

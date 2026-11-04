@@ -16,7 +16,7 @@ import { MilitaryTimeInput } from "./MilitaryTimeInput";
 export interface PrerecordModalProps {
   isOpen: boolean;
   onClose: () => void;
-  prerecordModalTarget: "Prerecord" | "Export";
+  prerecordModalTarget?: "Prerecord";
   prerecordSelectorMode: "manual" | "show-list";
   setPrerecordSelectorMode: (mode: "manual" | "show-list") => void;
   showPrerecordConfirmStep: boolean;
@@ -83,39 +83,48 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
   getPrerecord12HrDisplay,
 }) => {
   const dateSelectRef = useRef<HTMLSelectElement>(null);
-  const isExportTarget = prerecordModalTarget === "Export";
+  const modalContainerRef = useRef<HTMLDivElement>(null);
+  const [lockedModalHeight, setLockedModalHeight] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!isOpen || !selectedPrerecordShowId || prerecordSelectorMode !== "show-list") {
+      setLockedModalHeight(null);
+    }
+  }, [isOpen, selectedPrerecordShowId, prerecordSelectorMode]);
+
   const colors = {
-    accentText: isExportTarget ? "text-blue-700" : "text-emerald-700",
-    focusRing: isExportTarget
-      ? "focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-      : "focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500",
-    buttonBg: isExportTarget
-      ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
-      : "bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm",
-    border: isExportTarget ? "border-blue-300" : "border-emerald-300",
+    accentText: "text-emerald-700",
+    focusRing: "focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500",
+    border: "border-emerald-300",
   };
-  const ModeIcon = isExportTarget ? ListOrdered : CassetteTape;
+  const ModeIcon = CassetteTape;
 
   return (
     <AnimatePresence>
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-2 bg-slate-900/40 backdrop-blur-xs">
           <motion.div
+            ref={modalContainerRef}
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
+            style={
+              !showPrerecordConfirmStep &&
+              prerecordSelectorMode === "show-list" &&
+              selectedPrerecordShowId &&
+              lockedModalHeight
+                ? { height: `${lockedModalHeight}px` }
+                : undefined
+            }
             className={cn(
-              "bg-white border rounded-xl shadow-2xl w-[255px] max-w-[95vw] text-slate-800 flex flex-col font-sans min-h-0",
-              prerecordSelectorMode === "show-list" && !showPrerecordConfirmStep
-                ? "h-[80vh] max-h-[80vh]"
-                : "max-h-[80vh]",
+              "bg-white border rounded-xl shadow-2xl w-[255px] max-w-[95vw] max-h-[85vh] text-slate-800 flex flex-col font-sans min-h-0",
               colors.border,
             )}
           >
             {showPrerecordConfirmStep && prerecordConfirmDetails ? (
               <div className="flex flex-col flex-1 min-h-0">
                 {/* Confirmation Header */}
-                <div className="px-3.5 py-2.5 border-b border-slate-200 flex items-center bg-slate-50 shrink-0">
+                <div className="px-3.5 py-2.5 border-b border-slate-200 flex items-center bg-slate-50 shrink-0 rounded-t-xl">
                   <div className="flex items-center gap-2">
                     <span className={colors.accentText}>
                       <ModeIcon className="w-4 h-4 shrink-0" />
@@ -222,12 +231,8 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
                   <button
                     type="button"
                     onClick={onFinalConfirmPrerecord}
-                    className={cn(
-                      "px-3.5 py-1.5 text-white text-xs font-black uppercase tracking-wider rounded shadow-md transition cursor-pointer active:translate-y-px flex items-center gap-1.5",
-                      colors.buttonBg,
-                    )}
+                    className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-black uppercase tracking-wider rounded border border-slate-900 shadow-sm transition cursor-pointer active:translate-y-px flex items-center justify-center"
                   >
-                    <ModeIcon className="w-3.5 h-3.5 shrink-0" />
                     <span>OK</span>
                   </button>
                 </div>
@@ -238,7 +243,7 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
                 className="flex flex-col flex-1 min-h-0"
               >
                 {/* Modal Header */}
-                <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between bg-slate-50 shrink-0">
+                <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between bg-slate-50 shrink-0 rounded-t-xl">
                   <div className="flex items-center gap-1.5 min-w-0 flex-1">
                     <span className={colors.accentText}>
                       <ModeIcon className="w-4 h-4 shrink-0" />
@@ -250,8 +255,8 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
                       )}
                     >
                       {prerecordSelectorMode === "show-list"
-                        ? isExportTarget
-                          ? "Choose Show to export"
+                        ? selectedPrerecordShowId
+                          ? "Choose Air Date"
                           : "Choose Show to prerecord"
                         : "Set Air Date"}
                     </h3>
@@ -267,81 +272,157 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
                   )}
 
                   {prerecordSelectorMode === "show-list" ? (
-                    <div className="space-y-2 flex-1 flex flex-col min-h-0">
-                      {/* Filter Box Stacked Vertically */}
-                      <div className="relative w-full shrink-0">
-                        <input
-                          type="text"
-                          placeholder="Filter shows..."
-                          value={showFilterText}
-                          onChange={(e) => setShowFilterText(e.target.value)}
-                          className={cn(
-                            "w-full px-2 py-1 pr-6 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder-slate-400 outline-none font-sans shadow-xs",
-                            colors.focusRing,
-                          )}
-                        />
-                        {showFilterText && (
-                          <button
-                            type="button"
-                            onClick={() => setShowFilterText("")}
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs px-0.5"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </div>
+                    <div className="space-y-2.5 flex-1 flex flex-col min-h-0">
+                      {!selectedPrerecordShowId ? (
+                        <>
+                          {/* Filter Box Stacked Vertically */}
+                          <div className="relative w-full shrink-0">
+                            <input
+                              type="text"
+                              placeholder="Filter shows..."
+                              value={showFilterText}
+                              onChange={(e) => setShowFilterText(e.target.value)}
+                              className={cn(
+                                "w-full px-2 py-1 pr-6 bg-white border border-slate-300 rounded text-xs text-slate-800 placeholder-slate-400 outline-none font-sans shadow-xs",
+                                colors.focusRing,
+                              )}
+                            />
+                            {showFilterText && (
+                              <button
+                                type="button"
+                                onClick={() => setShowFilterText("")}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs px-0.5"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
 
-                      {/* Condensed Listbox of Shows */}
-                      <div className="flex flex-col text-left flex-1 min-h-[68px]">
-                        <div className="h-full min-h-[68px] overflow-y-auto border border-slate-300 rounded-lg divide-y divide-slate-200/80 bg-white shadow-inner custom-scrollbar">
-                          {(() => {
-                            const activeShows = getSortedShows(
-                              shows.filter((s) => s.active),
-                            );
-                            const filtered = activeShows.filter(
-                              (s) =>
-                                s.name
-                                  .toLowerCase()
-                                  .includes(showFilterText.toLowerCase()) ||
-                                s.day
-                                  .toLowerCase()
-                                  .includes(showFilterText.toLowerCase()),
-                            );
+                          {/* Condensed Listbox of Shows (capped at ~10 cards height) */}
+                          <div className="flex flex-col text-left min-h-[68px] max-h-[380px]">
+                            <div className="overflow-y-auto max-h-[380px] border border-slate-300 rounded-lg divide-y divide-slate-200/80 bg-white shadow-inner custom-scrollbar">
+                              {(() => {
+                                const activeShows = getSortedShows(
+                                  shows.filter((s) => s.active),
+                                );
+                                const filtered = activeShows.filter(
+                                  (s) =>
+                                    s.name
+                                      .toLowerCase()
+                                      .includes(showFilterText.toLowerCase()) ||
+                                    s.day
+                                      .toLowerCase()
+                                      .includes(showFilterText.toLowerCase()),
+                                );
 
-                            if (filtered.length === 0) {
-                              return (
-                                <div className="p-2.5 text-center text-xs text-slate-500 italic">
-                                  No matching active shows
+                                if (filtered.length === 0) {
+                                  return (
+                                    <div className="p-2.5 text-center text-xs text-slate-500 italic">
+                                      No matching active shows
+                                    </div>
+                                  );
+                                }
+
+                                return filtered.map((show) => {
+                                  const shade = getShowShade(
+                                    show,
+                                    getSortedShows(shows),
+                                  );
+                                  return (
+                                    <div
+                                      key={show.id}
+                                      onClick={() => {
+                                        if (modalContainerRef.current) {
+                                          setLockedModalHeight(
+                                            modalContainerRef.current.getBoundingClientRect()
+                                              .height,
+                                          );
+                                        }
+                                        onSelectPrerecordShow(show.id);
+                                      }}
+                                      style={{
+                                        backgroundColor: shade.bg,
+                                        borderLeft: `3px solid ${shade.border}`,
+                                      }}
+                                      className="flex flex-col gap-0.5 px-2 py-1.5 cursor-pointer text-xs transition-all hover:brightness-95 select-none"
+                                    >
+                                      <div className="flex items-center justify-between gap-1 w-full min-w-0">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <span className="px-1 py-0.2 bg-blue-50 text-blue-700 border border-blue-150 rounded text-[9px] font-black uppercase tracking-tight shrink-0">
+                                            {show.day}
+                                          </span>
+                                          <span className="text-[10px] font-mono font-bold text-slate-700 truncate">
+                                            {formatHour12(show.startHour, show.startMinute)}{" "}
+                                            ({show.durationHours}h
+                                            {show.durationMinutes
+                                              ? `${show.durationMinutes}m`
+                                              : ""}
+                                            )
+                                          </span>
+                                        </div>
+                                      </div>
+                                      <div className="font-bold text-slate-900 truncate w-full text-[11px] leading-tight">
+                                        {show.name}
+                                      </div>
+                                    </div>
+                                  );
+                                });
+                              })()}
+                            </div>
+                          </div>
+
+                          {/* Select Manually option */}
+                          <div className="flex justify-start pt-0.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setPrerecordSelectorMode("manual")}
+                              className="text-[11px] font-bold text-slate-600 hover:text-slate-900 hover:underline flex items-center gap-1 cursor-pointer bg-transparent border-0 outline-none"
+                            >
+                              <NotebookPen className="w-3 h-3 shrink-0 text-slate-500" />
+                              Set manually
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        (() => {
+                          const show = shows.find(
+                            (s) => s.id === selectedPrerecordShowId,
+                          );
+                          if (!show) return null;
+                          const shade = getShowShade(
+                            show,
+                            getSortedShows(shows),
+                          );
+                          const occurrences = getFutureDatesForShow(
+                            show.day,
+                            show.startHour,
+                            show.startMinute,
+                          );
+                          return (
+                            <div className="space-y-2.5 flex flex-col text-left">
+                              {/* Collapsed Selected Show Card */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-black uppercase tracking-wider text-slate-600 select-none">
+                                    Selected Show
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedPrerecordShowId("")}
+                                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer bg-transparent border-0 outline-none"
+                                  >
+                                    Change show
+                                  </button>
                                 </div>
-                              );
-                            }
-
-                            return filtered.map((show) => {
-                              const shade = getShowShade(
-                                show,
-                                getSortedShows(shows),
-                              );
-                              const isSelected =
-                                selectedPrerecordShowId === show.id;
-                              return (
                                 <div
-                                  key={show.id}
-                                  onClick={() =>
-                                    onSelectPrerecordShow(show.id)
-                                  }
+                                  onClick={() => setSelectedPrerecordShowId("")}
+                                  title="Click to choose a different show"
                                   style={{
                                     backgroundColor: shade.bg,
                                     borderLeft: `3px solid ${shade.border}`,
                                   }}
                                   className={cn(
-                                    "flex flex-col gap-0.5 px-2 py-1.5 cursor-pointer text-xs transition-all hover:brightness-95 select-none",
-                                    isSelected &&
-                                      cn(
-                                        "ring-2 ring-inset z-10 font-bold",
-                                        isExportTarget
-                                          ? "ring-blue-600"
-                                          : "ring-emerald-600",
-                                      ),
+                                    "flex flex-col gap-0.5 px-2 py-1.5 cursor-pointer text-xs rounded-r border border-slate-300 transition-all hover:brightness-95 select-none shadow-xs",
                                   )}
                                 >
                                   <div className="flex items-center justify-between gap-1 w-full min-w-0">
@@ -358,105 +439,61 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
                                         )
                                       </span>
                                     </div>
-                                    {isSelected && (
-                                      <Check
-                                        className={cn(
-                                          "w-3.5 h-3.5 font-bold shrink-0 ml-auto",
-                                          isExportTarget
-                                            ? "text-blue-700"
-                                            : "text-emerald-700",
-                                        )}
-                                      />
-                                    )}
+                                    <Check
+                                      className={cn(
+                                        "w-3.5 h-3.5 font-bold shrink-0 ml-auto text-emerald-700",
+                                      )}
+                                    />
                                   </div>
                                   <div className="font-bold text-slate-900 truncate w-full text-[11px] leading-tight">
                                     {show.name}
                                   </div>
                                 </div>
-                              );
-                            });
-                          })()}
-                        </div>
-                      </div>
+                              </div>
 
-                      {/* Future Dates Dropdown */}
-                      {selectedPrerecordShowId ? (
-                        (() => {
-                          const show = shows.find(
-                            (s) => s.id === selectedPrerecordShowId,
-                          );
-                          if (!show) return null;
-                          const occurrences = getFutureDatesForShow(
-                            show.day,
-                            show.startHour,
-                            show.startMinute,
-                          );
-                          return (
-                            <div className="flex flex-col space-y-1 text-left pt-0.5 shrink-0">
-                              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 select-none">
-                                Choose Air Date
-                              </label>
-                              <select
-                                ref={dateSelectRef}
-                                value={prerecordDateInput}
-                                onChange={(e) =>
-                                  setPrerecordDateInput(e.target.value)
-                                }
-                                className={cn(
-                                  "w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono font-bold text-slate-800 outline-none transition-all cursor-pointer shadow-xs",
-                                  colors.focusRing,
-                                )}
-                              >
-                                {occurrences.map((date, index) => {
-                                  const dateStr = format(date, "yyyy-MM-dd");
-                                  const friendlyStr = format(
-                                    date,
-                                    "EEEE, MMM d, yyyy",
-                                  );
-                                  const isNextDate = index === 0;
-                                  return (
-                                    <option
-                                      key={dateStr}
-                                      value={dateStr}
-                                      className={cn(
-                                        isNextDate
-                                          ? "font-bold text-slate-900 bg-white"
-                                          : "font-normal text-slate-400 bg-slate-50",
-                                      )}
-                                    >
-                                      {friendlyStr}
-                                    </option>
-                                  );
-                                })}
-                              </select>
+                              {/* Future Dates Dropdown */}
+                              <div className="flex flex-col space-y-1 text-left pt-0.5 shrink-0">
+                                <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 select-none">
+                                  Choose Air Date
+                                </label>
+                                <select
+                                  ref={dateSelectRef}
+                                  value={prerecordDateInput}
+                                  onChange={(e) =>
+                                    setPrerecordDateInput(e.target.value)
+                                  }
+                                  className={cn(
+                                    "w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-mono font-bold text-slate-800 outline-none transition-all cursor-pointer shadow-xs",
+                                    colors.focusRing,
+                                  )}
+                                >
+                                  {occurrences.map((date, index) => {
+                                    const dateStr = format(date, "yyyy-MM-dd");
+                                    const friendlyStr = format(
+                                      date,
+                                      "EEEE, MMM d, yyyy",
+                                    );
+                                    const isNextDate = index === 0;
+                                    return (
+                                      <option
+                                        key={dateStr}
+                                        value={dateStr}
+                                        className={cn(
+                                          isNextDate
+                                            ? "font-bold text-slate-900 bg-white"
+                                            : "font-normal text-slate-400 bg-slate-50",
+                                        )}
+                                      >
+                                        {friendlyStr}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </div>
                             </div>
                           );
                         })()
-                      ) : (
-                        <div className="flex flex-col space-y-1 text-left pt-0.5 shrink-0">
-                          <label className="text-[11px] font-black uppercase tracking-wider text-slate-400 select-none">
-                            Choose Air Date
-                          </label>
-                          <select
-                            disabled
-                            className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs font-mono font-medium text-slate-400 outline-none cursor-not-allowed opacity-60"
-                          >
-                            <option value="">Select a show above...</option>
-                          </select>
-                        </div>
                       )}
-
-                      {/* Select Manually option */}
-                      <div className="flex justify-start pt-0.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setPrerecordSelectorMode("manual")}
-                          className="text-[11px] font-bold text-slate-600 hover:text-slate-900 hover:underline flex items-center gap-1 cursor-pointer bg-transparent border-0 outline-none"
-                        >
-                          <NotebookPen className="w-3 h-3 shrink-0 text-slate-500" />
-                          Set manually
-                        </button>
-                      </div>
                     </div>
                   ) : (
                     <div className="space-y-2.5">
@@ -595,13 +632,9 @@ export const PrerecordModal: React.FC<PrerecordModalProps> = ({
                     selectedPrerecordShowId) && (
                     <button
                       type="submit"
-                      className={cn(
-                        "px-3.5 py-1 text-white text-xs font-black uppercase tracking-wider rounded shadow-md transition flex items-center gap-1.5 cursor-pointer",
-                        colors.buttonBg,
-                      )}
+                      className="px-3 py-1 bg-slate-800 hover:bg-slate-900 text-white text-xs font-black uppercase tracking-wider rounded border border-slate-900 shadow-sm transition flex items-center justify-center cursor-pointer active:translate-y-px"
                     >
-                      <ModeIcon className="w-3.5 h-3.5 shrink-0" />
-                      <span>{isExportTarget ? "Export" : "Prerecord"}</span>
+                      <span>OPEN PRERECORD</span>
                     </button>
                   )}
                 </div>

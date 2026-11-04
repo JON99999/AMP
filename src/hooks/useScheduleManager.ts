@@ -1,13 +1,24 @@
 import React, { useState, useRef, useCallback, Dispatch, SetStateAction } from 'react';
-import { Announcement, Show, LogEntry } from '../types';
-import { normalizeAnnouncements, isTimeInShow, getActualShowStart, classifyMediaAsset } from '../lib/utils';
+import { Announcement, Show, LogEntry, UpNextPromoConfig } from '../types';
+import { normalizeAnnouncements, isTimeInShow, getActualShowStart, classifyMediaAsset, isUpNextPromoUrl } from '../lib/utils';
+import {
+  getStationTimezone,
+  setStationTimezone,
+  detectSystemStationTimezone,
+  getStationNow,
+  stationSlotDateToUtcIso,
+  getAdminContactInfo,
+  setAdminContactInfo,
+  getUpNextPromoConfig,
+  setUpNextPromoConfig,
+  getScheduleWindowConfig,
+  setScheduleWindowConfig,
+  ScheduleWindowConfig,
+} from '../lib/compatibility';
 import {
   getSavedSettings,
   getAccessToken,
-  loadShowsFromDrive,
-  saveShowsToDrive,
-  saveCalendarToDrive,
-  appendLogToDrive,
+  getStorageApiHeaders,
 } from '../lib/driveService';
 import { SaveRecoveryInfo } from '../components/SaveRecoveryModal';
 
@@ -33,7 +44,22 @@ export interface UseScheduleManagerResult {
   saveRecoveryModal: SaveRecoveryInfo | null;
   setSaveRecoveryModal: Dispatch<SetStateAction<SaveRecoveryInfo | null>>;
   loadShows: () => Promise<void>;
-  saveShows: (newShows: Show[]) => Promise<boolean>;
+  saveShows: (
+    newShows: Show[],
+    explicitStationTimezone?: string,
+    explicitAdminContactInfo?: string,
+    explicitUpNextPromo?: UpNextPromoConfig,
+    explicitScheduleWindow?: ScheduleWindowConfig
+  ) => Promise<boolean>;
+  stationTimezone: string;
+  saveStationTimezone: (newTimezone: string) => Promise<boolean>;
+  adminContactInfo: string;
+  hasSavedAdminContact: boolean;
+  saveAdminContactInfo: (newContact: string) => Promise<boolean>;
+  upNextPromoConfig: UpNextPromoConfig;
+  saveUpNextPromoConfig: (newConfig: UpNextPromoConfig) => Promise<boolean>;
+  scheduleWindowConfig: ScheduleWindowConfig;
+  saveScheduleWindowConfig: (newConfig: ScheduleWindowConfig) => Promise<boolean>;
   saveAnnouncements: (newAnnouncements: Announcement[]) => Promise<boolean>;
   addLog: (entry: LogEntry) => Promise<void>;
 }
@@ -49,6 +75,11 @@ export function useScheduleManager({
 }: UseScheduleManagerProps): UseScheduleManagerResult {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [shows, setShows] = useState<Show[]>([]);
+  const [stationTimezone, setStationTimezoneState] = useState<string>(() => getStationTimezone());
+  const [adminContactInfo, setAdminContactInfoState] = useState<string>(() => getAdminContactInfo());
+  const [hasSavedAdminContact, setHasSavedAdminContact] = useState<boolean>(false);
+  const [upNextPromoConfig, setUpNextPromoConfigState] = useState<UpNextPromoConfig>(() => getUpNextPromoConfig());
+  const [scheduleWindowConfig, setScheduleWindowConfigState] = useState<ScheduleWindowConfig>(() => getScheduleWindowConfig());
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [savingLabel, setSavingLabel] = useState<string | null>(null);
@@ -71,82 +102,130 @@ export function useScheduleManager({
 
   const loadShows = useCallback(async () => {
     const settings = getSavedSettings();
-    if (settings.mode === 'Drive') {
-      try {
+    try {
+      if (settings.mode === 'Drive') {
         const currentToken = getAccessToken() || token;
         if (!currentToken) {
           throw new Error('Not connected to Google Drive.');
         }
-        const driveShows = await loadShowsFromDrive();
-        setShows(driveShows || []);
-      } catch (e) {
-        console.error('Failed to load shows from Drive:', e);
       }
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/shows');
+      const headers = await getStorageApiHeaders();
+      const res = await fetch('/api/shows?withEnvelope=true', { headers });
       if (res.ok) {
-        const data = await res.json();
-        setShows(data || []);
+        const payload = await res.json();
+        if (Array.isArray(payload)) {
+          const sysTz = setStationTimezone(detectSystemStationTimezone());
+          setStationTimezoneState(sysTz);
+          setShows(payload);
+        } else if (payload && typeof payload === 'object') {
+          const loadedShows = Array.isArray(payload.data) ? payload.data : [];
+          const rawContact = payload.adminContactInfo !== undefined ? payload.adminContactInfo : payload._meta?.adminContactInfo;
+          if (rawContact !== undefined) {
+            const resolvedContact = setAdminContactInfo(rawContact);
+            setAdminContactInfoState(resolvedContact);
+          }
+          setHasSavedAdminContact(Boolean(payload.hasSavedAdminContact || rawContact));
+
+          const rawUpNext = payload.upNextPromo || payload._meta?.upNextPromo;
+          if (rawUpNext) {
+            const resolvedUpNext = setUpNextPromoConfig(rawUpNext);
+            setUpNextPromoConfigState(resolvedUpNext);
+          }
+
+          const rawScheduleWindow = payload.scheduleWindow || payload._meta?.scheduleWindow;
+          if (rawScheduleWindow) {
+            const resolvedScheduleWindow = setScheduleWindowConfig(rawScheduleWindow);
+            setScheduleWindowConfigState(resolvedScheduleWindow);
+          }
+
+          if (!payload.hasSavedTimezone) {
+            const sysTz = setStationTimezone(detectSystemStationTimezone());
+            setStationTimezoneState(sysTz);
+            setShows(loadedShows);
+            if (!isReadOnlyRef.current) {
+              fetch('/api/shows', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  stationTimezone: sysTz,
+                  ...(rawContact !== undefined ? { adminContactInfo: rawContact } : {}),
+                  upNextPromo: getUpNextPromoConfig(),
+                  scheduleWindow: getScheduleWindowConfig(),
+                  data: loadedShows
+                }),
+              }).catch(() => {});
+            }
+          } else {
+            const resolvedTz = setStationTimezone(payload.stationTimezone || payload._meta?.stationTimezone || detectSystemStationTimezone());
+            setStationTimezoneState(resolvedTz);
+            setShows(loadedShows);
+          }
+        }
       }
     } catch (e) {
       console.error('Failed to load shows:', e);
     }
   }, [token]);
 
-  const saveShows = useCallback(async (newShows: Show[]): Promise<boolean> => {
+  const saveShows = useCallback(async (
+    newShows: Show[],
+    explicitStationTimezone?: string,
+    explicitAdminContactInfo?: string,
+    explicitUpNextPromo?: UpNextPromoConfig,
+    explicitScheduleWindow?: ScheduleWindowConfig
+  ): Promise<boolean> => {
     if (isReadOnlyRef.current) {
       console.warn('Saving shows skipped: Station data is in read-only compatibility mode.');
       return false;
     }
+    const targetTz = explicitStationTimezone ? setStationTimezone(explicitStationTimezone) : getStationTimezone();
+    setStationTimezoneState(targetTz);
+    const targetContact =
+      explicitAdminContactInfo !== undefined
+        ? setAdminContactInfo(explicitAdminContactInfo)
+        : getAdminContactInfo();
+    setAdminContactInfoState(targetContact);
+    const targetUpNext =
+      explicitUpNextPromo !== undefined
+        ? setUpNextPromoConfig(explicitUpNextPromo)
+        : getUpNextPromoConfig();
+    setUpNextPromoConfigState(targetUpNext);
+    const targetScheduleWindow =
+      explicitScheduleWindow !== undefined
+        ? setScheduleWindowConfig(explicitScheduleWindow)
+        : getScheduleWindowConfig();
+    setScheduleWindowConfigState(targetScheduleWindow);
     const settings = getSavedSettings();
     setIsSaving(true);
     setSavingLabel('Saving shows profile...');
 
-    if (settings.mode === 'Drive') {
-      try {
+    try {
+      if (settings.mode === 'Drive') {
         const currentToken = getAccessToken() || token;
         if (!currentToken) {
           throw new Error('Not connected to Google Drive. Saving is disabled.');
         }
-        await saveShowsToDrive(newShows);
-        setShows(newShows);
-        setIsSaving(false);
-        setSavingLabel(null);
-        return true;
-      } catch (error: any) {
-        setIsSaving(false);
-        setSavingLabel(null);
-        console.error('Failed to save shows to Drive:', error);
-        setSaveRecoveryModal({
-          title: 'Failed to Save Shows to Google Drive',
-          targetName: 'shows.json',
-          filePath: settings.driveFolderPreferences || 'Google Drive Preferences Folder',
-          error: error.message || 'Drive upload error',
-          retryAction: async () => {
-            await saveShows(newShows);
-          },
-          onFixFolder: () => {
-            if (onShowLocationsModal) onShowLocationsModal();
-          }
-        });
-        return false;
       }
-    }
-
-    try {
+      const headers = await getStorageApiHeaders();
       const res = await fetch('/api/shows', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newShows),
+        headers,
+        body: JSON.stringify({
+          stationTimezone: targetTz,
+          adminContactInfo: targetContact,
+          upNextPromo: targetUpNext,
+          scheduleWindow: targetScheduleWindow,
+          data: newShows
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.success === false) {
         throw new Error(data.error || `Failed to write shows (Status ${res.status})`);
       }
       setShows(newShows);
+      if (explicitAdminContactInfo !== undefined || targetContact) {
+        setHasSavedAdminContact(true);
+      }
       setIsSaving(false);
       setSavingLabel(null);
       return true;
@@ -155,12 +234,12 @@ export function useScheduleManager({
       setSavingLabel(null);
       console.error('Failed to save shows:', error);
       setSaveRecoveryModal({
-        title: 'Failed to Save Shows File',
+        title: settings.mode === 'Drive' ? 'Failed to Save Shows to Google Drive' : 'Failed to Save Shows File',
         targetName: 'shows.json',
-        filePath: settings.localPathCalendar || 'Local Shows Storage',
-        error: error.message || 'Filesystem write error',
+        filePath: settings.mode === 'Drive' ? (settings.driveFolderPreferences || 'Google Drive Preferences Folder') : (settings.localPathCalendar || 'Local Shows Storage'),
+        error: error.message || 'Write error',
         retryAction: async () => {
-          await saveShows(newShows);
+          await saveShows(newShows, targetTz, targetContact, targetUpNext, targetScheduleWindow);
         },
         onFixFolder: () => {
           if (onShowLocationsModal) onShowLocationsModal();
@@ -170,57 +249,61 @@ export function useScheduleManager({
     }
   }, [token, onShowLocationsModal]);
 
+  const saveStationTimezone = useCallback(async (newTimezone: string): Promise<boolean> => {
+    const resolvedTz = setStationTimezone(newTimezone);
+    setStationTimezoneState(resolvedTz);
+    return saveShows(showsRef.current, resolvedTz, getAdminContactInfo(), getUpNextPromoConfig(), getScheduleWindowConfig());
+  }, [saveShows]);
+
+  const saveAdminContactInfo = useCallback(async (newContact: string): Promise<boolean> => {
+    const resolvedContact = setAdminContactInfo(newContact);
+    setAdminContactInfoState(resolvedContact);
+    setHasSavedAdminContact(true);
+    return saveShows(showsRef.current, getStationTimezone(), resolvedContact, getUpNextPromoConfig(), getScheduleWindowConfig());
+  }, [saveShows]);
+
+  const saveUpNextPromoConfig = useCallback(async (newConfig: UpNextPromoConfig): Promise<boolean> => {
+    const resolvedUpNext = setUpNextPromoConfig(newConfig);
+    setUpNextPromoConfigState(resolvedUpNext);
+    return saveShows(showsRef.current, getStationTimezone(), getAdminContactInfo(), resolvedUpNext, getScheduleWindowConfig());
+  }, [saveShows]);
+
+  const saveScheduleWindowConfig = useCallback(async (newConfig: ScheduleWindowConfig): Promise<boolean> => {
+    const resolvedWindow = setScheduleWindowConfig(newConfig);
+    setScheduleWindowConfigState(resolvedWindow);
+    return saveShows(showsRef.current, getStationTimezone(), getAdminContactInfo(), getUpNextPromoConfig(), resolvedWindow);
+  }, [saveShows]);
+
   const saveAnnouncements = useCallback(async (newAnnouncements: Announcement[]): Promise<boolean> => {
     if (isReadOnlyRef.current) {
       console.warn('Saving announcements skipped: Station data is in read-only compatibility mode.');
       return false;
     }
-    const normalized = normalizeAnnouncements(newAnnouncements);
+    const persistedOnly = (newAnnouncements || []).filter(
+      (a) => a && !a.isUpNextPromo && !String(a.id || '').startsWith('up-next-promo-')
+    );
+    const normalized = normalizeAnnouncements(persistedOnly);
     const settings = getSavedSettings();
     setIsSaving(true);
     setSavingLabel('Saving announcements schedule...');
 
-    if (settings.mode === 'Local') {
-      try {
-        const res = await fetch('/api/announcements', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(normalized),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.success === false) {
-          throw new Error(data.error || `Failed to write announcements (Status ${res.status})`);
-        }
-        setAnnouncements(normalized);
-        setIsSaving(false);
-        setSavingLabel(null);
-        return true;
-      } catch (error: any) {
-        setIsSaving(false);
-        setSavingLabel(null);
-        console.error('Failed to save announcements locally:', error);
-        setSaveRecoveryModal({
-          title: 'Failed to Save Announcements Schedule',
-          targetName: 'announcements.json',
-          filePath: settings.localPathCalendar || 'Local Announcements Storage',
-          error: error.message || 'Filesystem write error',
-          retryAction: async () => {
-            await saveAnnouncements(newAnnouncements);
-          },
-          onFixFolder: () => {
-            if (onShowLocationsModal) onShowLocationsModal();
-          }
-        });
-        return false;
-      }
-    }
-
     try {
-      const currentToken = getAccessToken() || token;
-      if (!currentToken) {
-        throw new Error('Not connected to Google Drive. Saving is disabled.');
+      if (settings.mode === 'Drive') {
+        const currentToken = getAccessToken() || token;
+        if (!currentToken) {
+          throw new Error('Not connected to Google Drive. Saving is disabled.');
+        }
       }
-      await saveCalendarToDrive(normalized);
+      const headers = await getStorageApiHeaders();
+      const res = await fetch('/api/announcements', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(normalized),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || `Failed to write announcements (Status ${res.status})`);
+      }
       setAnnouncements(normalized);
       setIsSaving(false);
       setSavingLabel(null);
@@ -230,10 +313,10 @@ export function useScheduleManager({
       setSavingLabel(null);
       console.error('Failed to save announcements:', error);
       setSaveRecoveryModal({
-        title: 'Failed to Save Announcements to Google Drive',
+        title: settings.mode === 'Drive' ? 'Failed to Save Announcements to Google Drive' : 'Failed to Save Announcements Schedule',
         targetName: 'announcements.json',
-        filePath: settings.driveFolderPreferences || 'Google Drive Preferences Folder',
-        error: error.message || 'Drive upload error',
+        filePath: settings.mode === 'Drive' ? (settings.driveFolderPreferences || 'Google Drive Preferences Folder') : (settings.localPathCalendar || 'Local Announcements Storage'),
+        error: error.message || 'Write error',
         retryAction: async () => {
           await saveAnnouncements(newAnnouncements);
         },
@@ -257,7 +340,8 @@ export function useScheduleManager({
     let hostName = entry.hostName;
     let showDateTime = entry.showDateTime;
 
-    const targetTime = entry.announcementTime ? new Date(entry.announcementTime) : new Date(entry.timestamp || now);
+    const rawTarget = entry.announcementTime ? new Date(entry.announcementTime) : new Date(entry.timestamp || now);
+    const targetTime = getStationNow(rawTarget);
 
     const currentShows = showsRef.current || [];
     const currentPlayMode = playModeRef.current;
@@ -271,13 +355,13 @@ export function useScheduleManager({
           showId = pShow.id;
           showName = pShow.name;
           hostName = pShow.host;
-          showDateTime = getActualShowStart(pShow, targetTime).toISOString();
+          showDateTime = stationSlotDateToUtcIso(getActualShowStart(pShow, targetTime));
         }
       } else if (currentPlayMode === 'Playlist' && currentPlaylistShow) {
         showId = currentPlaylistShow.id;
         showName = currentPlaylistShow.name;
         hostName = currentPlaylistShow.host;
-        showDateTime = getActualShowStart(currentPlaylistShow, targetTime).toISOString();
+        showDateTime = stationSlotDateToUtcIso(getActualShowStart(currentPlaylistShow, targetTime));
       }
     }
 
@@ -292,7 +376,7 @@ export function useScheduleManager({
         showId = activeShow.id;
         showName = activeShow.name;
         hostName = activeShow.host;
-        showDateTime = getActualShowStart(activeShow, targetTime).toISOString();
+        showDateTime = stationSlotDateToUtcIso(getActualShowStart(activeShow, targetTime));
       }
     }
 
@@ -307,43 +391,54 @@ export function useScheduleManager({
       ? 'audio' 
       : classifyMediaAsset(entry.mp3Name, entry.assetType);
 
+    const cleanMp3Name = isUpNextPromoUrl(entry.mp3Name)
+      ? `${entry.announcementName || 'Up Next Promo'}.txt`
+      : entry.mp3Name;
+
+    const actualExecutedIso = entry.executedAt || entry.logTimeStamp || new Date().toISOString();
+    const slotIso = entry.announcementTime || entry.scheduledFor || entry.timestamp || actualExecutedIso;
+
     const enrichedEntry: LogEntry = {
       ...entry,
+      mp3Name: cleanMp3Name,
       showId,
       showName,
       hostName,
       showDateTime,
       playMode: entry.playMode === "Export" ? "Export" : (entry.playMode || currentPlayMode),
-      logTimeStamp: entry.logTimeStamp || new Date().toISOString(),
-      timestamp: entry.announcementTime || entry.timestamp || new Date().toISOString(),
+      logTimeStamp: actualExecutedIso,
+      timestamp: slotIso,
+      announcementTime: slotIso,
+      scheduledFor: slotIso,
+      executedAt: actualExecutedIso,
       assetType: resolvedAssetType,
     };
 
-    if (settings.mode === "Local") {
-      try {
-        await fetch("/api/logs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(enrichedEntry),
-        });
-        const updatedLogs = await fetch("/api/logs").then((r) => r.json());
-        setLogs(updatedLogs);
-      } catch (error) {
-        console.error("Failed to save log locally:", error);
-      }
-      return;
-    }
+    // Optimistically update local React state immediately so completed cards move to Played/Read without delay
+    setLogs((prev) => [...prev, enrichedEntry]);
 
     try {
-      const currentToken = getAccessToken() || token;
-      if (!currentToken) {
-        throw new Error(
-          "Not connected to Google Drive. Saving logs is disabled.",
-        );
+      if (settings.mode === "Drive") {
+        const currentToken = getAccessToken() || token;
+        if (!currentToken) {
+          throw new Error("Not connected to Google Drive. Saving logs is disabled.");
+        }
       }
-
-      const updatedLogs = await appendLogToDrive(enrichedEntry);
-      setLogs(updatedLogs);
+      const headers = await getStorageApiHeaders();
+      const postRes = await fetch("/api/logs", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(enrichedEntry),
+      });
+      const postData = await postRes.json().catch(() => null);
+      if (postData && Array.isArray(postData.logs)) {
+        setLogs(postData.logs);
+      } else {
+        const updatedLogs = await fetch("/api/logs", { headers }).then((r) => r.json());
+        if (Array.isArray(updatedLogs)) {
+          setLogs(updatedLogs);
+        }
+      }
     } catch (error) {
       console.error("Failed to add log:", error);
     }
@@ -362,6 +457,15 @@ export function useScheduleManager({
     setSaveRecoveryModal,
     loadShows,
     saveShows,
+    stationTimezone,
+    saveStationTimezone,
+    adminContactInfo,
+    hasSavedAdminContact,
+    saveAdminContactInfo,
+    upNextPromoConfig,
+    saveUpNextPromoConfig,
+    scheduleWindowConfig,
+    saveScheduleWindowConfig,
     saveAnnouncements,
     addLog,
   };

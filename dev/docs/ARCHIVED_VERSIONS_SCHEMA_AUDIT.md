@@ -6,7 +6,144 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.17.0
+### Current Release: v0.20.0
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow`, Live Read `.txt`/`.md` Copy Editor, Legacy Script WPM Read-Time Backfill, Rotating Multi-Item `mediaItems: TimeGatedMediaItem[]`, Non-Destructive Gate Inactivation `inactivated`/`inactivatedAt`, Unified `scheduleEngine.ts`, & Modular `src/server/` Storage Provider)
+* **Schedule Storage File**: `announcements.json` (stores `mediaItems` value-arrays per time gate, preserves `inactivated` and `inactivatedAt` on `TimeGatedMp3`, dual-writes top-level `TimeGatedMp3` media siblings for `v0.15.4/5` coexistence, and automatically backfills ~150 WPM `approximateReadTime` on legacy readable `.txt`/`.md` script slots and historical revisions)
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+
+---
+
+### v0.19.5
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow`, Live Read `.txt`/`.md` Copy Editor, Legacy Script WPM Read-Time Backfill, Rotating Multi-Item `mediaItems: TimeGatedMediaItem[]`, Non-Destructive Gate Inactivation `inactivated`/`inactivatedAt`, Unified `scheduleEngine.ts`, & Modular `src/server/` Storage Provider)
+* **Schedule Storage File**: `announcements.json` (stores `mediaItems` value-arrays per time gate, preserves `inactivated` and `inactivatedAt` on `TimeGatedMp3`, dual-writes top-level `TimeGatedMp3` media siblings for `v0.15.4/5` coexistence, and automatically backfills ~150 WPM `approximateReadTime` on legacy readable `.txt`/`.md` script slots and historical revisions)
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.19.5/`.
+
+---
+
+### v0.19.4
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow`, Live Read `.txt`/`.md` Copy Editor, Legacy Script WPM Read-Time Backfill, Rotating Multi-Item `mediaItems: TimeGatedMediaItem[]`, & Unified Server-Side Storage Provider)
+* **Schedule Storage File**: `announcements.json` (stores `mediaItems` value-arrays per time gate and automatically backfills ~150 WPM `approximateReadTime` on legacy readable `.txt`/`.md` script slots and historical revisions when `approximateReadTime` is null or omitted during upgrade/migration)
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.19.4/`.
+
+---
+
+### v0.19.3
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow`, & Live Read `.txt`/`.md` Copy Editor)
+* **Schedule Storage File**: `announcements.json`
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.19.3/`.
+
+---
+
+### v0.19.2
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `upNextPromo` Show Promo Settings & Live Read `.txt`/`.md` Copy Editor)
+* **Schedule Storage File**: `announcements.json`
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.19.2/`.
+
+---
+
+### v0.19.1
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge & `upNextPromo` Show Promo Settings)
+* **Schedule Storage File**: `announcements.json`
+* **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, and per-show `includeInUpNext`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields)
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.19.1/`.
+
+---
+
+### v0.19.0
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence & Dual-Value Sibling Bridge)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.19.0",
+      "lastModifiedAt": "2026-10-19T15:30:00.000Z",
+      "scheduleWindow": {
+        "windowBeforeMinutes": 5,
+        "windowAfterMinutes": 5,
+        "showLookaroundHours": 1
+      }
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Logs File**: `logs.json` (enveloped with `_meta`, `LogsBackupCounter`, and dual-value sibling `LogEntry` fields: `timestamp`, `announcementTime`, `logTimeStamp`, `scheduledFor`, `executedAt`)
+* **Coexistence with v0.15.4 / v0.15.5 & v0.16.x–v0.18.x**:
+  * **Dual-Value Sibling Data Bridge**: Every play logged by `v0.19.0` writes both the `v0.15.4/0.15.5` fields (`timestamp`, `announcementTime`, `logTimeStamp`) and the `v0.18.x/0.19.0` sibling fields (`scheduledFor`, `executedAt`).
+  * **Automatic Sibling & `_meta` Seeding on Conversion / Load**: When opening or upgrading `.json` files last written by `v0.15.4/0.15.5`, `v0.19.0` automatically seeds missing sibling fields (`scheduledFor`, `executedAt`, `validFrom: "1970-01-01T00:00:00.000Z"`, `validTo`, `isDeleted`, `revisions`, and `timeGatedMp3s`) and preserves `_meta` across `/api/trigger-backup` and `triggerDriveBackup`.
+  * **Local Station Time Slot Reconciliation**: Matches `scheduledFor || announcementTime || timestamp` in local station time so UTC ISO timestamps from `v0.15.4/0.15.5` and `v0.19.0` reconcile accurately across all timezones.
+
+---
+
+### v0.18.1
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.18.1",
+      "lastModifiedAt": "2026-10-18T18:35:00.000Z",
+      "scheduleWindow": {
+        "windowBeforeMinutes": 5,
+        "windowAfterMinutes": 5,
+        "showLookaroundHours": 1
+      }
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Compatibility with v0.18.0, v0.17.0 & v0.16.x**: 100% direct binary and schema compatibility. Optional `_meta.scheduleWindow` defaults safely to `5m / 5m / 1h` when omitted.
+* **Release Enhancements**:
+  * **Temporal Window Metadata (`_meta.scheduleWindow`)**: Added optional `windowBeforeMinutes`, `windowAfterMinutes`, and `showLookaroundHours` configuration fields to `DataMetaHeader` with backward-compatible defaults.
+  * **Desktop Window Responsiveness**: Enabled `acceptsFirstMouse: true` and `backgroundThrottling: false` on main and Live Read popout Electron windows for uninterrupted background operation and direct first-click activation on macOS.
+  * **Player Prerecord Header Simplification**: Updated the Prerecord view header banner label from `"Prerecord Next"` to `"Prerecord"`.
+  * **Live_Dev Sandbox To-Be Prototyping**: Added `LiveDevTab.tsx` sandbox for testing To-Be view layouts, Option 2 sticky show spacers, and chronological timeline redraws in AI Studio preview.
+  * **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.18.1/`.
+
+---
+
+### v0.18.0
+* **Data Schema Version**: `v1` (Formal `_meta` Envelope)
+* **Schedule Storage File**: `announcements.json`
+* **JSON Structure**:
+  ```json
+  {
+    "_meta": {
+      "schemaVersion": 1,
+      "minAppVersion": "0.16.0",
+      "lastModifiedBy": "0.18.0",
+      "lastModifiedAt": "2026-10-07T00:00:00.000Z"
+    },
+    "AnnouncementsBackupCounter": 1,
+    "data": [ ... ]
+  }
+  ```
+* **Shows File**: `shows.json` (enveloped with `_meta`)
+* **Compatibility with v0.17.0 & v0.16.x**: 100% direct binary and schema compatibility.
+* **Archive Snapshot**: Generated full uncompressed codebase archive under `dev/archives/archive_v0.18.0/`.
+
+---
+
+### v0.17.0
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope)
 * **Schedule Storage File**: `announcements.json`
 * **JSON Structure**:

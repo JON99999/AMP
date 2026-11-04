@@ -1,9 +1,53 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { Announcement, LogEntry, Show } from '../types';
-import { Mp3ID3Metadata, parseID3Bytes, extractAudioMetadataBytes, normalizeAnnouncements, generateBackupFilename, isAudioFile, isScriptFile, classifyMediaAsset, AUDIO_EXTENSIONS, SCRIPT_EXTENSIONS } from './utils';
-import { migrateAnnouncementsPayload, migrateShowsPayload, CURRENT_APP_VERSION, CURRENT_SCHEMA_VERSION, CURRENT_MIN_APP_VERSION, DataMetaHeader } from './compatibility';
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import {
+  Announcement,
+  LogEntry,
+  Show,
+  LocationPathsOverride,
+  LocationSettings,
+  MediaAssetFile,
+} from '../types';
+import {
+  extractAudioMetadataBytes,
+  normalizeAnnouncements,
+  isAudioFile
+} from './utils';
+import {
+  CURRENT_APP_VERSION,
+  DataMetaHeader
+} from './compatibility';
+import {
+  mp3BlobCache,
+  rawBlobCache,
+  mp3MetadataCache,
+  mp3DurationCache,
+  mp3WaveformCache,
+  availableFilesCache,
+  pendingAudioFetches,
+  driveFileNameCache,
+  CachingProgressReport,
+  clearAudioCache,
+  upsertMediaCatalogFile,
+  syncMediaCatalogFiles,
+  mediaCatalogStore,
+} from './audioCache';
 import firebaseConfig from '../../firebase-applet-config.json';
+
+export {
+  mp3BlobCache,
+  rawBlobCache,
+  mp3MetadataCache,
+  mp3DurationCache,
+  mp3WaveformCache,
+  availableFilesCache,
+  driveFileNameCache,
+  clearAudioCache,
+  upsertMediaCatalogFile,
+  syncMediaCatalogFiles,
+  mediaCatalogStore,
+};
+export type { CachingProgressReport, LocationPathsOverride, LocationSettings, MediaAssetFile };
 
 // Initialize Firebase App & Auth
 const app = initializeApp(firebaseConfig);
@@ -13,43 +57,23 @@ export const provider = new GoogleAuthProvider();
 // Required Scope for reading and writing files in Drive
 provider.addScope('https://www.googleapis.com/auth/drive');
 
-let cachedAccessToken: string | null = (typeof window !== 'undefined') 
-  ? (sessionStorage.getItem('amp_drive_token') || localStorage.getItem('amp_override_token')) 
+let cachedAccessToken: string | null = (typeof window !== 'undefined')
+  ? (sessionStorage.getItem('amp_drive_token') || localStorage.getItem('amp_override_token'))
+  : null;
+let cachedRefreshToken: string | null = (typeof window !== 'undefined')
+  ? localStorage.getItem('amp_refresh_token')
+  : null;
+let cachedTokenExpiresAt: number | null = (typeof window !== 'undefined' && localStorage.getItem('amp_token_expires_at'))
+  ? Number(localStorage.getItem('amp_token_expires_at'))
   : null;
 let currentAuthUser: any = null;
 let isSigningIn = false;
-
-export interface LocationPathsOverride {
-  logs?: string | null;
-  loghistory?: string | null;
-  settings?: string | null;
-  media_announcements?: string | null;
-  media_evergreens?: string | null;
-  media_shows?: string | null;
-  logsFile?: string | null;
-  announcementsFile?: string | null;
-  showsFile?: string | null;
-}
-
-export interface LocationSettings {
-  mode: 'Local' | 'Drive' | 'Demo';
-  localPathAmp: string;
-  driveFolderAmp?: string;
-  paths?: LocationPathsOverride;
-  localPathMP3s: string;
-  localPathLogs: string;
-  localPathCalendar: string;
-  driveFolderLogs: string;
-  driveFolderMP3s: string;
-  driveFolderPreferences: string;
-  driveFolderAnnouncements?: string;
-  driveFolderEvergreens?: string;
-  driveFolderShows?: string;
-}
+let activeRefreshPromise: Promise<string | null> | null = null;
+let backgroundRefreshTimer: any = null;
 
 export const isElectronEnv = (): boolean => {
   if (typeof window === 'undefined') return false;
-  return !!(window as any).electronAPI || (navigator && navigator.userAgent && navigator.userAgent.includes('Electron'));
+  return !!window.electronAPI || (navigator && navigator.userAgent && navigator.userAgent.includes('Electron'));
 };
 
 export const DEFAULT_SETTINGS: LocationSettings = {
@@ -77,6 +101,57 @@ export const DEFAULT_SETTINGS: LocationSettings = {
   driveFolderEvergreens: '',
   driveFolderShows: '',
 };
+
+export interface EffectiveLocalPaths {
+  localPathAmp: string;
+  mediaAnnouncements: string;
+  mediaEvergreens: string;
+  mediaShows: string;
+  settingsDir: string;
+  logsDir: string;
+  hasValidLocalConfig: boolean;
+  hasAnyConfiguredPath: boolean;
+}
+
+/**
+ * Centralizes resolution of canonical unified paths and legacy v0.14–v0.15 triple-folder
+ * fallback fields (`localPathMP3s`, `localPathCalendar`, `localPathLogs`).
+ */
+export function resolveEffectiveLocalPaths(
+  settings?: Partial<LocationSettings> | null
+): EffectiveLocalPaths {
+  const s = settings || {};
+  const localPathAmp = s.localPathAmp || '';
+  const mediaAnnouncements =
+    s.paths?.media_announcements || s.localPathMediaAnnouncements || s.localPathMP3s || '';
+  const mediaEvergreens =
+    s.paths?.media_evergreens || s.localPathMediaEvergreens || '';
+  const mediaShows =
+    s.paths?.media_shows || s.localPathMediaShows || '';
+  const settingsDir =
+    s.localPathCalendar || s.paths?.settings || '';
+  const logsDir =
+    s.localPathLogs || s.paths?.logs || '';
+  const hasValidLocalConfig =
+    Boolean(localPathAmp) ||
+    (Boolean(mediaAnnouncements) && Boolean(logsDir) && Boolean(settingsDir));
+  const hasAnyConfiguredPath =
+    Boolean(localPathAmp) ||
+    Boolean(mediaAnnouncements) ||
+    Boolean(logsDir) ||
+    Boolean(settingsDir);
+
+  return {
+    localPathAmp,
+    mediaAnnouncements,
+    mediaEvergreens,
+    mediaShows,
+    settingsDir,
+    logsDir,
+    hasValidLocalConfig,
+    hasAnyConfiguredPath,
+  };
+}
 
 export const getSavedSettings = (): LocationSettings => {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
@@ -133,71 +208,391 @@ export const DRIVE_FOLDERS = {
   }
 };
 
-// Listen to Auth changes
+export const getRefreshToken = (): string | null => {
+  return cachedRefreshToken;
+};
+
+export const setRefreshToken = (refreshToken: string | null, expiresAt?: number | null) => {
+  cachedRefreshToken = refreshToken ? refreshToken.trim() : null;
+  if (expiresAt !== undefined) {
+    cachedTokenExpiresAt = expiresAt;
+  }
+  if (typeof window !== 'undefined') {
+    if (cachedRefreshToken) {
+      localStorage.setItem('amp_refresh_token', cachedRefreshToken);
+    } else {
+      localStorage.removeItem('amp_refresh_token');
+    }
+    if (cachedTokenExpiresAt) {
+      localStorage.setItem('amp_token_expires_at', String(cachedTokenExpiresAt));
+    } else if (expiresAt === null) {
+      localStorage.removeItem('amp_token_expires_at');
+    }
+  }
+};
+
+export const syncAuthSessionToServer = async (params: {
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  expiresAt?: number | null;
+  userProfile?: any;
+  clear?: boolean;
+}) => {
+  if (typeof window === 'undefined') return;
+  try {
+    await fetch('/api/auth/save-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+  } catch (e) {
+    // Non-fatal if server is unreachable
+  }
+};
+
+export const getPlaygroundDirectConsentUrl = (): string => {
+  return 'https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fdevelopers.google.com%2Foauthplayground&prompt=consent&response_type=code&client_id=407408718192.apps.googleusercontent.com&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive&access_type=offline&include_granted_scopes=false';
+};
+
+export const parseAndExtractAuthTokens = (rawInput: string): {
+  accessToken: string | null;
+  refreshToken: string | null;
+  authCode: string | null;
+  expiresIn: number | null;
+} => {
+  const trimmed = (rawInput || '').trim();
+  if (!trimmed) return { accessToken: null, refreshToken: null, authCode: null, expiresIn: null };
+
+  let accessToken: string | null = null;
+  let refreshToken: string | null = null;
+  let authCode: string | null = null;
+  let expiresIn: number | null = null;
+
+  if (trimmed.includes('code=') && (trimmed.startsWith('http') || trimmed.includes('oauthplayground') || trimmed.includes('scope='))) {
+    try {
+      const urlObj = new URL(trimmed.startsWith('http') ? trimmed : `https://dummy.local/?${trimmed}`);
+      const c = urlObj.searchParams.get('code');
+      if (c) {
+        authCode = c.trim();
+        return { accessToken: null, refreshToken: null, authCode, expiresIn: null };
+      }
+    } catch {
+      const m = trimmed.match(/[?&]code=([^&#\s]+)/);
+      if (m && m[1]) {
+        try {
+          authCode = decodeURIComponent(m[1]).trim();
+        } catch {
+          authCode = m[1].trim();
+        }
+        return { accessToken: null, refreshToken: null, authCode, expiresIn: null };
+      }
+    }
+  }
+
+  if (trimmed.includes('{') || trimmed.includes('access_token') || trimmed.includes('refresh_token')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed.access_token && typeof parsed.access_token === 'string') {
+        accessToken = parsed.access_token.trim();
+      }
+      if (parsed.refresh_token && typeof parsed.refresh_token === 'string') {
+        refreshToken = parsed.refresh_token.trim();
+      }
+      if (typeof parsed.expires_in === 'number') {
+        expiresIn = parsed.expires_in;
+      }
+    } catch {
+      const mAccess = trimmed.match(/"access_token"\s*:\s*"([^"]+)"/);
+      if (mAccess && mAccess[1]) accessToken = mAccess[1].trim();
+      const mRefresh = trimmed.match(/"refresh_token"\s*:\s*"([^"]+)"/);
+      if (mRefresh && mRefresh[1]) refreshToken = mRefresh[1].trim();
+      const mExpires = trimmed.match(/"expires_in"\s*:\s*(\d+)/);
+      if (mExpires && mExpires[1]) expiresIn = parseInt(mExpires[1], 10);
+    }
+  }
+
+  if (!accessToken && !refreshToken && !authCode) {
+    let clean = trimmed.replace(/^Bearer\s+/i, '').replace(/^["']|["']$/g, '').trim();
+    if (clean.startsWith('4%2F') || clean.startsWith('4/')) {
+      try {
+        if (clean.startsWith('4%2F')) clean = decodeURIComponent(clean);
+      } catch {}
+      authCode = clean;
+    } else if (clean.startsWith('1//')) {
+      refreshToken = clean;
+    } else {
+      accessToken = clean;
+    }
+  }
+
+  return { accessToken, refreshToken, authCode, expiresIn };
+};
+
+export const exchangePlaygroundAuthCode = async (authCode: string): Promise<{
+  accessToken: string;
+  refreshToken: string | null;
+  expiresAt: number;
+}> => {
+  const res = await fetch('/api/auth/exchange-playground-code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: authCode.trim() })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.success || !data?.accessToken) {
+    throw new Error(
+      data?.error ||
+        'Could not exchange the authorization code for tokens. Authorization codes are single-use; if you already clicked "Exchange authorization code for tokens" in OAuth Playground, paste the Step 2 JSON response instead.'
+    );
+  }
+  const expiresAt = data.expiresAt || (Date.now() + 3599 * 1000);
+  setOverrideAccessToken(data.accessToken);
+  if (data.refreshToken) {
+    setRefreshToken(data.refreshToken, expiresAt);
+  }
+  return {
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken || null,
+    expiresAt
+  };
+};
+
+export const refreshAccessTokenSilently = async (overrideRefreshToken?: string): Promise<string | null> => {
+  const targetRefresh = (overrideRefreshToken || cachedRefreshToken || '').trim();
+  if (!targetRefresh) return null;
+
+  if (activeRefreshPromise) {
+    return activeRefreshPromise;
+  }
+
+  activeRefreshPromise = (async () => {
+    try {
+      const res = await fetch('/api/auth/refresh-playground-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: targetRefresh })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.warn('Silent token refresh failed:', errData.error || res.statusText);
+        return null;
+      }
+      const data = await res.json();
+      if (data && data.success && data.accessToken) {
+        setOverrideAccessToken(data.accessToken);
+        setRefreshToken(targetRefresh, data.expiresAt || (Date.now() + 3599 * 1000));
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('amp-token-refreshed', {
+            detail: { token: data.accessToken, expiresAt: data.expiresAt }
+          }));
+        }
+        return data.accessToken as string;
+      }
+      return null;
+    } catch (e) {
+      console.warn('Silent token refresh network error:', e);
+      return null;
+    } finally {
+      activeRefreshPromise = null;
+    }
+  })();
+
+  return activeRefreshPromise;
+};
+
+export const ensureValidAccessToken = async (): Promise<string | null> => {
+  const now = Date.now();
+  const isNearExpiry = cachedTokenExpiresAt ? (now >= cachedTokenExpiresAt - 3 * 60 * 1000) : false;
+
+  if (cachedAccessToken && !isNearExpiry) {
+    return cachedAccessToken;
+  }
+
+  if (cachedRefreshToken) {
+    const refreshed = await refreshAccessTokenSilently(cachedRefreshToken);
+    if (refreshed) return refreshed;
+  }
+
+  return cachedAccessToken;
+};
+
+const fetchUserProfileWithToken = async (tokenStr: string): Promise<{ email: string; displayName: string } | null> => {
+  try {
+    const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user&supportsAllDrives=true', {
+      headers: { 'Authorization': `Bearer ${tokenStr}` }
+    });
+    if (!aboutRes.ok) {
+      return null;
+    }
+    const aboutData = await aboutRes.json().catch(() => ({}));
+    if (aboutData?.user?.emailAddress) {
+      return {
+        email: aboutData.user.emailAddress,
+        displayName: aboutData.user.displayName || 'Authorized User'
+      };
+    }
+
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { 'Authorization': `Bearer ${tokenStr}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        email: data.email || 'authorized-device@amp.local',
+        displayName: data.name || 'Authorized User'
+      };
+    }
+    return {
+      email: 'authorized-device@amp.local',
+      displayName: 'Authorized User'
+    };
+  } catch {
+    return null;
+  }
+};
+
+// Listen to Auth changes & restore persistent session
 export const initAuth = (
   onAuthSuccess?: (user: any, token: string) => void,
   onAuthFailure?: () => void
 ) => {
   if (typeof window !== 'undefined') {
-    const savedToken = cachedAccessToken || localStorage.getItem('amp_override_token');
-    const savedUserJson = localStorage.getItem('amp_user_profile');
-    
-    if (savedToken) {
-      cachedAccessToken = savedToken;
-      let parsedUser = null;
+    if (backgroundRefreshTimer) {
+      clearInterval(backgroundRefreshTimer);
+    }
+    backgroundRefreshTimer = setInterval(() => {
+      if (cachedRefreshToken) {
+        refreshAccessTokenSilently(cachedRefreshToken);
+      }
+    }, 45 * 60 * 1000);
+
+    (async () => {
+      let savedToken = cachedAccessToken || localStorage.getItem('amp_override_token');
+      let savedRefresh = cachedRefreshToken || localStorage.getItem('amp_refresh_token');
+      let savedExpiresAt = cachedTokenExpiresAt || (localStorage.getItem('amp_token_expires_at') ? Number(localStorage.getItem('amp_token_expires_at')) : null);
+      const savedUserJson = localStorage.getItem('amp_user_profile');
+      let parsedUser: any = null;
+
       if (savedUserJson) {
         try {
           parsedUser = JSON.parse(savedUserJson);
         } catch (e) {}
       }
-      
-      if (parsedUser) {
-        currentAuthUser = parsedUser;
-        if (onAuthSuccess) {
-          // Delay briefly to allow main components to finish mounting
-          setTimeout(() => onAuthSuccess(parsedUser, savedToken), 50);
-        }
-      } else {
-        // Retrieve details from Google
-        fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { 'Authorization': `Bearer ${savedToken}` }
-        })
-        .then(res => {
-          if (res.ok) return res.json();
-          // Fallback to Drive About if userinfo is unavailable
-          return fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
-            headers: { 'Authorization': `Bearer ${savedToken}` }
-          }).then(r => r.ok ? r.json() : null);
-        })
-        .then(data => {
-          if (data) {
-            const userObj = data.user 
-              ? { email: data.user.emailAddress || 'authorized-device@amp.local', displayName: data.user.displayName || 'Authorized User' }
-              : { email: data.email || 'authorized-device@amp.local', displayName: data.name || 'Authorized User' };
-            currentAuthUser = userObj;
-            localStorage.setItem('amp_user_profile', JSON.stringify(userObj));
-            if (onAuthSuccess) onAuthSuccess(userObj, savedToken);
-          } else {
-            if (onAuthFailure) onAuthFailure();
+
+      if (!savedToken && !savedRefresh) {
+        try {
+          const sessionRes = await fetch('/api/auth/session');
+          if (sessionRes.ok) {
+            const sessionData = await sessionRes.json();
+            const gAuth = sessionData?.googleAuth;
+            if (gAuth) {
+              if (gAuth.accessToken) savedToken = gAuth.accessToken;
+              if (gAuth.refreshToken) savedRefresh = gAuth.refreshToken;
+              if (gAuth.expiresAt) savedExpiresAt = gAuth.expiresAt;
+              if (gAuth.userProfile && !parsedUser) parsedUser = gAuth.userProfile;
+            }
           }
-        })
-        .catch(() => {
-          if (onAuthFailure) onAuthFailure();
-        });
+        } catch (e) {}
+      } else if (!savedRefresh) {
+        try {
+          const sessionRes = await fetch('/api/auth/session');
+          if (sessionRes.ok) {
+            const sessionData = await sessionRes.json();
+            if (sessionData?.googleAuth?.refreshToken) {
+              savedRefresh = sessionData.googleAuth.refreshToken;
+            }
+          }
+        } catch (e) {}
       }
-    } else {
+
+      if (savedRefresh) {
+        setRefreshToken(savedRefresh, savedExpiresAt);
+      }
+
+      const isExpired = savedExpiresAt ? (Date.now() >= savedExpiresAt - 2 * 60 * 1000) : false;
+      if ((!savedToken || isExpired) && savedRefresh) {
+        const refreshed = await refreshAccessTokenSilently(savedRefresh);
+        if (refreshed) {
+          savedToken = refreshed;
+        }
+      }
+
+      if (savedToken) {
+        setOverrideAccessToken(savedToken);
+        let profile = await fetchUserProfileWithToken(savedToken);
+        if (!profile && savedRefresh) {
+          const refreshed = await refreshAccessTokenSilently(savedRefresh);
+          if (refreshed) {
+            savedToken = refreshed;
+            profile = await fetchUserProfileWithToken(savedToken);
+          }
+        }
+
+        if (profile && savedToken) {
+          currentAuthUser = profile;
+          localStorage.setItem('amp_user_profile', JSON.stringify(profile));
+          syncAuthSessionToServer({
+            accessToken: savedToken,
+            refreshToken: savedRefresh || cachedRefreshToken,
+            expiresAt: cachedTokenExpiresAt,
+            userProfile: profile
+          });
+          if (onAuthSuccess) {
+            onAuthSuccess(profile, savedToken);
+          }
+          return;
+        } else if (!savedRefresh) {
+          setOverrideAccessToken(null);
+          syncAuthSessionToServer({ clear: true });
+        }
+      }
+
       if (onAuthFailure) onAuthFailure();
-    }
+    })();
   } else {
     if (onAuthFailure) onAuthFailure();
   }
-  
-  // Return dummy unsubscribe function
-  return () => {};
+
+  return () => {
+    if (backgroundRefreshTimer) {
+      clearInterval(backgroundRefreshTimer);
+      backgroundRefreshTimer = null;
+    }
+  };
 };
 
 export const googleSignIn = async (): Promise<{ user: any; accessToken: string } | null> => {
-  throw new Error('Standard Firebase googleSignIn has been replaced with the 3 Google Auth Option flows inside AMP.');
+  if (isSigningIn) return null;
+  isSigningIn = true;
+  try {
+    provider.setCustomParameters({ prompt: 'select_account' });
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = credential?.accessToken;
+    if (!accessToken) {
+      throw new Error('Google Sign-In succeeded, but no Drive OAuth access token was returned.');
+    }
+    const userObj = {
+      email: result.user?.email || 'authorized-user@amp.local',
+      displayName: result.user?.displayName || 'Google User'
+    };
+    currentAuthUser = userObj;
+    const expiresAt = Date.now() + 3550 * 1000;
+    setOverrideAccessToken(accessToken);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('amp_user_profile', JSON.stringify(userObj));
+      localStorage.setItem('amp_token_expires_at', String(expiresAt));
+    }
+    cachedTokenExpiresAt = expiresAt;
+    await syncAuthSessionToServer({
+      accessToken,
+      expiresAt,
+      userProfile: userObj
+    });
+    return { user: userObj, accessToken };
+  } finally {
+    isSigningIn = false;
+  }
 };
 
 export const getAccessToken = (): string | null => {
@@ -224,66 +619,160 @@ export const getCurrentUser = (): any => {
 
 export const handleLogout = async () => {
   cachedAccessToken = null;
+  cachedRefreshToken = null;
+  cachedTokenExpiresAt = null;
   currentAuthUser = null;
   if (typeof window !== 'undefined') {
     sessionStorage.removeItem('amp_drive_token');
     localStorage.removeItem('amp_override_token');
+    localStorage.removeItem('amp_refresh_token');
+    localStorage.removeItem('amp_token_expires_at');
     localStorage.removeItem('amp_user_profile');
   }
-  // Revoke cached Blob URLs to free up memory
+  await syncAuthSessionToServer({ clear: true });
+  try {
+    await signOut(auth);
+  } catch (e) {}
   clearAudioCache();
 };
 
-// Memory Cache for MP3 binary blobs to provide immediate playback and zero latency
-export const mp3BlobCache = new Map<string, string>(); // Maps raw URL (e.g. googleapis drive url) to local Blob URL
-export const rawBlobCache = new Map<string, Blob>(); // Maps raw URL to binary Blob
-export const mp3MetadataCache = new Map<string, Mp3ID3Metadata>(); // Maps raw URL to parsed ID3 metadata
-export const mp3DurationCache = new Map<string, string>(); // Maps raw URL to calculated duration "m:ss"
-export const mp3WaveformCache = new Map<string, number[]>(); // Maps raw URL or path to normalized waveform peaks
-export const availableFilesCache = new Map<string, { path: string; size: string; duration: string }>();
+/**
+ * Builds request headers for unified `/api/*` storage routes so the server
+ * can route cleanly between the Local `fs` provider (Desktop App) and the
+ * Google Drive provider (AI Studio Test Harness) without component-level branching.
+ */
+export const getStorageApiHeaders = async (
+  extraHeaders: Record<string, string> = {},
+  explicitMode?: 'Local' | 'Drive' | 'Demo'
+): Promise<Record<string, string>> => {
+  const settings = getSavedSettings();
+  const mode = explicitMode || settings.mode || 'Local';
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...extraHeaders,
+    'x-amp-storage-mode': mode
+  };
 
-const pendingFetches = new Map<string, Promise<string>>();
+  if (mode === 'Drive' || (mode === 'Demo' && DRIVE_FOLDERS.amp)) {
+    const token = await ensureValidAccessToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    if (DRIVE_FOLDERS.amp) {
+      headers['x-amp-drive-folder-amp'] = DRIVE_FOLDERS.amp;
+    }
+    if (DRIVE_FOLDERS.announcements) {
+      headers['x-amp-drive-folder-announcements'] = DRIVE_FOLDERS.announcements;
+    }
+    if (DRIVE_FOLDERS.preferences) {
+      headers['x-amp-drive-folder-preferences'] = DRIVE_FOLDERS.preferences;
+    }
+    if (DRIVE_FOLDERS.logs) {
+      headers['x-amp-drive-folder-logs'] = DRIVE_FOLDERS.logs;
+    }
+    if (DRIVE_FOLDERS.evergreens) {
+      headers['x-amp-drive-folder-evergreens'] = DRIVE_FOLDERS.evergreens;
+    }
+    if (DRIVE_FOLDERS.shows) {
+      headers['x-amp-drive-folder-shows'] = DRIVE_FOLDERS.shows;
+    }
+  }
+
+  return headers;
+};
 
 export const extractWaveformForUrl = async (url: string, sourceUrlOrBlob?: string | Blob): Promise<number[]> => {
-  if (!url || !isAudioFile(url)) return [];
-  if (mp3WaveformCache.has(url)) return mp3WaveformCache.get(url)!;
+  if (!url) return [];
+  const fileInCache = availableFilesCache.get(url);
+  const resolvedUrl = fileInCache?.path || url;
+  const mappedFileName = driveFileNameCache.get(url) || driveFileNameCache.get(resolvedUrl);
+
+  if (!isAudioFile(url) && !isAudioFile(resolvedUrl) && !(mappedFileName && isAudioFile(mappedFileName))) {
+    return [];
+  }
+
+  const existingPeaks =
+    mp3WaveformCache.get(url) ||
+    mp3WaveformCache.get(resolvedUrl) ||
+    (mappedFileName ? mp3WaveformCache.get(mappedFileName) : undefined);
+  if (existingPeaks && existingPeaks.length > 0) {
+    mp3WaveformCache.set(url, existingPeaks);
+    mp3WaveformCache.set(resolvedUrl, existingPeaks);
+    if (mappedFileName) mp3WaveformCache.set(mappedFileName, existingPeaks);
+    return existingPeaks;
+  }
   if (typeof window === 'undefined') return [];
 
   try {
     let arrayBuffer: ArrayBuffer | null = null;
-    const cachedBlob = rawBlobCache.get(url) || (availableFilesCache.get(url)?.path ? rawBlobCache.get(availableFilesCache.get(url)!.path) : undefined);
+    const cachedBlob =
+      rawBlobCache.get(url) ||
+      rawBlobCache.get(resolvedUrl) ||
+      (mappedFileName ? rawBlobCache.get(mappedFileName) : undefined);
     if (cachedBlob) {
       arrayBuffer = await cachedBlob.arrayBuffer();
     } else if (sourceUrlOrBlob instanceof Blob) {
       arrayBuffer = await sourceUrlOrBlob.arrayBuffer();
     } else if (typeof sourceUrlOrBlob === 'string') {
       const targetUrl = mp3BlobCache.get(sourceUrlOrBlob) || getPlayableUrl(sourceUrlOrBlob) || sourceUrlOrBlob;
-      const resp = await fetch(targetUrl);
+      const token = getAccessToken();
+      const headers: Record<string, string> = {};
+      if (token && targetUrl.includes('googleapis.com')) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const resp = await fetch(targetUrl, { headers });
       if (resp.ok) {
         const blob = await resp.blob();
         arrayBuffer = await blob.arrayBuffer();
       }
     } else {
-      const playable = mp3BlobCache.get(url) || getPlayableUrl(url);
-      if (playable) {
-        try {
-          const resp = await fetch(playable);
-          if (resp.ok) {
-            const blob = await resp.blob();
-            arrayBuffer = await blob.arrayBuffer();
-          }
-        } catch (fetchErr) {
-          // ignore network error
+      const cacheKey = mappedFileName || url;
+      await cacheMP3(cacheKey, getAccessToken() || '');
+      const newlyCachedBlob =
+        rawBlobCache.get(url) ||
+        rawBlobCache.get(resolvedUrl) ||
+        (mappedFileName ? rawBlobCache.get(mappedFileName) : undefined);
+      if (newlyCachedBlob) {
+        arrayBuffer = await newlyCachedBlob.arrayBuffer();
+      } else {
+        const playable = mp3BlobCache.get(url) || mp3BlobCache.get(resolvedUrl) || getPlayableUrl(resolvedUrl) || getPlayableUrl(url);
+        if (playable) {
+          try {
+            const token = getAccessToken();
+            const headers: Record<string, string> = {};
+            if (token && playable.includes('googleapis.com')) {
+              headers.Authorization = `Bearer ${token}`;
+            }
+            const resp = await fetch(playable, { headers });
+            if (resp.ok) {
+              const blob = await resp.blob();
+              arrayBuffer = await blob.arrayBuffer();
+            }
+          } catch (_) {}
         }
       }
     }
 
     if (!arrayBuffer) return [];
 
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return [];
     const audioCtx = new AudioCtx();
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+    const durationSec = audioBuffer.duration;
+    if (durationSec && !isNaN(durationSec) && durationSec !== Infinity && durationSec > 0) {
+      const minutes = Math.floor(durationSec / 60);
+      const seconds = Math.floor(durationSec % 60);
+      const formatted = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+      mp3DurationCache.set(url, formatted);
+      mp3DurationCache.set(resolvedUrl, formatted);
+      if (mappedFileName) mp3DurationCache.set(mappedFileName, formatted);
+      window.dispatchEvent(new CustomEvent('mp3-duration-cached', {
+        detail: { url, resolvedUrl, fileName: mappedFileName, duration: formatted }
+      }));
+    }
+
     const channelData = audioBuffer.getChannelData(0);
     const totalSamples = channelData.length;
     const numBars = 60;
@@ -306,10 +795,12 @@ export const extractWaveformForUrl = async (url: string, sourceUrlOrBlob?: strin
     const normalized = peaks.map(p => Math.max(0.15, Math.min(1.0, p / maxPeak)));
 
     mp3WaveformCache.set(url, normalized);
+    mp3WaveformCache.set(resolvedUrl, normalized);
+    if (mappedFileName) mp3WaveformCache.set(mappedFileName, normalized);
     try { audioCtx.close(); } catch (e) {}
 
-    window.dispatchEvent(new CustomEvent('mp3-waveform-cached', { 
-      detail: { url, peaks: normalized } 
+    window.dispatchEvent(new CustomEvent('mp3-waveform-cached', {
+      detail: { url, resolvedUrl, fileName: mappedFileName, peaks: normalized }
     }));
 
     return normalized;
@@ -320,11 +811,25 @@ export const extractWaveformForUrl = async (url: string, sourceUrlOrBlob?: strin
 };
 
 export const calculateDurationForUrl = (url: string, sourceUrl: string) => {
-  if (!url || !isAudioFile(url)) return;
-  if (mp3DurationCache.has(url)) return;
-  
+  if (!url) return;
+  const fileInCache = availableFilesCache.get(url);
+  const resolvedUrl = fileInCache?.path || url;
+  const mappedFileName = driveFileNameCache.get(url) || driveFileNameCache.get(resolvedUrl);
+
+  if (!isAudioFile(url) && !isAudioFile(resolvedUrl) && !(mappedFileName && isAudioFile(mappedFileName))) return;
+  const existingDur =
+    mp3DurationCache.get(url) ||
+    mp3DurationCache.get(resolvedUrl) ||
+    (mappedFileName ? mp3DurationCache.get(mappedFileName) : undefined);
+  if (existingDur) {
+    mp3DurationCache.set(url, existingDur);
+    mp3DurationCache.set(resolvedUrl, existingDur);
+    if (mappedFileName) mp3DurationCache.set(mappedFileName, existingDur);
+    return;
+  }
+
   if (typeof window === 'undefined') return;
-  
+
   const audio = new Audio();
   audio.src = sourceUrl;
   audio.addEventListener('loadedmetadata', () => {
@@ -334,31 +839,16 @@ export const calculateDurationForUrl = (url: string, sourceUrl: string) => {
       const seconds = Math.floor(durationSec % 60);
       const formatted = `${minutes}:${seconds.toString().padStart(2, '0')}`;
       mp3DurationCache.set(url, formatted);
-      console.log(`Successfully calculated duration for ${url}: ${formatted}`);
-      window.dispatchEvent(new CustomEvent('mp3-duration-cached', { 
-        detail: { url, duration: formatted } 
+      mp3DurationCache.set(resolvedUrl, formatted);
+      if (mappedFileName) mp3DurationCache.set(mappedFileName, formatted);
+      window.dispatchEvent(new CustomEvent('mp3-duration-cached', {
+        detail: { url, resolvedUrl, fileName: mappedFileName, duration: formatted }
       }));
     }
   });
   audio.addEventListener('error', (err) => {
     console.warn(`Could not load audio metadata for calculating duration: ${url}`, err);
   });
-};
-
-export const clearAudioCache = () => {
-  for (const blobUrl of mp3BlobCache.values()) {
-    try {
-      URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      console.warn('Failed to revoke object URL:', e);
-    }
-  }
-  mp3BlobCache.clear();
-  rawBlobCache.clear();
-  mp3MetadataCache.clear();
-  mp3DurationCache.clear();
-  mp3WaveformCache.clear();
-  pendingFetches.clear();
 };
 
 /**
@@ -382,13 +872,13 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
     return mp3BlobCache.get(url)!;
   }
 
-  if (pendingFetches.has(resolvedUrl)) {
-    return pendingFetches.get(resolvedUrl)!;
+  if (pendingAudioFetches.has(resolvedUrl)) {
+    return pendingAudioFetches.get(resolvedUrl)!;
   }
 
   const isDriveUrl = resolvedUrl.includes('googleapis.com') || resolvedUrl.includes('drive.google.com');
   const isAudio = isAudioFile(resolvedUrl) || isAudioFile(url);
-  
+
   const headers: HeadersInit = {};
   if (isDriveUrl) {
     if (token) {
@@ -400,7 +890,21 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
 
   const fetchPromise = (async () => {
     try {
-      const res = await fetch(resolvedUrl, { headers });
+      if (isDriveUrl) {
+        const freshToken = await ensureValidAccessToken();
+        const activeBearer = freshToken || token;
+        if (activeBearer) {
+          headers['Authorization'] = `Bearer ${activeBearer}`;
+        }
+      }
+      let res = await fetch(resolvedUrl, { headers });
+      if (isDriveUrl && res.status === 401 && cachedRefreshToken) {
+        const refreshed = await refreshAccessTokenSilently(cachedRefreshToken);
+        if (refreshed) {
+          headers['Authorization'] = `Bearer ${refreshed}`;
+          res = await fetch(resolvedUrl, { headers });
+        }
+      }
       if (!res.ok) throw new Error(`Failed to fetch MP3 from url: ${res.statusText}`);
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
@@ -410,13 +914,10 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
       rawBlobCache.set(resolvedUrl, blob);
       rawBlobCache.set(url, blob);
 
-      // Execute audio processing routines only for authentic audio assets
       if (isAudio) {
-        // Calculate duration for the newly cached audio file
         calculateDurationForUrl(url, blobUrl);
         calculateDurationForUrl(resolvedUrl, blobUrl);
 
-        // Extract audio waveform peaks as part of caching process
         try {
           await extractWaveformForUrl(url, blob);
           await extractWaveformForUrl(resolvedUrl, blob);
@@ -424,7 +925,6 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
           console.warn('Waveform analysis failed during caching', e);
         }
 
-        // Parse audio metadata directly from the downloaded blob in RAM
         try {
           const arrayBuf = await blob.arrayBuffer();
           const meta = extractAudioMetadataBytes(new Uint8Array(arrayBuf), resolvedUrl);
@@ -432,14 +932,12 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
             mp3MetadataCache.set(resolvedUrl, meta);
             mp3MetadataCache.set(url, meta);
             if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('mp3-metadata-loaded', { 
-                detail: { url, resolvedUrl, meta } 
+              window.dispatchEvent(new CustomEvent('mp3-metadata-loaded', {
+                detail: { url, resolvedUrl, meta }
               }));
             }
           }
-        } catch (e) {
-          // Metadata parse fail on blob
-        }
+        } catch (_) {}
       }
 
       return blobUrl;
@@ -453,21 +951,13 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
       }
       throw err;
     } finally {
-      pendingFetches.delete(resolvedUrl);
+      pendingAudioFetches.delete(resolvedUrl);
     }
   })();
 
-  pendingFetches.set(resolvedUrl, fetchPromise);
+  pendingAudioFetches.set(resolvedUrl, fetchPromise);
   return fetchPromise;
 };
-
-export interface CachingProgressReport {
-  total: number;
-  completed: number;
-  failed: number;
-  errors: Array<{ url: string; fileName?: string; error: string }>;
-  isComplete: boolean;
-}
 
 /**
  * Clean up the audio memory cache by revoking files that are no longer part of active schedules,
@@ -502,7 +992,6 @@ export const updateAudioCacheWithProgress = async (
 
   reportProgress(false);
 
-  // 1. Retrieve and buffer incoming audio files first (non-destructive)
   if (uniqueActiveUrls.length > 0) {
     await Promise.all(
       uniqueActiveUrls.map(async (url) => {
@@ -532,7 +1021,6 @@ export const updateAudioCacheWithProgress = async (
     );
   }
 
-  // 2. Post-Retrieval Pruning: Purge cached files not needed for the new current view
   const activeSet = new Set([...activeUrls, ...resolvedActiveUrls]);
 
   for (const cachedUrl of Array.from(mp3BlobCache.keys())) {
@@ -604,9 +1092,10 @@ export const prepareShowContext = async (params: {
   totalDurationSeconds: number;
 }> => {
   try {
+    const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' });
     const res = await fetch(`/api/shows/${encodeURIComponent(params.showId)}/prepare-context`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(params)
     });
     if (!res.ok) {
@@ -646,791 +1135,150 @@ export const getActiveShowContext = async (): Promise<any> => {
   }
 };
 
-// General Google Drive Helpers
-async function driveFetch(endpoint: string, options: RequestInit = {}) {
-  const token = getAccessToken();
-  if (!token) throw new Error('Not authenticated with Google');
+// ============================================================================
+// Unified Server-Backed Storage Functions (#33)
+// All CRUD, Schema Upgrade, Backup, Evergreen, Show Discovery, and Playlist
+// operations delegate to `/api/*` using `getStorageApiHeaders()`.
+// ============================================================================
 
-  const headers = new Headers(options.headers || {});
-  headers.set('Authorization', `Bearer ${token}`);
-  if (!headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  let finalEndpoint = endpoint.replace(/^\//, '');
-  if (finalEndpoint.startsWith('drive/v3/')) {
-    const sep = finalEndpoint.includes('?') ? '&' : '?';
-    if (!finalEndpoint.includes('supportsAllDrives')) {
-      finalEndpoint = `${finalEndpoint}${sep}supportsAllDrives=true`;
-    }
-    if (finalEndpoint.includes('drive/v3/files?') && !finalEndpoint.includes('includeItemsFromAllDrives')) {
-      finalEndpoint = `${finalEndpoint}&includeItemsFromAllDrives=true`;
-    }
-  }
-
-  const res = await fetch(`https://www.googleapis.com/${finalEndpoint}`, {
-    ...options,
-    headers
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Drive API error (${res.status}): ${errText || res.statusText}`);
-  }
-
-  return res;
-}
-
-/**
- * Searches for a file by name inside a specific folder
- */
-async function findFileInFolder(name: string, folderId: string): Promise<string | null> {
-  try {
-    const query = encodeURIComponent(`name = '${name}' and '${folderId}' in parents and trashed = false`);
-    const res = await driveFetch(`drive/v3/files?q=${query}&fields=files(id,name)`);
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      return data.files[0].id;
-    }
-  } catch (e) {
-    // Fall back to case-insensitive scan
-  }
-  return findFileInFolderCaseInsensitive(name, folderId);
-}
-
-/**
- * Lists all active files/folders inside a parent folder in Google Drive
- */
-async function listFilesInFolder(folderId: string): Promise<Array<{ id: string; name: string; mimeType: string }>> {
-  const query = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
-  const res = await driveFetch(`drive/v3/files?q=${query}&fields=files(id,name,mimeType)&pageSize=1000`);
-  const data = await res.json();
-  return data.files || [];
-}
-
-/**
- * Searches for a file/folder case-insensitively inside a specific folder
- */
-async function findFileInFolderCaseInsensitive(name: string, folderId: string): Promise<string | null> {
-  if (!folderId) {
-    throw new Error('Target parent folder ID is missing or empty.');
-  }
-  const files = await listFilesInFolder(folderId);
-  const target = name.toLowerCase();
-  const found = files.find(f => f.name.toLowerCase() === target);
-  return found ? found.id : null;
-}
-
-/**
- * Creates a file with metadata and empty body in a parent folder
- */
-async function createFileInFolder(name: string, folderId: string, mimeType: string = 'application/json'): Promise<string> {
-  const body = {
-    name,
-    parents: [folderId],
-    mimeType
-  };
-  const res = await driveFetch('drive/v3/files', {
-    method: 'POST',
-    body: JSON.stringify(body)
-  });
-  const data = await res.json();
-  return data.id;
-}
-
-/**
- * Uploads/overwrites content of an existing file
- */
-async function uploadFileContent(fileId: string, content: string, mimeType: string = 'application/json'): Promise<void> {
-  const token = getAccessToken();
-  await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true`, {
-    method: 'PATCH',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': mimeType
-    },
-    body: content
-  });
-}
-
-// Higher level API functions
-
-/**
- * Resolves or creates the 'settings' folder on Google Drive.
- * In unified mode (driveFolderAmp is set), it looks for/creates 'settings' inside driveFolderAmp.
-/**
- * Resolves or creates the 'settings' folder strictly inside the AMP station root on Google Drive
- * (or uses the legacy/override preferences folder if configured).
- */
-export const getOrCreateDriveSettingsFolder = async (): Promise<string> => {
-  const overrideFolder = DRIVE_FOLDERS.preferences;
-  if (overrideFolder) return overrideFolder;
-
-  const ampFolder = DRIVE_FOLDERS.amp;
-  if (!ampFolder) {
-    throw new Error('Google Drive Station folder is not configured. Please set it in Settings.');
-  }
-  let settingsId = await findFileInFolderCaseInsensitive('settings', ampFolder);
-  if (!settingsId) {
-    settingsId = await findFileInFolderCaseInsensitive('Settings', ampFolder);
-  }
-  if (!settingsId) {
-    settingsId = await findFileInFolderCaseInsensitive('preferences', ampFolder);
-  }
-  if (!settingsId) {
-    settingsId = await createFileInFolder('settings', ampFolder, 'application/vnd.google-apps.folder');
-  }
-  return settingsId;
-};
-
-// Backwards compatibility alias
-export const getOrCreateDrivePreferencesFolder = getOrCreateDriveSettingsFolder;
-
-/**
- * Resolves or creates the 'logs' folder strictly inside the AMP station root on Google Drive
- * (or uses the legacy/override logs folder if configured).
- */
-export const getOrCreateDriveLogsFolder = async (): Promise<string> => {
-  const overrideFolder = DRIVE_FOLDERS.logs;
-  if (overrideFolder) return overrideFolder;
-
-  const ampFolder = DRIVE_FOLDERS.amp;
-  if (!ampFolder) {
-    throw new Error('Google Drive Station folder is not configured. Please set it in Settings.');
-  }
-  let logsId = await findFileInFolderCaseInsensitive('logs', ampFolder);
-  if (!logsId) {
-    logsId = await findFileInFolderCaseInsensitive('Logs', ampFolder);
-  }
-  if (!logsId) {
-    logsId = await createFileInFolder('logs', ampFolder, 'application/vnd.google-apps.folder');
-  }
-  return logsId;
-};
-
-/**
- * Resolves or creates the 'media_announcements' folder strictly inside the AMP station root on Google Drive.
- */
-export const getOrCreateDriveAnnouncementsFolder = async (): Promise<string> => {
-  const overrideFolder = DRIVE_FOLDERS.announcements || DRIVE_FOLDERS.mp3s;
-  if (overrideFolder) return overrideFolder;
-
-  const rootFolder = DRIVE_FOLDERS.amp;
-  if (!rootFolder) {
-    throw new Error('Google Drive Station folder is not configured. Please set it in Settings.');
-  }
-  const isConnValid = await validateGoogleDriveAccess();
-  if (!isConnValid) {
-    throw new Error('Google Drive connection validation failed. Cannot safely resolve announcements folder.');
-  }
-  let folderId = await findFileInFolderCaseInsensitive('media_announcements', rootFolder);
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('MediaAnnouncements', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Media_Announcements', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Announcements', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('announcements', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await createFileInFolder('media_announcements', rootFolder, 'application/vnd.google-apps.folder');
-  }
-  return folderId;
-};
-
-/**
- * Resolves or creates the 'media_evergreens' folder strictly inside the AMP station root on Google Drive.
- */
-export const getOrCreateDriveEvergreensFolder = async (): Promise<string> => {
-  const overrideFolder = DRIVE_FOLDERS.evergreens;
-  if (overrideFolder) return overrideFolder;
-
-  const rootFolder = DRIVE_FOLDERS.amp;
-  if (!rootFolder) {
-    throw new Error('Google Drive Station folder is not configured. Please set it in Settings.');
-  }
-  const isConnValid = await validateGoogleDriveAccess();
-  if (!isConnValid) {
-    throw new Error('Google Drive connection validation failed. Cannot safely resolve evergreens folder.');
-  }
-  let folderId = await findFileInFolderCaseInsensitive('media_evergreens', rootFolder);
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('MediaEvergreens', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Media_Evergreens', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Evergreens', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await createFileInFolder('media_evergreens', rootFolder, 'application/vnd.google-apps.folder');
-  }
-  return folderId;
-};
-
-/**
- * Resolves or creates the 'media_shows' folder strictly inside the AMP station root on Google Drive.
- */
-export const getOrCreateDriveShowsFolder = async (): Promise<string> => {
-  const overrideFolder = DRIVE_FOLDERS.shows;
-  if (overrideFolder) return overrideFolder;
-
-  const rootFolder = DRIVE_FOLDERS.amp;
-  if (!rootFolder) {
-    throw new Error('Google Drive Station folder is not configured. Please set it in Settings.');
-  }
-  const isConnValid = await validateGoogleDriveAccess();
-  if (!isConnValid) {
-    throw new Error('Google Drive connection validation failed. Cannot safely resolve shows folder.');
-  }
-  let folderId = await findFileInFolderCaseInsensitive('media_shows', rootFolder);
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('MediaShows', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Media_Shows', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Shows', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await findFileInFolderCaseInsensitive('Playlists', rootFolder);
-  }
-  if (!folderId) {
-    folderId = await createFileInFolder('media_shows', rootFolder, 'application/vnd.google-apps.folder');
-  }
-  return folderId;
-};
-
-// Backwards compatibility alias
-export const getOrCreateDrivePlaylistsFolder = getOrCreateDriveShowsFolder;
-
-/**
- * Resolves or creates a 'loghistory' folder inside the logs folder on Google Drive
- */
-export async function getOrCreateDriveLogHistoryFolder(parentFolderId?: string): Promise<string> {
-  const targetParent = parentFolderId || await getOrCreateDriveLogsFolder();
-  let historyFolderId = await findFileInFolderCaseInsensitive('loghistory', targetParent);
-  if (!historyFolderId) {
-    historyFolderId = await findFileInFolderCaseInsensitive('LogHistory', targetParent);
-  }
-  if (!historyFolderId) {
-    historyFolderId = await findFileInFolderCaseInsensitive('backups', targetParent);
-  }
-  if (!historyFolderId) {
-    historyFolderId = await createFileInFolder('loghistory', targetParent, 'application/vnd.google-apps.folder');
-  }
-  return historyFolderId;
-}
-
-/**
- * Load schedules from Drive announcements.json in settings folder (or legacy preferences folder)
- */
 export const loadCalendarFromDrive = async (): Promise<Announcement[]> => {
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    let fileId = await findFileInFolder('announcements.json', settingsFolder);
-    if (!fileId) {
-      // Create empty announcements.json if not found
-      fileId = await createFileInFolder('announcements.json', settingsFolder);
-      await uploadFileContent(fileId, JSON.stringify({ AnnouncementsBackupCounter: 0, data: [] }));
-      return [];
-    }
-    const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-    const jsonStr = await res.text();
-    const parsed = JSON.parse(jsonStr || '[]');
-    let rawList: Announcement[] = [];
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      rawList = Array.isArray(parsed.data) ? parsed.data : [];
-    } else {
-      rawList = Array.isArray(parsed) ? parsed : [];
-    }
-    return normalizeAnnouncements(rawList);
-  } catch (err) {
-    console.error('Error loading schedules from Google Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({}, 'Drive');
+  const res = await fetch('/api/announcements', { headers });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Failed to load announcements from Google Drive');
   }
+  const data = await res.json();
+  const rawList = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
+  return normalizeAnnouncements(rawList);
 };
 
-/**
- * Save schedules to Drive announcements.json in settings folder
- */
 export const saveCalendarToDrive = async (schedules: Announcement[]): Promise<void> => {
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    let fileId = await findFileInFolder('announcements.json', settingsFolder);
-    if (!fileId) {
-      fileId = await createFileInFolder('announcements.json', settingsFolder);
-    }
-    let counter = 0;
-    try {
-      const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-      const jsonStr = await res.text();
-      const parsed = JSON.parse(jsonStr || '{}');
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        counter = parsed.AnnouncementsBackupCounter || 0;
-      }
-    } catch (e) {}
-    const normalizedSchedules = normalizeAnnouncements(schedules);
-    const envelope = {
-      _meta: {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        minAppVersion: CURRENT_MIN_APP_VERSION,
-        lastModifiedBy: CURRENT_APP_VERSION,
-        lastModifiedAt: new Date().toISOString()
-      },
-      AnnouncementsBackupCounter: counter + 1,
-      data: normalizedSchedules
-    };
-    await uploadFileContent(fileId, JSON.stringify(envelope, null, 2));
-  } catch (err) {
-    console.error('Error saving schedules to Google Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/announcements', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(schedules)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Failed to save announcements to Google Drive');
   }
 };
 
-/**
- * Load shows from Drive shows.json in settings folder
- */
 export const loadShowsFromDrive = async (): Promise<Show[]> => {
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    let fileId = await findFileInFolder('shows.json', settingsFolder);
-    if (!fileId) {
-      fileId = await createFileInFolder('shows.json', settingsFolder);
-      await uploadFileContent(fileId, JSON.stringify({ ShowsBackupCounter: 0, data: [] }, null, 2));
-      return [];
-    }
-    const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-    const jsonStr = await res.text();
-    const parsed = JSON.parse(jsonStr || '[]');
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return Array.isArray(parsed.data) ? parsed.data : [];
-    }
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.error('Error loading shows from Google Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({}, 'Drive');
+  const res = await fetch('/api/shows', { headers });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Failed to load shows from Google Drive');
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []);
+};
+
+export const saveShowsToDrive = async (
+  shows: Show[],
+  explicitStationTimezone?: string,
+  explicitAdminContactInfo?: string,
+  explicitUpNextPromo?: { enabled: boolean; minutesBefore: number },
+  explicitScheduleWindow?: { windowBeforeMinutes: number; windowAfterMinutes: number; showLookaroundHours: number }
+): Promise<void> => {
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/shows', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      data: shows,
+      ...(explicitStationTimezone ? { stationTimezone: explicitStationTimezone } : {}),
+      ...(explicitAdminContactInfo !== undefined ? { adminContactInfo: explicitAdminContactInfo } : {}),
+      ...(explicitUpNextPromo !== undefined ? { upNextPromo: explicitUpNextPromo } : {}),
+      ...(explicitScheduleWindow !== undefined ? { scheduleWindow: explicitScheduleWindow } : {})
+    })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Failed to save shows to Google Drive');
   }
 };
 
-/**
- * Save shows to Drive shows.json in settings folder
- */
-export const saveShowsToDrive = async (shows: Show[]): Promise<void> => {
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    let fileId = await findFileInFolder('shows.json', settingsFolder);
-    if (!fileId) {
-      fileId = await createFileInFolder('shows.json', settingsFolder);
-    }
-    let counter = 0;
-    try {
-      const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-      const jsonStr = await res.text();
-      const parsed = JSON.parse(jsonStr || '{}');
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        counter = parsed.ShowsBackupCounter || 0;
-      }
-    } catch (e) {}
-    counter += 1;
-    const envelope = {
-      _meta: {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        minAppVersion: CURRENT_MIN_APP_VERSION,
-        lastModifiedBy: CURRENT_APP_VERSION,
-        lastModifiedAt: new Date().toISOString()
-      },
-      ShowsBackupCounter: counter,
-      data: shows
-    };
-    await uploadFileContent(fileId, JSON.stringify(envelope, null, 2));
-  } catch (err) {
-    console.error('Error saving shows to Google Drive:', err);
-    throw err;
-  }
-};
-
-/**
- * Executes a deterministic schema upgrade on Drive data stores with pre-upgrade snapshots
- */
 export const upgradeDriveDataSchema = async (): Promise<{
   success: boolean;
   announcements: Announcement[];
   shows: Show[];
+  logs?: LogEntry[];
   meta: DataMetaHeader;
 }> => {
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    const backupsFolder = await getOrCreateBackupsFolder(settingsFolder);
-
-    // 1. Fetch raw announcements.json
-    const annFileId = await findFileInFolder('announcements.json', settingsFolder);
-    let rawAnnContent = '[]';
-    if (annFileId) {
-      const res = await driveFetch(`drive/v3/files/${annFileId}?alt=media`);
-      rawAnnContent = await res.text();
-    }
-    const rawAnnParsed = JSON.parse(rawAnnContent || '[]');
-
-    // 2. Fetch raw shows.json
-    const showsFileId = await findFileInFolder('shows.json', settingsFolder);
-    let rawShowsContent = '[]';
-    if (showsFileId) {
-      const res = await driveFetch(`drive/v3/files/${showsFileId}?alt=media`);
-      rawShowsContent = await res.text();
-    }
-    const rawShowsParsed = JSON.parse(rawShowsContent || '[]');
-
-    // 3. Create pre-upgrade timestamped snapshots in backups folder
-    const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
-    const annBackupName = `announcements.backup-pre-upgrade-${timestampStr}.json`;
-    const showsBackupName = `shows.backup-pre-upgrade-${timestampStr}.json`;
-
-    let annBackupFileId = await findFileInFolder(annBackupName, backupsFolder);
-    if (!annBackupFileId) {
-      annBackupFileId = await createFileInFolder(annBackupName, backupsFolder);
-    }
-    await uploadFileContent(annBackupFileId, rawAnnContent);
-
-    let showsBackupFileId = await findFileInFolder(showsBackupName, backupsFolder);
-    if (!showsBackupFileId) {
-      showsBackupFileId = await createFileInFolder(showsBackupName, backupsFolder);
-    }
-    await uploadFileContent(showsBackupFileId, rawShowsContent);
-
-    // 4. Perform deterministic migration using canonical compatibility engine
-    const annMigration = migrateAnnouncementsPayload(rawAnnParsed, CURRENT_APP_VERSION);
-    const showsMigration = migrateShowsPayload(rawShowsParsed, CURRENT_APP_VERSION);
-
-    // 5. Commit upgraded envelopes
-    if (annFileId) {
-      await uploadFileContent(annFileId, JSON.stringify(annMigration.envelope, null, 2));
-    } else {
-      const newAnnId = await createFileInFolder('announcements.json', settingsFolder);
-      await uploadFileContent(newAnnId, JSON.stringify(annMigration.envelope, null, 2));
-    }
-
-    if (showsFileId) {
-      await uploadFileContent(showsFileId, JSON.stringify(showsMigration.envelope, null, 2));
-    } else {
-      const newShowsId = await createFileInFolder('shows.json', settingsFolder);
-      await uploadFileContent(newShowsId, JSON.stringify(showsMigration.envelope, null, 2));
-    }
-
-    return {
-      success: true,
-      announcements: annMigration.data,
-      shows: showsMigration.data,
-      meta: annMigration.envelope._meta!
-    };
-  } catch (err) {
-    console.error('Failed to upgrade Drive data schema:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/compatibility/upgrade', {
+    method: 'POST',
+    headers
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.success) {
+    throw new Error(data?.error || 'Failed to upgrade Google Drive data schema');
   }
+  return {
+    success: true,
+    announcements: data.announcements || [],
+    shows: data.shows || [],
+    logs: data.logs,
+    meta: data.meta
+  };
 };
 
-/**
- * Load logs from Drive logs.json in logs folder
- */
 export const loadLogsFromDrive = async (): Promise<LogEntry[]> => {
-  try {
-    const logsFolder = await getOrCreateDriveLogsFolder();
-    let fileId = await findFileInFolder('logs.json', logsFolder);
-    if (!fileId) {
-      fileId = await createFileInFolder('logs.json', logsFolder);
-      await uploadFileContent(fileId, JSON.stringify({ LogsBackupCounter: 0, data: [] }));
-      return [];
-    }
-    const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-    const jsonStr = await res.text();
-    const parsed = JSON.parse(jsonStr || '[]');
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return Array.isArray(parsed.data) ? parsed.data : [];
-    }
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.error('Error loading logs from Google Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({}, 'Drive');
+  const res = await fetch('/api/logs', { headers });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Failed to load logs from Google Drive');
   }
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
 };
 
-/**
- * Save logs array to Drive logs.json in logs folder
- */
-export const saveLogsToDrive = async (logs: LogEntry[]): Promise<void> => {
-  try {
-    const logsFolder = await getOrCreateDriveLogsFolder();
-    let fileId = await findFileInFolder('logs.json', logsFolder);
-    if (!fileId) {
-      fileId = await createFileInFolder('logs.json', logsFolder);
-    }
-    let counter = 0;
-    try {
-      const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-      const jsonStr = await res.text();
-      const parsed = JSON.parse(jsonStr || '{}');
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        counter = parsed.LogsBackupCounter || 0;
-      }
-    } catch (e) {}
-    await uploadFileContent(fileId, JSON.stringify({ LogsBackupCounter: counter, data: logs }, null, 2));
-  } catch (err) {
-    console.error('Error saving logs to Google Drive:', err);
-    throw err;
-  }
-};
-
-/**
- * Append single log to Drive logs.json (concurrency friendly)
- */
 export const appendLogToDrive = async (entry: LogEntry): Promise<LogEntry[]> => {
-  try {
-    const logsFolder = await getOrCreateDriveLogsFolder();
-    let fileId = await findFileInFolder('logs.json', logsFolder);
-    let logs: LogEntry[] = [];
-    let counter = 0;
-    if (!fileId) {
-      fileId = await createFileInFolder('logs.json', logsFolder);
-    } else {
-      try {
-        const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-        const text = await res.text();
-        const parsed = JSON.parse(text || '[]');
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          logs = Array.isArray(parsed.data) ? parsed.data : [];
-          counter = parsed.LogsBackupCounter || 0;
-        } else {
-          logs = Array.isArray(parsed) ? parsed : [];
-        }
-      } catch (e) {
-        console.warn('Could not load existing logs to append, rewriting:', e);
-      }
-    }
-    logs.push(entry);
-    await uploadFileContent(fileId, JSON.stringify({ LogsBackupCounter: counter, data: logs }, null, 2));
-    return logs;
-  } catch (err) {
-    console.error('Error appending log to Google Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/logs', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(entry)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Failed to append log to Google Drive');
   }
+  return Array.isArray(data?.logs) ? data.logs : [];
 };
 
-/**
- * Resolves or creates a 'backups' folder inside a parent folder on Google Drive
- */
-async function getOrCreateBackupsFolder(parentFolderId: string): Promise<string> {
-  let backupsFolderId = await findFileInFolder('backups', parentFolderId);
-  if (!backupsFolderId) {
-    backupsFolderId = await createFileInFolder('backups', parentFolderId, 'application/vnd.google-apps.folder');
-  }
-  return backupsFolderId;
-}
-
-/**
- * Trigger archiving backup copies in Google Drive
- */
 export const triggerDriveBackup = async (appMode?: string): Promise<void> => {
-  // 1. Backup schedules
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    if (settingsFolder) {
-      let fileId = await findFileInFolder('announcements.json', settingsFolder);
-      if (!fileId) {
-        fileId = await createFileInFolder('announcements.json', settingsFolder);
-        await uploadFileContent(fileId, JSON.stringify({ AnnouncementsBackupCounter: 0, data: [] }));
-      }
-      if (fileId) {
-        let parsed: any;
-        try {
-          const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-          const jsonStr = await res.text();
-          parsed = JSON.parse(jsonStr || '[]');
-        } catch {
-          parsed = [];
-        }
-
-        let arrayData = Array.isArray(parsed) ? parsed : (parsed.data || []);
-        let currentCounter = Array.isArray(parsed) ? 1 : ((parsed.AnnouncementsBackupCounter || 0) + 1);
-
-        const updatedObj = {
-          AnnouncementsBackupCounter: currentCounter,
-          data: arrayData
-        };
-
-        const updatedStr = JSON.stringify(updatedObj, null, 2);
-        await uploadFileContent(fileId, updatedStr);
-
-        const backupName = generateBackupFilename('announcements', appMode || 'DRIVE');
-        const backupsFolderId = await getOrCreateBackupsFolder(settingsFolder);
-        let backupFileId = await findFileInFolder(backupName, backupsFolderId);
-        if (!backupFileId) {
-          backupFileId = await createFileInFolder(backupName, backupsFolderId);
-        }
-        await uploadFileContent(backupFileId, updatedStr);
-      }
-    }
-  } catch (err) {
-    console.error('Failed to backup schedules in Drive:', err);
-    throw err;
-  }
-
-  // 2. Backup logs
-  try {
-    const logsFolder = await getOrCreateDriveLogsFolder();
-    if (logsFolder) {
-      let fileId = await findFileInFolder('logs.json', logsFolder);
-      if (!fileId) {
-        fileId = await createFileInFolder('logs.json', logsFolder);
-        await uploadFileContent(fileId, JSON.stringify({ LogsBackupCounter: 0, data: [] }));
-      }
-      if (fileId) {
-        let parsed: any;
-        try {
-          const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-          const jsonStr = await res.text();
-          parsed = JSON.parse(jsonStr || '[]');
-        } catch {
-          parsed = [];
-        }
-
-        let arrayData = Array.isArray(parsed) ? parsed : (parsed.data || []);
-        let currentCounter = Array.isArray(parsed) ? 1 : ((parsed.LogsBackupCounter || 0) + 1);
-
-        const updatedObj = {
-          LogsBackupCounter: currentCounter,
-          data: arrayData
-        };
-
-        const updatedStr = JSON.stringify(updatedObj, null, 2);
-        await uploadFileContent(fileId, updatedStr);
-
-        const backupName = generateBackupFilename('logs', appMode || 'DRIVE');
-        const backupsFolderId = await getOrCreateDriveLogHistoryFolder(logsFolder);
-        let backupFileId = await findFileInFolder(backupName, backupsFolderId);
-        if (!backupFileId) {
-          backupFileId = await createFileInFolder(backupName, backupsFolderId);
-        }
-        await uploadFileContent(backupFileId, updatedStr);
-      }
-    }
-  } catch (err) {
-    console.error('Failed to backup logs in Drive:', err);
-    throw err;
-  }
-
-  // 3. Backup shows
-  try {
-    const settingsFolder = await getOrCreateDriveSettingsFolder();
-    if (settingsFolder) {
-      let fileId = await findFileInFolder('shows.json', settingsFolder);
-      if (!fileId) {
-        fileId = await createFileInFolder('shows.json', settingsFolder);
-        await uploadFileContent(fileId, JSON.stringify({ ShowsBackupCounter: 0, data: [] }, null, 2));
-      }
-      if (fileId) {
-        let parsed: any;
-        try {
-          const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
-          const jsonStr = await res.text();
-          parsed = JSON.parse(jsonStr || '[]');
-        } catch {
-          parsed = [];
-        }
-
-        let arrayData = Array.isArray(parsed) ? parsed : (parsed.data || []);
-        let currentCounter = Array.isArray(parsed) ? 1 : ((parsed.ShowsBackupCounter || 0) + 1);
-
-        const updatedObj = {
-          ShowsBackupCounter: currentCounter,
-          data: arrayData
-        };
-
-        const updatedStr = JSON.stringify(updatedObj, null, 2);
-        await uploadFileContent(fileId, updatedStr);
-
-        const backupName = generateBackupFilename('shows', appMode || 'DRIVE');
-        const backupsFolderId = await getOrCreateBackupsFolder(settingsFolder);
-        let backupFileId = await findFileInFolder(backupName, backupsFolderId);
-        if (!backupFileId) {
-          backupFileId = await createFileInFolder(backupName, backupsFolderId);
-        }
-        await uploadFileContent(backupFileId, updatedStr);
-      }
-    }
-  } catch (err) {
-    console.error('Failed to backup shows in Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/trigger-backup', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ workstationMode: appMode || 'DRIVE' })
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Failed to trigger Google Drive backup');
   }
 };
 
-
-// Memory cache + LocalStorage backup for persistent filenames
-export const driveFileNameCache = {
-  get: (url: string): string | undefined => {
-    try {
-      const cached = localStorage.getItem(`drive_filename_${url}`);
-      return cached || undefined;
-    } catch {
-      return undefined;
-    }
-  },
-  set: (url: string, name: string): void => {
-    try {
-      localStorage.setItem(`drive_filename_${url}`, name);
-    } catch {
-      // Ignore
-    }
-  },
-  has: (url: string): boolean => {
-    try {
-      return !!localStorage.getItem(`drive_filename_${url}`);
-    } catch {
-      return false;
-    }
-  }
-};
-
-/**
- * Lists MP3 files from Drive media_announcements (or legacy Announcements) folder
- */
-export interface DriveMP3 {
-  name: string;
+export type DriveMP3 = MediaAssetFile & {
   size: string;
   duration: string;
-  path: string;
-}
+};
 
 export const listMP3sFromDrive = async (): Promise<DriveMP3[]> => {
   try {
-    const announcementsFolderId = await getOrCreateDriveAnnouncementsFolder();
-    if (!announcementsFolderId) return [];
-
-    const query = encodeURIComponent(`'${announcementsFolderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false`);
-    const res = await driveFetch(`drive/v3/files?q=${query}&fields=files(id,name,size)&pageSize=1000`);
-    const data = await res.json();
-    if (!data.files) return [];
-    
-    return data.files.map((file: any) => {
-      const sizeBytes = parseInt(file.size || '0');
-      const sizeMB = sizeBytes ? `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB` : '0.1 MB';
-      const path = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
-      
-      // Store filename mapping in cache
-      driveFileNameCache.set(path, file.name);
-      
-      return {
-        name: file.name,
-        size: sizeMB,
-        duration: '', // Loaded dynamically at runtime
-        path: path
-      };
-    });
+    const headers = await getStorageApiHeaders({}, 'Drive');
+    const res = await fetch('/api/local-mp3s', { headers });
+    if (!res.ok) return [];
+    const list: DriveMP3[] = await res.json().catch(() => []);
+    if (!Array.isArray(list)) return [];
+    syncMediaCatalogFiles(list);
+    return list;
   } catch (err) {
     console.error('Error listing MP3s from Google Drive Announcements folder:', err);
     return [];
@@ -1442,7 +1290,7 @@ export const listMP3sFromDrive = async (): Promise<DriveMP3[]> => {
  */
 export const getPlayableUrl = (url: string | undefined): string => {
   if (!url) return '';
-  
+
   let resolvedUrl = url;
   const fileInCache = availableFilesCache.get(url);
   if (fileInCache && fileInCache.path) {
@@ -1464,7 +1312,7 @@ export const getPlayableUrl = (url: string | undefined): string => {
   if (resolvedUrl.includes('googleapis.com') && token) {
     return `${resolvedUrl}&access_token=${token}`;
   }
-  if (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://') && !resolvedUrl.startsWith('blob:') && !resolvedUrl.startsWith('/')) {
+  if (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://') && !resolvedUrl.startsWith('blob:') && !resolvedUrl.startsWith('/api/')) {
     return `/api/media/stream?path=${encodeURIComponent(resolvedUrl)}`;
   }
   return resolvedUrl;
@@ -1490,7 +1338,10 @@ export const verifyGoogleDriveDetails = async (
   foldersOverride?: Partial<LocationSettings>,
   tokenOverride?: string
 ): Promise<DriveValidationResult> => {
-  const token = tokenOverride || getAccessToken();
+  let token = tokenOverride || (await ensureValidAccessToken()) || getAccessToken();
+  if (!token && cachedRefreshToken) {
+    token = await refreshAccessTokenSilently(cachedRefreshToken);
+  }
   if (!token) {
     return {
       valid: false,
@@ -1509,17 +1360,22 @@ export const verifyGoogleDriveDetails = async (
     };
   }
 
-  // 1. Inspect token info for expiration and scopes
   let tokenUser: { email: string; displayName: string } | undefined;
   try {
-    const tokenInfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`);
+    let tokenInfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`);
+    if ((tokenInfoRes.status === 400 || tokenInfoRes.status === 401) && cachedRefreshToken) {
+      const refreshed = await refreshAccessTokenSilently(cachedRefreshToken);
+      if (refreshed) {
+        token = refreshed;
+        tokenInfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`);
+      }
+    }
     if (tokenInfoRes.ok) {
       const info = await tokenInfoRes.json();
       if (info.email) {
         tokenUser = { email: info.email, displayName: info.email.split('@')[0] };
       }
-      // Check if user specifically requested drive.appdata scope instead of full drive
-      const scopes = (info.scope || '').split(' ');
+      const scopes = (info.scope || '').split(' ').filter(Boolean);
       const hasDriveScope = scopes.some((s: string) => s === 'https://www.googleapis.com/auth/drive' || s === 'https://www.googleapis.com/auth/drive.file');
       if (!hasDriveScope && scopes.includes('https://www.googleapis.com/auth/drive.appdata')) {
         return {
@@ -1527,7 +1383,16 @@ export const verifyGoogleDriveDetails = async (
           tokenValid: false,
           tokenUser,
           checkedFolders: {},
-          errorMessage: 'Token was issued with scope "drive.appdata", which only allows access to hidden app data. In Google OAuth Playground, select "https://www.googleapis.com/auth/drive" in Step 1 so AMP can read your station audio files and logs.'
+          errorMessage: 'Token was issued with scope "drive.appdata", which only allows access to hidden app data. Use the "1. Launch Google Sign-In (OAuth Playground)" button so "https://www.googleapis.com/auth/drive" is automatically selected.'
+        };
+      }
+      if (scopes.length > 0 && !hasDriveScope) {
+        return {
+          valid: false,
+          tokenValid: false,
+          tokenUser,
+          checkedFolders: {},
+          errorMessage: 'This token does not include Google Drive permission (https://www.googleapis.com/auth/drive). Click "1. Launch Google Sign-In (OAuth Playground)" below and paste the resulting code or JSON.'
         };
       }
     } else if (tokenInfoRes.status === 400 || tokenInfoRes.status === 401) {
@@ -1535,25 +1400,41 @@ export const verifyGoogleDriveDetails = async (
         valid: false,
         tokenValid: false,
         checkedFolders: {},
-        errorMessage: 'Google token is invalid or has expired. Please generate a fresh access token.'
+        errorMessage: 'Google token is invalid or has expired. Paste the OAuth Playground code/JSON or generate a fresh token.'
       };
     }
   } catch (e) {
     console.warn('tokeninfo check non-fatal error:', e);
   }
 
-  // 2. Validate token directly with Google Drive API /about
   try {
-    const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user&supportsAllDrives=true', {
+    let aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user&supportsAllDrives=true', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
+    if (aboutRes.status === 401 && cachedRefreshToken) {
+      const refreshed = await refreshAccessTokenSilently(cachedRefreshToken);
+      if (refreshed) {
+        token = refreshed;
+        aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user&supportsAllDrives=true', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      }
+    }
     if (!aboutRes.ok) {
-      console.warn('Google Drive token validation failed:', aboutRes.status);
+      const errBody = await aboutRes.json().catch(() => ({}));
+      const apiReason = errBody?.error?.errors?.[0]?.reason || '';
+      const apiMsg = errBody?.error?.message || '';
+      let detailedError = `Google token rejected by Drive API (HTTP ${aboutRes.status}).`;
+      if (apiReason === 'accessNotConfigured' || apiMsg.includes('has not been used in project')) {
+        detailedError = 'The OAuth project that minted this token does not have the Google Drive API enabled. Use the "1. Launch Google Sign-In (OAuth Playground)" button below — it uses Google\'s pre-configured Drive client so no Cloud project setup is needed.';
+      } else if (apiReason === 'insufficientPermissions' || aboutRes.status === 403) {
+        detailedError = `Google Drive API rejected this token (HTTP 403${apiMsg ? `: ${apiMsg}` : ''}). Use the "1. Launch Google Sign-In (OAuth Playground)" button below to authorize with full Drive read/write scope.`;
+      }
       return {
         valid: false,
         tokenValid: false,
         checkedFolders: {},
-        errorMessage: `Google token rejected by Drive API (HTTP ${aboutRes.status}). Check if token is expired or lacks Drive read/write permissions (https://www.googleapis.com/auth/drive).`
+        errorMessage: detailedError
       };
     }
     const aboutData = await aboutRes.json().catch(() => ({}));
@@ -1564,7 +1445,6 @@ export const verifyGoogleDriveDetails = async (
       };
     }
   } catch (err: any) {
-    console.warn('Network error during Google Drive token verification:', err);
     return {
       valid: false,
       tokenValid: false,
@@ -1573,7 +1453,6 @@ export const verifyGoogleDriveDetails = async (
     };
   }
 
-  // Token is verified!
   const checkedFolders: DriveValidationResult['checkedFolders'] = {};
 
   const checkFolder = async (folderId: string): Promise<{ ok: boolean; status?: number; name?: string }> => {
@@ -1598,7 +1477,6 @@ export const verifyGoogleDriveDetails = async (
   const showsFolder = (settings.driveFolderShows || '').trim();
   const prefsFolder = (settings.driveFolderPreferences || '').trim();
 
-  // If Main Top-Level Station Drive folder is set:
   if (ampFolder) {
     const ampRes = await checkFolder(ampFolder);
     checkedFolders.amp = { id: ampFolder, ...ampRes };
@@ -1613,7 +1491,6 @@ export const verifyGoogleDriveDetails = async (
       };
     }
 
-    // Check any non-empty legacy overrides if explicitly provided
     const overrideErrors: string[] = [];
     if (prefsFolder) {
       const res = await checkFolder(prefsFolder);
@@ -1659,7 +1536,6 @@ export const verifyGoogleDriveDetails = async (
     };
   }
 
-  // If Main Top-Level Station Drive folder is NOT set:
   const foldersToCheck = [
     { key: 'preferences', id: prefsFolder, label: 'Preferences' },
     { key: 'announcements', id: announcementsFolder, label: 'Announcements' },
@@ -1669,7 +1545,6 @@ export const verifyGoogleDriveDetails = async (
   ].filter(f => !!f.id);
 
   if (foldersToCheck.length === 0) {
-    // Token is valid, but no folders configured yet
     return {
       valid: true,
       tokenValid: true,
@@ -1718,23 +1593,21 @@ export const checkEvergreenFolderOnDrive = async (
   oldNameShort: string | undefined,
   newNameShort: string | undefined
 ): Promise<{ success: boolean; oldExists: boolean; newExists: boolean }> => {
-  try {
-    const evergreensId = await getOrCreateDriveEvergreensFolder();
-    const playlistsId = await getOrCreateDrivePlaylistsFolder();
-
-    const oldEvergreenExists = oldNameShort ? (await findFileInFolderCaseInsensitive(oldNameShort, evergreensId) !== null) : false;
-    const oldPlaylistExists = oldNameShort ? (await findFileInFolderCaseInsensitive(oldNameShort, playlistsId) !== null) : false;
-    const oldExists = oldEvergreenExists || oldPlaylistExists;
-
-    const newEvergreenExists = newNameShort ? (await findFileInFolderCaseInsensitive(newNameShort, evergreensId) !== null) : false;
-    const newPlaylistExists = newNameShort ? (await findFileInFolderCaseInsensitive(newNameShort, playlistsId) !== null) : false;
-    const newExists = newEvergreenExists || newPlaylistExists;
-
-    return { success: true, oldExists, newExists };
-  } catch (err: any) {
-    console.error('Error checking evergreen/playlist folder on Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/shows/evergreen/check-folder', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ oldNameShort, newNameShort })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Error checking evergreen/playlist folder on Drive');
   }
+  return {
+    success: true,
+    oldExists: Boolean(data.oldExists),
+    newExists: Boolean(data.newExists)
+  };
 };
 
 export const applyEvergreenChangeOnDrive = async (
@@ -1743,66 +1616,24 @@ export const applyEvergreenChangeOnDrive = async (
   oldNameShort?: string,
   renameFolder?: boolean
 ): Promise<{ success: boolean; folderCreated: boolean; folderRenamed: boolean }> => {
-  try {
-    const evergreensId = await getOrCreateDriveEvergreensFolder();
-    const playlistsId = await getOrCreateDrivePlaylistsFolder();
-
-    let folderCreated = false;
-    let folderRenamed = false;
-
-    const token = getAccessToken();
-    if (!token) throw new Error('Not authenticated with Google');
-
-    // Sync Evergreens
-    const newEvergreenFolderId = await findFileInFolderCaseInsensitive(nameShort, evergreensId);
-    if (action === 'update' && oldNameShort && oldNameShort !== nameShort) {
-      const oldEvergreenFolderId = await findFileInFolderCaseInsensitive(oldNameShort, evergreensId);
-      if (oldEvergreenFolderId && renameFolder) {
-        if (!newEvergreenFolderId || newEvergreenFolderId === oldEvergreenFolderId) {
-          await driveFetch(`drive/v3/files/${oldEvergreenFolderId}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ name: nameShort })
-          });
-          folderRenamed = true;
-        }
-      } else if (!newEvergreenFolderId) {
-        await createFileInFolder(nameShort, evergreensId, 'application/vnd.google-apps.folder');
-        folderCreated = true;
-      }
-    } else if (!newEvergreenFolderId) {
-      await createFileInFolder(nameShort, evergreensId, 'application/vnd.google-apps.folder');
-      folderCreated = true;
-    }
-
-    // Sync Playlists
-    const newPlaylistFolderId = await findFileInFolderCaseInsensitive(nameShort, playlistsId);
-    if (action === 'update' && oldNameShort && oldNameShort !== nameShort) {
-      const oldPlaylistFolderId = await findFileInFolderCaseInsensitive(oldNameShort, playlistsId);
-      if (oldPlaylistFolderId && renameFolder) {
-        if (!newPlaylistFolderId || newPlaylistFolderId === oldPlaylistFolderId) {
-          await driveFetch(`drive/v3/files/${oldPlaylistFolderId}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ name: nameShort })
-          });
-          folderRenamed = true;
-        }
-      } else if (!newPlaylistFolderId) {
-        await createFileInFolder(nameShort, playlistsId, 'application/vnd.google-apps.folder');
-        folderCreated = true;
-      }
-    } else if (!newPlaylistFolderId) {
-      await createFileInFolder(nameShort, playlistsId, 'application/vnd.google-apps.folder');
-      folderCreated = true;
-    }
-
-    return { success: true, folderCreated, folderRenamed };
-  } catch (err: any) {
-    console.error('Error applying evergreen/playlist change on Drive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/shows/evergreen/apply-change', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ action, nameShort, oldNameShort, renameFolder })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Error applying evergreen/playlist change on Drive');
   }
+  return {
+    success: true,
+    folderCreated: Boolean(data.folderCreated),
+    folderRenamed: Boolean(data.folderRenamed)
+  };
 };
 
-export const verifyEvergreensOnDrive = async (shows: Show[]): Promise<{
+export const verifyEvergreensOnDrive = async (_shows?: Show[]): Promise<{
   success: boolean;
   evergreensFolderCreated: boolean;
   playlistsFolderCreated: boolean;
@@ -1812,53 +1643,16 @@ export const verifyEvergreensOnDrive = async (shows: Show[]): Promise<{
   announcementsPath: string;
   createdFolders: string[];
 }> => {
-  try {
-    const isConnValid = await validateGoogleDriveAccess();
-    if (!isConnValid) {
-      throw new Error('Google Drive connection validation failed. Aborting evergreen/announcements folder verification to prevent duplicates.');
-    }
-
-    const evergreensId = await getOrCreateDriveEvergreensFolder();
-    const playlistsId = await getOrCreateDriveShowsFolder();
-    const announcementsId = await getOrCreateDriveAnnouncementsFolder();
-
-    const createdFolders: string[] = [];
-    for (const show of shows) {
-      if (show.nameShort) {
-        const showFolderId = await findFileInFolderCaseInsensitive(show.nameShort, evergreensId);
-        if (!showFolderId) {
-          await createFileInFolder(show.nameShort, evergreensId, 'application/vnd.google-apps.folder');
-          if (!createdFolders.includes(show.nameShort)) {
-            createdFolders.push(show.nameShort);
-          }
-        }
-
-        const showPlaylistFolderId = await findFileInFolderCaseInsensitive(show.nameShort, playlistsId);
-        if (!showPlaylistFolderId) {
-          await createFileInFolder(show.nameShort, playlistsId, 'application/vnd.google-apps.folder');
-          if (!createdFolders.includes(show.nameShort)) {
-            createdFolders.push(show.nameShort);
-          }
-        }
-      }
-    }
-
-    const isAmp = !!DRIVE_FOLDERS.amp;
-
-    return {
-      success: true,
-      evergreensFolderCreated: false,
-      playlistsFolderCreated: false,
-      announcementsFolderCreated: false,
-      evergreensPath: isAmp ? 'Google Drive: [Station]/media_evergreens' : 'Google Drive: /medialibrary/Evergreens',
-      playlistsPath: isAmp ? 'Google Drive: [Station]/media_shows' : 'Google Drive: /medialibrary/Playlists',
-      announcementsPath: isAmp ? 'Google Drive: [Station]/media_announcements' : 'Google Drive: /medialibrary/Announcements',
-      createdFolders
-    };
-  } catch (err: any) {
-    console.error('Error in verifyEvergreensOnDrive:', err);
-    throw err;
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/shows/verify-evergreens', {
+    method: 'POST',
+    headers
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Error verifying folders on Google Drive');
   }
+  return data;
 };
 
 export const loadPlaylistTracksFromDrive = async (
@@ -1868,179 +1662,100 @@ export const loadPlaylistTracksFromDrive = async (
   parentFolder: 'Playlists' | 'Evergreens' = 'Playlists',
   targetSubfolder?: string
 ): Promise<{ tracks: Array<{ id: string; fileName: string; title: string; durationSeconds: number; durationFormatted: string; streamUrl: string }>; playlistFile: string | null }> => {
-  const getDemoTracks = (nameKey: string) => {
-    return [
-      {
-        id: `demo-track-1`,
-        fileName: `${nameKey}_Track_01.mp3`,
-        title: `${nameKey} - Track 01`,
-        durationSeconds: 180,
-        durationFormatted: '3:00',
-        streamUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
-      },
-      {
-        id: `demo-track-2`,
-        fileName: `${nameKey}_Track_02.mp3`,
-        title: `${nameKey} - Track 02`,
-        durationSeconds: 210,
-        durationFormatted: '3:30',
-        streamUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'
-      },
-      {
-        id: `demo-track-3`,
-        fileName: `${nameKey}_Track_03.mp3`,
-        title: `${nameKey} - Track 03`,
-        durationSeconds: 240,
-        durationFormatted: '4:00',
-        streamUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'
-      }
-    ];
-  };
-
-  const primaryKey = showNameShort || showName || 'Show';
-
-  if (mode === 'Demo') {
-    const tracks = getDemoTracks(primaryKey);
-    tracks.forEach(t => {
-      availableFilesCache.set(t.fileName, { path: t.streamUrl, size: '0.1 MB', duration: t.durationFormatted });
-      driveFileNameCache.set(t.streamUrl, t.fileName);
-    });
-    return { tracks, playlistFile: null };
+  if (targetSubfolder === '__no_playlist__') {
+    return { tracks: [], playlistFile: null };
   }
 
   try {
-    const playlistsId = parentFolder === 'Evergreens' ? await getOrCreateDriveEvergreensFolder() : await getOrCreateDrivePlaylistsFolder();
-    let showFolderId: string | null = null;
-    if (showNameShort) {
-      showFolderId = await findFileInFolderCaseInsensitive(showNameShort, playlistsId);
-    }
-    if (!showFolderId && showName) {
-      showFolderId = await findFileInFolderCaseInsensitive(showName, playlistsId);
-    }
-
-    if (!showFolderId) {
+    const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, mode);
+    const res = await fetch('/api/shows/playlist/load-tracks', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        showNameShort,
+        showName,
+        folderType: parentFolder,
+        targetSubfolder
+      })
+    });
+    if (!res.ok) {
       return { tracks: [], playlistFile: null };
     }
-
-    if (targetSubfolder && targetSubfolder !== '.') {
-      const subFolderId = await findFileInFolderCaseInsensitive(targetSubfolder, showFolderId);
-      if (subFolderId) {
-        showFolderId = subFolderId;
-      }
-    }
-
-    const files = await listFilesInFolder(showFolderId);
-    const m3uFile = files.find(f => f.name.toLowerCase().endsWith('.m3u') || f.name.toLowerCase().endsWith('.m3u8'));
-
-    const tracks: Array<{ id: string; fileName: string; title: string; durationSeconds: number; durationFormatted: string; streamUrl: string }> = [];
-    let playlistFileName: string | null = null;
-    const audioExtensions = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'aiff', 'aif'];
-
-    if (m3uFile) {
-      playlistFileName = m3uFile.name;
-      try {
-        const m3uRes = await driveFetch(`drive/v3/files/${m3uFile.id}?alt=media`);
-        const m3uText = await m3uRes.text();
-        const lines = m3uText.split(/\r?\n/);
-
-        let pendingTitle: string | null = null;
-        let pendingDuration: number | null = null;
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-
-          if (trimmed.startsWith('#EXTINF:')) {
-            const rest = trimmed.substring(8);
-            const commaIdx = rest.indexOf(',');
-            if (commaIdx !== -1) {
-              const durSec = parseInt(rest.substring(0, commaIdx).trim(), 10);
-              if (!isNaN(durSec) && durSec > 0) pendingDuration = durSec;
-              pendingTitle = rest.substring(commaIdx + 1).trim();
-            }
-          } else if (!trimmed.startsWith('#')) {
-            const cleanPath = trimmed.replace(/\\/g, '/');
-            let targetName = cleanPath.split('/').pop() || cleanPath;
-            try {
-              targetName = decodeURIComponent(targetName);
-            } catch (e) {}
-
-            const normTarget = targetName.toLowerCase().trim();
-            const matchedAudio = files.find(f => {
-              const normF = f.name.toLowerCase().trim();
-              return normF === normTarget || normF === normTarget.replace(/%20/g, ' ');
-            });
-            if (matchedAudio) {
-              const streamUrl = `https://www.googleapis.com/drive/v3/files/${matchedAudio.id}?alt=media`;
-              const durationSec = pendingDuration || 180;
-              const m = Math.floor(durationSec / 60);
-              const s = Math.floor(durationSec % 60);
-              const durationFormatted = `${m}:${s.toString().padStart(2, '0')}`;
-              const title = pendingTitle || matchedAudio.name.replace(/\.[^/.]+$/, '');
-
-              tracks.push({
-                id: `drive-track-${tracks.length + 1}`,
-                fileName: matchedAudio.name,
-                title,
-                durationSeconds: durationSec,
-                durationFormatted,
-                streamUrl
-              });
-            }
-            pendingTitle = null;
-            pendingDuration = null;
-          }
-        }
-
-        // Loose files in directory not referenced in M3U
-        const m3uFileNames = new Set(tracks.map(t => t.fileName.toLowerCase()));
-        const looseFiles = files.filter(f => isAudioFile(f.name) && !m3uFileNames.has(f.name.toLowerCase()));
-        looseFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-
-        looseFiles.forEach(f => {
-          const streamUrl = `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`;
-          tracks.push({
-            id: `drive-track-${tracks.length + 1}`,
-            fileName: f.name,
-            title: f.name.replace(/\.[^/.]+$/, ''),
-            durationSeconds: 180,
-            durationFormatted: '3:00',
-            streamUrl
-          });
+    const data = await res.json().catch(() => ({}));
+    const tracks = Array.isArray(data?.tracks) ? data.tracks : [];
+    tracks.forEach((t: { fileName?: string; streamUrl?: string; durationFormatted?: string }) => {
+      if (t && t.fileName && t.streamUrl) {
+        upsertMediaCatalogFile({
+          name: t.fileName,
+          path: t.streamUrl,
+          size: '0.1 MB',
+          duration: t.durationFormatted || '3:00',
         });
-      } catch (e) {
-        console.warn('Error reading M3U file from Google Drive:', e);
       }
-    }
-
-    if (tracks.length === 0) {
-      const audioFiles = files.filter(f => isAudioFile(f.name));
-
-      audioFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-
-      audioFiles.forEach((f, idx) => {
-        const streamUrl = `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`;
-        tracks.push({
-          id: `drive-track-${idx + 1}`,
-          fileName: f.name,
-          title: f.name.replace(/\.[^/.]+$/, ''),
-          durationSeconds: 180,
-          durationFormatted: '3:00',
-          streamUrl
-        });
-      });
-    }
-
-    tracks.forEach(t => {
-      availableFilesCache.set(t.fileName, { path: t.streamUrl, size: '0.1 MB', duration: t.durationFormatted });
-      driveFileNameCache.set(t.streamUrl, t.fileName);
     });
-
-    return { tracks, playlistFile: playlistFileName };
-
+    return { tracks, playlistFile: data?.playlistFile || null };
   } catch (err) {
     console.error('Error loading playlist tracks from Google Drive:', err);
     return { tracks: [], playlistFile: null };
+  }
+};
+
+export interface DriveDiscoveredFolderItem {
+  id: string;
+  name: string;
+  relPath: string;
+  fileCount: number;
+  isRoot: boolean;
+  hasM3u: boolean;
+  m3uName?: string;
+  itemType?: 'folder' | 'playlist';
+  playlistFileName?: string;
+  missingCount?: number;
+  totalTracks?: number;
+  depth?: number;
+}
+
+export const discoverShowFoldersOnDrive = async (
+  showNameShort?: string,
+  showName?: string,
+  mode: 'Local' | 'Drive' | 'Demo' = 'Drive',
+  parentFolder: 'Playlists' | 'Evergreens' = 'Playlists'
+): Promise<{
+  defaultFolderName: string;
+  folders: DriveDiscoveredFolderItem[];
+  totalFiles: number;
+}> => {
+  const baseFlavorFolder = parentFolder === 'Evergreens' ? 'media_evergreens' : 'media_shows';
+  const fallbackFolderName = showNameShort || showName || 'Show';
+
+  try {
+    const headers = await getStorageApiHeaders({}, mode);
+    const query = new URLSearchParams({
+      folderType: parentFolder,
+      showNameShort: showNameShort || '',
+      showName: showName || ''
+    });
+    const res = await fetch(`/api/shows/discover-folders?${query.toString()}`, { headers });
+    if (!res.ok) {
+      return {
+        defaultFolderName: `${baseFlavorFolder}/${fallbackFolderName}`,
+        folders: [],
+        totalFiles: 0
+      };
+    }
+    const data = await res.json().catch(() => ({}));
+    return {
+      defaultFolderName: data.defaultFolderName || `${baseFlavorFolder}/${fallbackFolderName}`,
+      folders: Array.isArray(data.folders) ? data.folders : [],
+      totalFiles: typeof data.totalFiles === 'number' ? data.totalFiles : 0
+    };
+  } catch (err) {
+    console.warn('Error discovering show folders on Google Drive:', err);
+    return {
+      defaultFolderName: `${baseFlavorFolder}/${fallbackFolderName}`,
+      folders: [],
+      totalFiles: 0
+    };
   }
 };
 
@@ -2056,58 +1771,32 @@ export const checkPlaylistShowFilesOnDrive = async (
   nextShowFileCount: number;
   nextShowFolderCount: number;
 }> => {
-  if (mode === 'Demo') {
-    return {
-      currentShowFileCount: (currentShowNameShort || currentShowName) ? 3 : 0,
-      currentShowFolderCount: (currentShowNameShort || currentShowName) ? 1 : 0,
-      nextShowFileCount: (nextShowNameShort || nextShowName) ? 3 : 0,
-      nextShowFolderCount: (nextShowNameShort || nextShowName) ? 1 : 0
-    };
-  }
-
   try {
-    const playlistsId = await getOrCreateDrivePlaylistsFolder();
-
-    const getShowCount = async (shortName?: string, name?: string): Promise<{ fileCount: number; folderCount: number }> => {
-      if (!shortName && !name) return { fileCount: 0, folderCount: 0 };
-      let showFolderId: string | null = null;
-      if (shortName) {
-        showFolderId = await findFileInFolderCaseInsensitive(shortName, playlistsId);
-      }
-      if (!showFolderId && name) {
-        showFolderId = await findFileInFolderCaseInsensitive(name, playlistsId);
-      }
-      if (!showFolderId) return { fileCount: 0, folderCount: 0 };
-
-      const files = await listFilesInFolder(showFolderId);
-      const m3uFile = files.find(f => f.name.toLowerCase().endsWith('.m3u') || f.name.toLowerCase().endsWith('.m3u8'));
-
-      if (m3uFile) {
-        try {
-          const m3uRes = await driveFetch(`drive/v3/files/${m3uFile.id}?alt=media`);
-          const m3uText = await m3uRes.text();
-          const lines = m3uText.split(/\r?\n/);
-          let count = 0;
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed && !trimmed.startsWith('#')) count++;
-          }
-          if (count > 0) return { fileCount: count, folderCount: 1 };
-        } catch (e) {}
-      }
-
-      const audioFiles = files.filter(f => isAudioFile(f.name));
-      return { fileCount: audioFiles.length, folderCount: audioFiles.length > 0 ? 1 : 0 };
-    };
-
-    const currentStats = await getShowCount(currentShowNameShort, currentShowName);
-    const nextStats = await getShowCount(nextShowNameShort, nextShowName);
-
+    const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, mode);
+    const res = await fetch('/api/shows/playlist/check-show-files', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        currentShowNameShort,
+        currentShowName,
+        nextShowNameShort,
+        nextShowName
+      })
+    });
+    if (!res.ok) {
+      return {
+        currentShowFileCount: 0,
+        currentShowFolderCount: 0,
+        nextShowFileCount: 0,
+        nextShowFolderCount: 0
+      };
+    }
+    const data = await res.json().catch(() => ({}));
     return {
-      currentShowFileCount: currentStats.fileCount,
-      currentShowFolderCount: currentStats.folderCount,
-      nextShowFileCount: nextStats.fileCount,
-      nextShowFolderCount: nextStats.folderCount
+      currentShowFileCount: data.currentShowFileCount || 0,
+      currentShowFolderCount: data.currentShowFolderCount || 0,
+      nextShowFileCount: data.nextShowFileCount || 0,
+      nextShowFolderCount: data.nextShowFolderCount || 0
     };
   } catch (err) {
     console.error('Error checking playlist show files on Google Drive:', err);
@@ -2131,9 +1820,6 @@ export const formatShowPlaylistLogFileName = (showNameShort: string, showStartTi
   return `Log_${safeShowName}_${YYYY}_${MM}_${DD}_at_${HH}_${min}.json`;
 };
 
-const playlistLogFileIdCache = new Map<string, string>();
-const playlistLogSaveQueue = new Map<string, Promise<string>>();
-
 export const saveShowPlaylistLogToDrive = async (
   showNameShort: string,
   showName: string,
@@ -2141,47 +1827,22 @@ export const saveShowPlaylistLogToDrive = async (
   logData: any,
   parentFolder: 'Playlists' | 'Evergreens' = 'Playlists'
 ): Promise<string> => {
-  const fileName = formatShowPlaylistLogFileName(showNameShort || showName, showStartTime);
-  const scopedKey = `${parentFolder}:${showNameShort || showName}:${fileName}`;
-
-  const previousSave = playlistLogSaveQueue.get(scopedKey) || Promise.resolve('');
-
-  const currentSave = (async () => {
-    try {
-      await previousSave;
-    } catch (e) {}
-
-    const playlistsId = parentFolder === 'Evergreens' ? await getOrCreateDriveEvergreensFolder() : await getOrCreateDrivePlaylistsFolder();
-    let showFolderId = await findFileInFolderCaseInsensitive(showNameShort, playlistsId);
-    if (!showFolderId && showName) {
-      showFolderId = await findFileInFolderCaseInsensitive(showName, playlistsId);
-    }
-    if (!showFolderId) {
-      showFolderId = await createFileInFolder(showNameShort || showName, playlistsId, 'application/vnd.google-apps.folder');
-    }
-
-    let fileId = playlistLogFileIdCache.get(scopedKey) || null;
-
-    if (!fileId) {
-      fileId = await findFileInFolderCaseInsensitive(fileName, showFolderId);
-    }
-
-    const jsonStr = JSON.stringify(logData, null, 2);
-
-    if (!fileId) {
-      fileId = await createFileInFolder(fileName, showFolderId, 'application/json');
-    }
-
-    if (fileId) {
-      playlistLogFileIdCache.set(scopedKey, fileId);
-      await uploadFileContent(fileId, jsonStr, 'application/json');
-    }
-
-    return fileName;
-  })();
-
-  playlistLogSaveQueue.set(scopedKey, currentSave);
-  return await currentSave;
+  const logFileName = formatShowPlaylistLogFileName(showNameShort || showName, showStartTime);
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/shows/playlist/save-log-json', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      showNameShort,
+      showName,
+      showStartTime,
+      logData,
+      folderType: parentFolder,
+      logFileName
+    })
+  });
+  const data = await res.json().catch(() => ({}));
+  return data.logFileName || logFileName;
 };
 
 export const loadShowPlaylistLogFromDrive = async (
@@ -2191,23 +1852,22 @@ export const loadShowPlaylistLogFromDrive = async (
   parentFolder: 'Playlists' | 'Evergreens' = 'Playlists'
 ): Promise<any | null> => {
   try {
-    const playlistsId = parentFolder === 'Evergreens' ? await getOrCreateDriveEvergreensFolder() : await getOrCreateDrivePlaylistsFolder();
-    let showFolderId = await findFileInFolderCaseInsensitive(showNameShort, playlistsId);
-    if (!showFolderId && showName) {
-      showFolderId = await findFileInFolderCaseInsensitive(showName, playlistsId);
-    }
-    if (!showFolderId) return null;
-
-    const fileName = formatShowPlaylistLogFileName(showNameShort || showName, showStartTime);
-    const scopedKey = `${parentFolder}:${showNameShort || showName}:${fileName}`;
-    const fileId = playlistLogFileIdCache.get(scopedKey) || await findFileInFolderCaseInsensitive(fileName, showFolderId);
-    if (!fileId) return null;
-
-    playlistLogFileIdCache.set(scopedKey, fileId);
-
-    const res = await driveFetch(`drive/v3/files/${fileId}?alt=media`);
+    const logFileName = formatShowPlaylistLogFileName(showNameShort || showName, showStartTime);
+    const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+    const res = await fetch('/api/shows/playlist/load-log-json', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        showNameShort,
+        showName,
+        showStartTime,
+        folderType: parentFolder,
+        logFileName
+      })
+    });
     if (!res.ok) return null;
-    return await res.json();
+    const data = await res.json().catch(() => null);
+    return data?.logData || null;
   } catch (err) {
     console.error('Error loading show playlist log from Drive:', err);
     return null;
@@ -2217,74 +1877,366 @@ export const loadShowPlaylistLogFromDrive = async (
 export const checkMissingDriveItems = async (
   settingsOverride?: Partial<LocationSettings>
 ): Promise<{ hasMissing: boolean; missingItems: string[]; targetFolderDesc: string }> => {
-  const currentToken = getAccessToken();
-  if (!currentToken) {
-    return { hasMissing: false, missingItems: [], targetFolderDesc: '' };
-  }
-
-  const s = { ...getSavedSettings(), ...(settingsOverride || {}) };
-  const rootFolderId = s.driveFolderAmp;
-  if (!rootFolderId) {
-    return { hasMissing: false, missingItems: [], targetFolderDesc: '' };
-  }
-
-  const missingItems: string[] = [];
-
   try {
-    const rootRes = await driveFetch(`drive/v3/files/${rootFolderId}?fields=id,name`);
-    if (!rootRes.ok) {
-      return { hasMissing: true, missingItems: ['AMP folder'], targetFolderDesc: rootFolderId };
+    const s = { ...getSavedSettings(), ...(settingsOverride || {}) };
+    const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+    if (s.driveFolderAmp) headers['x-amp-drive-folder-amp'] = s.driveFolderAmp;
+    const res = await fetch('/api/check-missing-items', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(s)
+    });
+    if (!res.ok) {
+      return { hasMissing: false, missingItems: [], targetFolderDesc: s.driveFolderAmp || '' };
     }
-    const rootData = await rootRes.json();
-    const targetFolderDesc = rootData.name || rootFolderId;
-
-    const settingsFolder = s.driveFolderPreferences || await findFileInFolderCaseInsensitive('settings', rootFolderId) || await findFileInFolderCaseInsensitive('preferences', rootFolderId);
-    if (!settingsFolder) {
-      missingItems.push('settings folder');
-    } else {
-      const announcementsFile = await findFileInFolderCaseInsensitive('announcements.json', settingsFolder);
-      if (!announcementsFile) {
-        missingItems.push('announcements.json');
-      }
-      const showsFile = await findFileInFolderCaseInsensitive('shows.json', settingsFolder);
-      if (!showsFile) {
-        missingItems.push('shows.json');
-      }
-    }
-
-    const logsFolder = s.driveFolderLogs || await findFileInFolderCaseInsensitive('logs', rootFolderId);
-    if (!logsFolder) {
-      missingItems.push('logs folder');
-    } else {
-      const logsFile = await findFileInFolderCaseInsensitive('logs.json', logsFolder);
-      if (!logsFile) {
-        missingItems.push('logs.json');
-      }
-    }
-
-    const announcementsFolder = s.driveFolderAnnouncements || s.driveFolderMP3s || await findFileInFolderCaseInsensitive('media_announcements', rootFolderId);
-    if (!announcementsFolder) {
-      missingItems.push('media_announcements folder');
-    }
-
-    const evergreensFolder = s.driveFolderEvergreens || await findFileInFolderCaseInsensitive('media_evergreens', rootFolderId);
-    if (!evergreensFolder) {
-      missingItems.push('media_evergreens folder');
-    }
-
-    const showsFolder = s.driveFolderShows || await findFileInFolderCaseInsensitive('media_shows', rootFolderId);
-    if (!showsFolder) {
-      missingItems.push('media_shows folder');
-    }
-
+    const data = await res.json().catch(() => ({}));
     return {
-      hasMissing: missingItems.length > 0,
-      missingItems,
-      targetFolderDesc
+      hasMissing: Boolean(data.hasMissing),
+      missingItems: Array.isArray(data.missingItems) ? data.missingItems : [],
+      targetFolderDesc: data.targetFolderDesc || s.driveFolderAmp || ''
     };
   } catch (err) {
     console.warn('Error checking missing Drive items:', err);
-    return { hasMissing: false, missingItems: [], targetFolderDesc: rootFolderId };
+    return { hasMissing: false, missingItems: [], targetFolderDesc: '' };
   }
 };
 
+/**
+ * Synchronizes a saved/copied/uploaded/renamed announcement file response from `/api/*`
+ * into the client-side `availableFilesCache` and `driveFileNameCache`.
+ */
+export const registerSavedAnnouncementFileInCache = (
+  data: {
+    name?: string;
+    id?: string;
+    path?: string;
+    size?: string;
+    mtimeMs?: number;
+    modifiedTime?: string;
+  },
+  fallbackDuration: string = ''
+) => {
+  if (!data || !data.name) return;
+  const existing = availableFilesCache.get(data.name);
+  const nowMs = typeof data.mtimeMs === 'number' ? data.mtimeMs : (existing?.mtimeMs || Date.now());
+  const nowIso = data.modifiedTime || existing?.modifiedTime || new Date(nowMs).toISOString();
+  const resolvedPath = data.path || data.id || `/api/media/stream?path=${encodeURIComponent(data.name)}`;
+  const resolvedSize = data.size || existing?.size || '0.05 MB';
+  const resolvedDuration = fallbackDuration || existing?.duration || '';
+
+  upsertMediaCatalogFile({
+    name: data.name,
+    id: data.id,
+    path: resolvedPath,
+    size: resolvedSize,
+    duration: resolvedDuration,
+    mtimeMs: nowMs,
+    modifiedTime: nowIso,
+  });
+};
+
+/**
+ * Reads the UTF-8 text content of a script file (.txt / .md) via the unified server storage provider.
+ */
+export const readDriveAnnouncementScript = async (fileName: string): Promise<string | null> => {
+  try {
+    const cleanName = String(fileName || '').trim().split(/[/\\]/).pop() || '';
+    if (!cleanName) return null;
+    const headers = await getStorageApiHeaders({}, 'Drive');
+    const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(cleanName)}`, { headers });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return data && typeof data.content === 'string' ? data.content : null;
+  } catch (err) {
+    console.warn('Error reading announcement script via server Drive provider:', err);
+    return null;
+  }
+};
+
+/**
+ * Saves or updates a .txt live-read script via the unified server storage provider.
+ */
+export const saveDriveAnnouncementScript = async (
+  fileName: string,
+  content: string,
+  allowOverwrite: boolean = false
+): Promise<{ name: string; id: string; size: string }> => {
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/live-read/save', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ fileName, content, allowOverwrite })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.exists) {
+    const conflictErr: any = new Error(
+      data.error || `A file named "${data.name || fileName}" already exists in Media Announcements.`
+    );
+    conflictErr.exists = true;
+    conflictErr.name = data.name || fileName;
+    throw conflictErr;
+  }
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Failed to save script to Google Drive Media Announcements.');
+  }
+  registerSavedAnnouncementFileInCache(data);
+  return {
+    name: data.name,
+    id: data.id || data.path || data.name,
+    size: data.size || '0.01 MB'
+  };
+};
+
+/**
+ * Duplicates a live-read or audio file inside media_announcements via the unified server storage provider.
+ */
+export const copyDriveAnnouncementFile = async (
+  sourceFileName: string,
+  targetFileName: string,
+  allowOverwrite: boolean = false
+): Promise<{ name: string; id: string; size: string }> => {
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
+  const res = await fetch('/api/live-read/copy-file', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ sourceFileName, targetFileName, allowOverwrite })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.exists) {
+    const conflictErr: any = new Error(
+      data.error || `A file named "${data.name || targetFileName}" already exists in Media Announcements.`
+    );
+    conflictErr.exists = true;
+    conflictErr.name = data.name || targetFileName;
+    throw conflictErr;
+  }
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Failed to copy file in Google Drive Media Announcements.');
+  }
+  const prevDuration = availableFilesCache.get(sourceFileName)?.duration || '';
+  registerSavedAnnouncementFileInCache(data, prevDuration);
+  return {
+    name: data.name,
+    id: data.id || data.path || data.name,
+    size: data.size || '0.05 MB'
+  };
+};
+
+const readBrowserFileAsBase64 = (file: File | Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to encode file as Base64'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed to read selected file'));
+    reader.readAsDataURL(file);
+  });
+};
+
+/**
+ * Unified helper to upload an announcement file (audio, .txt, .pdf, image) via `/api/announcements/upload-file`.
+ * `server.ts` routes to Local `fs` in Desktop mode or Google Drive in AI Studio Drive mode.
+ */
+export const uploadAnnouncementMediaFile = async (
+  file: File,
+  options?: {
+    targetFileNameOverride?: string;
+    allowOverwrite?: boolean;
+    isDriveActive?: boolean;
+  }
+): Promise<{
+  name: string;
+  path: string;
+  size: string;
+  mtimeMs: number;
+  modifiedTime: string;
+}> => {
+  const targetName = (options?.targetFileNameOverride || file.name || '').trim();
+  const allowOverwrite = Boolean(options?.allowOverwrite);
+  const explicitMode = options?.isDriveActive !== undefined
+    ? (options.isDriveActive ? 'Drive' : 'Local')
+    : undefined;
+
+  const base64 = await readBrowserFileAsBase64(file);
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, explicitMode);
+  const res = await fetch('/api/announcements/upload-file', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      fileName: targetName,
+      contentBase64: base64,
+      mimeType: file.type || 'application/octet-stream',
+      allowOverwrite
+    })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.exists) {
+    const conflictErr: any = new Error(
+      data.error || `A file named "${data.name || targetName}" already exists in Media Announcements.`
+    );
+    conflictErr.exists = true;
+    conflictErr.name = data.name || targetName;
+    throw conflictErr;
+  }
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Failed to upload file to Media Announcements');
+  }
+
+  const nowMs = typeof data.mtimeMs === 'number' ? data.mtimeMs : Date.now();
+  const nowIso = data.modifiedTime || new Date(nowMs).toISOString();
+  const savedName = data.name || targetName;
+  const savedPath = data.path || `/api/media/stream?path=${encodeURIComponent(savedName)}`;
+  const savedSize = data.size || `${Math.max(0.01, file.size / (1024 * 1024)).toFixed(2)} MB`;
+
+  registerSavedAnnouncementFileInCache({
+    name: savedName,
+    id: data.id,
+    path: savedPath,
+    size: savedSize,
+    mtimeMs: nowMs,
+    modifiedTime: nowIso
+  });
+
+  return {
+    name: savedName,
+    path: savedPath,
+    size: savedSize,
+    mtimeMs: nowMs,
+    modifiedTime: nowIso
+  };
+};
+
+/**
+ * Renames or copies an announcement media file (e.g., backup audio in Create/Edit Live Read)
+ * via `/api/announcements/rename-or-copy-file`. `server.ts` routes to Local `fs` in Desktop mode
+ * or Google Drive in AI Studio Drive mode.
+ */
+export const renameOrCopyAnnouncementMediaFile = async (params: {
+  sourceFileName: string;
+  targetFileName: string;
+  forceCopy?: boolean;
+  allowOverwrite?: boolean;
+  isDriveActive?: boolean;
+  currentLiveReadName?: string;
+  editingAnnouncementId?: string;
+  fileBlob?: File | Blob;
+}): Promise<{
+  name: string;
+  path: string;
+  size: string;
+  mtimeMs: number;
+  modifiedTime: string;
+  action: 'noop' | 'copied' | 'renamed';
+  usedElsewhere: boolean;
+}> => {
+  const cleanSource = String(params.sourceFileName || '').trim().split(/[/\\]/).pop() || '';
+  const cleanTarget = String(params.targetFileName || '').trim().split(/[/\\]/).pop() || '';
+  const allowOverwrite = Boolean(params.allowOverwrite);
+  const forceCopy = Boolean(params.forceCopy);
+  const explicitMode = params.isDriveActive !== undefined
+    ? (params.isDriveActive ? 'Drive' : 'Local')
+    : undefined;
+
+  if (!cleanSource || !cleanTarget) {
+    throw new Error('Both sourceFileName and targetFileName are required.');
+  }
+
+  if (cleanSource.toLowerCase() === cleanTarget.toLowerCase()) {
+    const existing = availableFilesCache.get(cleanSource);
+    const nowMs = existing?.mtimeMs || Date.now();
+    const nowIso = existing?.modifiedTime || new Date(nowMs).toISOString();
+    return {
+      name: cleanSource,
+      path: existing?.path || `/api/media/stream?path=${encodeURIComponent(cleanSource)}`,
+      size: String(existing?.size || '0.10 MB'),
+      mtimeMs: nowMs,
+      modifiedTime: nowIso,
+      action: 'noop',
+      usedElsewhere: false
+    };
+  }
+
+  const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, explicitMode);
+  let res = await fetch('/api/announcements/rename-or-copy-file', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      sourceFileName: cleanSource,
+      targetFileName: cleanTarget,
+      forceCopy,
+      allowOverwrite,
+      currentLiveReadName: params.currentLiveReadName,
+      editingAnnouncementId: params.editingAnnouncementId
+    })
+  });
+
+  if (res.status === 404 && params.fileBlob) {
+    const base64 = await readBrowserFileAsBase64(params.fileBlob);
+    res = await fetch('/api/announcements/rename-or-copy-file', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        sourceFileName: cleanSource,
+        targetFileName: cleanTarget,
+        forceCopy,
+        allowOverwrite,
+        currentLiveReadName: params.currentLiveReadName,
+        editingAnnouncementId: params.editingAnnouncementId,
+        contentBase64: base64,
+        mimeType: params.fileBlob.type || 'audio/mpeg'
+      })
+    });
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.exists) {
+    const conflictErr: any = new Error(
+      data.error || `A file named "${data.name || cleanTarget}" already exists in Media Announcements.`
+    );
+    conflictErr.exists = true;
+    conflictErr.name = data.name || cleanTarget;
+    throw conflictErr;
+  }
+  if (!res.ok || data.error) {
+    throw new Error(data.error || 'Failed to rename or copy backup audio file');
+  }
+
+  const savedName = data.name || cleanTarget;
+  const nowMs = typeof data.mtimeMs === 'number' ? data.mtimeMs : Date.now();
+  const nowIso = data.modifiedTime || new Date(nowMs).toISOString();
+  const savedPath = data.path || `/api/media/stream?path=${encodeURIComponent(savedName)}`;
+  const savedSize = data.size || availableFilesCache.get(cleanSource)?.size || '0.10 MB';
+  const prevDuration = availableFilesCache.get(cleanSource)?.duration || '';
+  const action: 'noop' | 'copied' | 'renamed' =
+    data.action === 'copied' || data.action === 'noop' ? data.action : 'renamed';
+
+  registerSavedAnnouncementFileInCache(
+    {
+      name: savedName,
+      id: data.id,
+      path: savedPath,
+      size: savedSize,
+      mtimeMs: nowMs,
+      modifiedTime: nowIso
+    },
+    prevDuration
+  );
+
+  if (action === 'renamed' && cleanSource.toLowerCase() !== savedName.toLowerCase()) {
+    availableFilesCache.delete(cleanSource);
+  }
+
+  return {
+    name: savedName,
+    path: savedPath,
+    size: savedSize,
+    mtimeMs: nowMs,
+    modifiedTime: nowIso,
+    action,
+    usedElsewhere: Boolean(data.usedElsewhere)
+  };
+};

@@ -1,4 +1,5 @@
 node_modules/
+dist/
 release/
 coverage/
 .DS_Store
@@ -7,3 +8,14 @@ coverage/
 !.env.example
 amp_settings.json
 bun.lock
+.agents_global.md
+
+# Temporary Rolling GitHub Sync Batch Ignores
+dev/archives/archive_v0.18.1/
+dev/archives/archive_v0.19.0/
+dev/archives/archive_v0.19.1/
+dev/archives/archive_v0.19.2/
+dev/archives/archive_v0.19.3/
+dev/archives/archive_v0.19.4/
+dev/archives/archive_v0.19.5/
+dev/archives/archive_v0.20.0/

@@ -1,5 +1,5 @@
 import { Announcement, AnnouncementType, Show } from '../types';
-import { formatTime12, formatHour12 } from './utils';
+import { formatTime12, formatHour12, formatToDatetimeLocal } from './utils';
 
 export interface AnnouncementConflict {
   announcement1: Announcement;
@@ -14,6 +14,59 @@ export interface ShowConflict {
 }
 
 const daysOrderList = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
+
+function getAnnouncementActiveWindowMs(s: Announcement, nowMs: number): { startMs: number; endMs: number } | null {
+  if (s.enabled === false || s.isDeleted) return null;
+
+  if (s.type === AnnouncementType.ONE_TIME) {
+    if (!s.date) return null;
+    const h = (s.time || '00').split(':')[0].padStart(2, '0');
+    const m = (s.minute || 0).toString().padStart(2, '0');
+    const slotMs = new Date(`${s.date}T${h}:${m}:00`).getTime();
+    if (isNaN(slotMs) || slotMs < nowMs) return null;
+    return { startMs: slotMs, endMs: slotMs };
+  }
+
+  let startMs = -Infinity;
+  let endMs = Infinity;
+
+  if (s.startDate) {
+    const parsedStart = new Date(formatToDatetimeLocal(s.startDate)).getTime();
+    if (!isNaN(parsedStart)) startMs = parsedStart;
+  }
+  if (s.endDate) {
+    const parsedEnd = new Date(formatToDatetimeLocal(s.endDate)).getTime();
+    if (!isNaN(parsedEnd)) endMs = parsedEnd;
+  }
+
+  if (Array.isArray(s.timeGatedMp3s) && s.timeGatedMp3s.length > 0) {
+    let minGatedStart = Infinity;
+    let maxGatedEnd = -Infinity;
+    let hasOpenEnd = false;
+
+    for (const m of s.timeGatedMp3s) {
+      const mStart = m.startDate ? new Date(formatToDatetimeLocal(m.startDate)).getTime() : -Infinity;
+      const mEnd = m.endDate ? new Date(formatToDatetimeLocal(m.endDate)).getTime() : Infinity;
+      if (!isNaN(mStart) && mStart < minGatedStart) minGatedStart = mStart;
+      if (mEnd === Infinity) {
+        hasOpenEnd = true;
+      } else if (!isNaN(mEnd) && mEnd > maxGatedEnd) {
+        maxGatedEnd = mEnd;
+      }
+    }
+
+    if (minGatedStart !== Infinity && minGatedStart > startMs) {
+      startMs = minGatedStart;
+    }
+    const effectiveGatedEnd = hasOpenEnd ? Infinity : maxGatedEnd;
+    if (effectiveGatedEnd !== -Infinity && effectiveGatedEnd < endMs) {
+      endMs = effectiveGatedEnd;
+    }
+  }
+
+  if (endMs < nowMs || startMs > endMs) return null;
+  return { startMs, endMs };
+}
 
 export function formatGridRulesSummary(gridRules: string[]): string {
   if (!gridRules || gridRules.length === 0) return '';
@@ -35,13 +88,21 @@ export function formatGridRulesSummary(gridRules: string[]): string {
 }
 
 export function getAnnouncementConflicts(announcementsList: Announcement[]): AnnouncementConflict[] {
-  const active = announcementsList.filter(s => s.enabled !== false);
+  const nowMs = Date.now();
+  const activeWithWindows = announcementsList
+    .map(s => ({ item: s, window: getAnnouncementActiveWindowMs(s, nowMs) }))
+    .filter((entry): entry is { item: Announcement; window: { startMs: number; endMs: number } } => entry.window !== null);
+
   const conflicts: AnnouncementConflict[] = [];
 
-  for (let i = 0; i < active.length; i++) {
-    for (let j = i + 1; j < active.length; j++) {
-      const a = active[i];
-      const b = active[j];
+  for (let i = 0; i < activeWithWindows.length; i++) {
+    for (let j = i + 1; j < activeWithWindows.length; j++) {
+      const a = activeWithWindows[i].item;
+      const b = activeWithWindows[j].item;
+      const winA = activeWithWindows[i].window;
+      const winB = activeWithWindows[j].window;
+
+      if (winA.startMs > winB.endMs || winB.startMs > winA.endMs) continue;
 
       const minA = a.minute || 0;
       const minB = b.minute || 0;
@@ -134,7 +195,7 @@ export function getAnnouncementConflicts(announcementsList: Announcement[]): Ann
 }
 
 export function getShowConflicts(showsList: Show[]): ShowConflict[] {
-  const active = showsList.filter(s => s.active !== false);
+  const active = showsList.filter(s => s.active !== false && !s.isDeleted);
   const conflicts: ShowConflict[] = [];
 
   for (let i = 0; i < active.length; i++) {
@@ -142,8 +203,8 @@ export function getShowConflicts(showsList: Show[]): ShowConflict[] {
       const a = active[i];
       const b = active[j];
 
-      const dayIdxA = daysOrderList.indexOf(a.day as any);
-      const dayIdxB = daysOrderList.indexOf(b.day as any);
+      const dayIdxA = daysOrderList.indexOf(a.day);
+      const dayIdxB = daysOrderList.indexOf(b.day);
       if (dayIdxA === -1 || dayIdxB === -1) continue;
 
       const startA = dayIdxA * 1440 + a.startHour * 60 + (a.startMinute || 0);
