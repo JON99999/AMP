@@ -49,7 +49,7 @@ function getPngDimensions(filePath) {
   }
 }
 
-function downloadFile(url, destPath) {
+function downloadFileOnce(url, destPath) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
     const tempPath = `${destPath}.tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -115,6 +115,23 @@ function downloadFile(url, destPath) {
       reject(err);
     });
   });
+}
+
+async function downloadFile(url, destPath, maxAttempts = 3, backoffMs = 500) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await downloadFileOnce(url, destPath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        console.warn(`Download attempt ${attempt}/${maxAttempts} failed for ${url} (${err.message}). Retrying in ${backoffMs}ms...`);
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function syncRemoteIcons() {
@@ -532,6 +549,7 @@ CONFIGURATION & PERSISTENCE:
 
       // Ensure explicit icon configuration is specified inside the build config schema
       if (!pkg.build.mac) pkg.build.mac = {};
+      pkg.build.mac.hardenedRuntime = false;
       pkg.build.mac.icon = "build/icon.icns";
       pkg.build.mac.extendInfo = {
         NSDocumentsFolderUsageDescription: "AMP requires access to local folders to schedule, read, and log announcement audio.",

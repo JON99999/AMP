@@ -35,7 +35,9 @@ This document details the architectural layout, credential structure, and automa
 1. **Private Development Repository**:
    - **URL**: `https://github.com/JON99999/AMP_Private`
    - **Visibility**: Private
-   - **Purpose**: Primary workspace connected to Google AI Studio. Houses development archives (`dev/archives/`), architectural specifications (`dev/docs/`), and internal agent guidelines (`AGENTS.md`, `AGENTS_PHILOSOPHY.md`).
+   - **Branches**:
+     - `main`: Active workspace connected to Google AI Studio (`src/`, `dev/docs/`, `dev/archives/README.md`, `AGENTS.md`).
+     - `archives`: Historical uncompressed version snapshots (`dev/archives/archive_v0.12.21` through `archive_v0.20.1+`), offloaded from `main` to keep the AI Studio workspace lightweight and read on demand via the GitHub API (`?ref=archives`).
 
 2. **Public Distribution Repository**:
    - **URL**: `https://github.com/JON99999/AMP`

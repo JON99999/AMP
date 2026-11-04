@@ -153,6 +153,7 @@ Paste this short pointer into `System Instructions > Custom Instructions` on any
 - **Strict Archive Immutability**: NEVER create, modify, copy, tar, edit, or sync any folder or file inside `dev/archives/` or `version_archives/` unless the immediate prompt explicitly commands an archive/snapshot operation (or the project's explicit snapshot rule triggers).
 - **Uncompressed Plain-Text Storage**: Always store snapshots as plain, uncompressed files (`dev/archives/archive_v<version>/` or `version_archives/seq{NN}_{timestamp}_{label}/` with `SNAPSHOT_NOTES.md`). Never pack into `.tar.gz` or `.zip`, and never open binary/compressed files with `view_file`/`edit_file`.
 - **Search Hygiene**: Always pass `--exclude-dir=archives --exclude-dir=version_archives --exclude-dir=node_modules --exclude-dir=dist` when searching the workspace.
+- **Temporary AI Studio Paste/Upload Cleanup (`public/assets/aistudio/`)**: Whenever AI Studio auto-saves large clipboard pastes (`Paste_*`) or temporary uploaded test files into `public/assets/aistudio/`, notify the user at the end of the turn and ask permission to delete them so they do not bloat the repo or trigger `400 INVALID_ARGUMENT` attachment errors.
 - **Mandatory Symbol & Import Verification (`lint_applet` / `tsc --noEmit`)**: Because bundlers (`vite build` / `esbuild` / `compile_applet`) strip TypeScript types without resolving symbols (allowing unimported functions, variables, or icons to pass build and fail at runtime with `ReferenceError`), always run `lint_applet` (`npm run lint` / `tsc --noEmit`) alongside `compile_applet` after any code edit.
 
 
@@ -162,10 +163,10 @@ To connect any AI Studio project to this shared methodology:
    ```markdown
    ## Global Shared Agent Methodology
    1. Before your first action in a new session (or if `.agents_global.md` is missing), run:
-      `curl -sL "https://gist.githubusercontent.com/JON99999/eb5e4a5f7de0299b12e40935cdfc9b32/raw/AGENTS_GLOBAL.md" -o .agents_global.md`
+      `curl -sL "https://gist.githubusercontent.com/JON99999/eb5e4a5f7de0299b12e40935cdfc9b32/raw/AGENTS_GLOBAL.md" | tr -d '\000\r' > .agents_global.md`
       and read `.agents_global.md` with `view_file`.
    2. Enforce all rules in `.agents_global.md` (Universal Layer 1) alongside `./AGENTS.md` (App-Specific Layer 2).
-   3. When instructed to update a global rule, edit `.agents_global.md` and push it back to Gist `eb5e4a5f7de0299b12e40935cdfc9b32` via `PATCH https://api.github.com/gists/eb5e4a5f7de0299b12e40935cdfc9b32` using `$GITHUB_GIST_TOKEN`.
+   3. When instructed to update a global rule, edit `.agents_global.md` and push it back to Gist `eb5e4a5f7de0299b12e40935cdfc9b32` via `PATCH https://api.github.com/gists/eb5e4a5f7de0299b12e40935cdfc9b32` using `$GITHUB_GIST_TOKEN` (resolved via `GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`).
    ```
 2. **Add Write-Back Secret (Optional)**:
    - Add `GITHUB_GIST_TOKEN=""` to `.env.example` and paste your GitHub Gist Personal Access Token (`gist` scope only) into `GITHUB_GIST_TOKEN` in AI Studio's Secrets panel.

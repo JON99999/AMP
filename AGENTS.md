@@ -2,11 +2,14 @@
 
 **AMP (Announcement Media Player)** is a standalone desktop broadcast application built with Electron, Express, and React/Vite.
 
-## 🚨 1. MANDATORY ARCHIVE IMMUTABILITY (`dev/archives/`)
-- **STRICT PROHIBITION**: NEVER create, modify, copy, tar, edit, or sync any folder or file inside `dev/archives/` unless the user's immediate prompt explicitly commands an archive operation (e.g., "Archive version X").
-- **NO IMPLIED PERMISSION**: Bug fixes, tests, doc updates, schema migrations, name changes, or version bumps NEVER imply permission to touch `dev/archives/`.
-- **DOUBLE-CHECK**: If any ambiguity exists regarding archives, ask the user and wait for explicit confirmation before touching `dev/archives/`.
-- **ARCHIVE FORMAT (Strategy 2)**: When explicitly commanded to archive a version, store uncompressed snapshot files in `dev/archives/archive_v<version>/` (updating `package.json` and `package-lock.json` together). Never pack into `.tar.gz`/`.zip`, and never open binary/compressed files with `view_file`/`edit_file` (prevents UTF-8 `0xef 0xbf 0xbd` byte corruption).
+## 🚨 1. MANDATORY ARCHIVE IMMUTABILITY & REMOTE `archives` BRANCH (`dev/archives/README.md`)
+- **STRICT PROHIBITION**: NEVER create, modify, delete, or push any archive on the remote `archives` branch (`JON99999/AMP_Private`) or inside `dev/archives/` unless the user's immediate prompt explicitly commands an archive operation (e.g., "Archive version X").
+- **NO IMPLIED PERMISSION**: Bug fixes, tests, doc updates, schema migrations, name changes, or version bumps NEVER imply permission to touch archives.
+- **DOUBLE-CHECK**: If any ambiguity exists regarding archives, ask the user and wait for explicit confirmation before touching archives.
+- **REMOTE ARCHIVE STORAGE (`JON99999/AMP_Private` -> `branch: archives`)**:
+  - Historical version snapshots (`archive_v0.12.21` through `archive_v0.20.1+`) are offloaded to `JON99999/AMP_Private` on the `archives` branch so they do not bloat the local AI Studio file tree or trigger GitHub export batch limits.
+  - **Reading Historical Versions**: When asked to review or compare against a historical version, read `dev/archives/README.md` and fetch the needed historical files on demand via the GitHub API (`?ref=archives`) using `$GITHUB_GIST_TOKEN` into `/tmp/` (never into the workspace tree).
+  - **Archiving a New Version**: When explicitly commanded to archive a version, push the uncompressed snapshot files (`package.json` and `package-lock.json` updated together) directly to `dev/archives/archive_v<version>/` on the `archives` branch of `JON99999/AMP_Private` via the GitHub Git Trees API and append the version to `dev/archives/README.md`. Never pack into `.tar.gz`/`.zip`, and never store full `archive_v*` folders in the local workspace.
 
 ## 2. Target Platforms, Desktop Architecture & Build Pipeline
 - **Priority Order**:
@@ -24,7 +27,7 @@
   - **Unified Mac Build**: In `scripts/build-apps.cjs`, always run a single Universal pass: `npx electron-builder --mac --universal` (producing a single `-Mac.dmg` per mode that runs natively on both `arm64` Apple Silicon and `x64` Intel Macs). Never split Mac builds into sequential runs or staging/backup workarounds.
   - **Headless CI Readiness**: Assume builds run on virtualized GitHub Actions runners. Preemptively verify case-sensitive imports, explicit types, and runner-agnostic Node scripts before concluding changes.
   - **Mandatory Symbol & Import Verification (`lint_applet` / `tsc --noEmit`)**: Because `vite build` (`compile_applet`) strips TypeScript types without checking undeclared identifiers (allowing missing imports to pass build and fail at runtime with `ReferenceError`), always run `lint_applet` (`npm run lint` / `tsc --noEmit`) alongside `compile_applet` after any code edit.
-  - **AI Studio GitHub Push Batch Limit (~200–250 Files)**: AI Studio's single-commit GitHub REST export fails with `"Failed to push commit to GitHub"` when a commit exceeds ~200–250 changed files (typically when multiple uncompressed `dev/archives/archive_v*` folders accumulate between pushes). Resolve by temporarily ignoring newer `dev/archives/archive_v*` folders in `.gitignore` and un-ignoring them in ~200-file rolling batches.
+  - **AI Studio GitHub Push Batch Limit (~200–250 Files)**: AI Studio's single-commit GitHub REST export fails with `"Failed to push commit to GitHub"` when a commit exceeds ~200–250 changed files. Offloading `dev/archives/archive_v*` to the `archives` branch on `AMP_Private` keeps the workspace well under this limit.
 - **Lockfile Sync**: Whenever `package.json` changes, immediately run `npm install` followed by `npm ci --dry-run` to guarantee GitHub Actions `npm ci` integrity.
 
 ## 3. UI Styling, Naming & Scope Discipline
@@ -110,6 +113,9 @@
   - `dev/archives/`: Version snapshots only (untouched unless commanded).
   - `dev/docs/`: All architectural/historical docs, `ARCHITECTURE_AND_GLOSSARY.md`, `ROADMAP_AND_BACKLOG.md`, `ROADMAP_newstuff.md`, and `ROADMAP_HISTORY.md`.
   - `scripts/`: Build and verification scripts (`build-apps.cjs`, `afterAllArtifactBuild.cjs`, `verify-version.cjs`, `test-schema-upgrade.cjs`).
+  - **Temporary AI Studio Paste/Upload Artifacts (`public/assets/aistudio/`)**: Whenever AI Studio auto-saves pasted text blobs (`Paste_*`) or temporary `.json`/log attachments into `public/assets/aistudio/`, proactively notify the user at the end of the turn and ask permission to delete them so they do not bloat the repo, builds, or chat context.
+  - **AI Studio Secret Resolution in `run_command` Subshells (`GITHUB_GIST_TOKEN`)**: AI Studio injects user secrets from the Secrets panel (declared in `.env.example`, such as `GITHUB_GIST_TOKEN`) into the running dev-server process environment rather than bare `run_command` subshells. Whenever a shell command or Node one-liner needs `GITHUB_GIST_TOKEN` (e.g., to `PATCH` Gist `eb5e4a5f7de0299b12e40935cdfc9b32` or call the GitHub API), resolve it via:
+    `GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`
 - **Search Hygiene**: Always pass `--exclude-dir=archives --exclude-dir=node_modules --exclude-dir=dist` when running `grep` or workspace searches.
 - **Core Architectural Constraints**:
   - **Single Audio Streaming Endpoint**: Serve all local audio through `/api/media/stream` (with byte-range support); never create duplicate streaming routes.

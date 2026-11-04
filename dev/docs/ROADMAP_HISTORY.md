@@ -205,4 +205,24 @@
     - *"Do those updates change the OS version compatibility?  If not, then roll them all together.  v0.20.x is a massive change testing effort, and we might as well put it all in at once."*
   - **Outcome**: Completed — Switched macOS packaging from split `--x64 --arm64` files to a single Universal (`--mac --universal`) `.dmg` per edition (`-Mac.dmg`) that runs natively on both Apple Silicon (`arm64`) and Intel (`x64`) Macs (macOS 12 Monterey+), validated Windows 10 (v1809+) / Windows 11 (64-bit) compatibility, updated in-range dependencies (`electron@42.11.18`, `electron-builder@26.18.0`, `express@4.22.3`, `react@19.3.1`, `vite@6.4.5`, `tailwindcss@4.3.4`, `date-fns@4.4.0`), refreshed `README.md` and `electron-main.cjs` license listings, and archived `v0.20.1`.
 
+- **#45 — Add Retry Logic to `downloadFile()` for Remote Icons (`scripts/build-apps.cjs`)**
+  - **User Note**:
+    - *"Transient GitHub HTTP 503 Dropped studio/icon.png on the Windows Runner (Worth Fixing)"*
+    - *"a. In the Windows log, downloading studio/icon.png from raw.githubusercontent.com returned status 503 (a momentary GitHub CDN hiccup)."*
+    - *"b. Because studio/windows/icon.ico succeeded right after, the Windows .exe installer and taskbar icons are not affected, and macOS downloaded studio/icon.png cleanly."*
+    - *"c. However, on Windows AMP Studio, dist/app-icon.png fell back to the default placeholder because downloadFile() in scripts/build-apps.cjs has no retry logic."*
+    - *"d. Fix: Add a 3-attempt retry (500ms backoff) inside downloadFile() in scripts/build-apps.cjs."*
+    - *"Let's fix 1 and 2. They seem minor."*
+  - **Outcome**: Completed — Added a 3-attempt retry loop with 500ms backoff in `downloadFile()` inside `scripts/build-apps.cjs` to guard against transient GitHub CDN HTTP 503 responses during remote icon asset synchronization.
+
+- **#46 — Set `hardenedRuntime: false` for macOS Ad-Hoc Signing in `package.json`**
+  - **User Note**:
+    - *"macOS Ad-Hoc Hardened Runtime Warning (Worth Tidying)"*
+    - *"a. Log message: ad-hoc signing with hardenedRuntime enabled requires the com.apple.security.cs.disable-library-validation entitlement..."*
+    - *"b. electron-builder defaults mac.hardenedRuntime to true, which is intended for Apple notarization with a paid Developer ID certificate."*
+    - *"c. Since AMP uses ad-hoc signing (\"identity\": \"-\"), setting \"hardenedRuntime\": false under build.mac in package.json removes this warning and avoids unnecessary library-validation checks."*
+    - *"Let's fix 1 and 2. They seem minor."*
+  - **Outcome**: Completed — Set `"hardenedRuntime": false` under `build.mac` in `package.json` and `scripts/build-apps.cjs` so ad-hoc signed macOS builds do not emit unnecessary hardened-runtime entitlement warnings.
+
+
 

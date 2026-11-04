@@ -58,6 +58,7 @@
       ],
       "category": "public.app-category.productivity",
       "identity": "-",
+      "hardenedRuntime": false,
       "icon": "build/icon.icns",
       "extendInfo": {
         "NSDocumentsFolderUsageDescription": "AMP requires access to local folders to schedule, read, and log announcement audio.",

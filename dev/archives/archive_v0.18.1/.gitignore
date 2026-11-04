@@ -1,9 +1,0 @@
-node_modules/
-release/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
-amp_settings.json
-bun.lock
