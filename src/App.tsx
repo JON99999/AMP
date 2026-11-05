@@ -869,7 +869,7 @@ export default function App() {
       if (isElectron || settings.mode === "Local") {
         const hasValidLocalConfig = effectiveLocal.hasValidLocalConfig;
         if (!hasValidLocalConfig) {
-          setIsDriveActive(true);
+          setIsDriveActive(false);
           setIsDriveValidated(false);
           setLocalPathsUnavailable(true);
           setLoading(false);
@@ -877,7 +877,7 @@ export default function App() {
         } else {
           verifyStartup(settings)
             .then((gateResult) => {
-              setIsDriveActive(true);
+              setIsDriveActive(false);
               if (gateResult.ready) {
                 setIsDriveValidated(true);
                 setLocalPathsUnavailable(false);
@@ -890,7 +890,7 @@ export default function App() {
               }
             })
             .catch(() => {
-              setIsDriveActive(true);
+              setIsDriveActive(false);
               setIsDriveValidated(false);
               setLocalPathsUnavailable(true);
               setLoading(false);
@@ -938,7 +938,7 @@ export default function App() {
               setIsValidatingDrive(false);
             }
           } else {
-            setIsDriveActive(true);
+            setIsDriveActive(false);
             setIsDriveValidated(true);
             fetchDataForMode(uSettings);
           }
@@ -1009,7 +1009,7 @@ export default function App() {
           setDriveMP3s(mappedMP3s);
           setSyncTime(new Date());
           setScrollTrigger((prev) => prev + 1);
-          setIsDriveActive(true);
+          setIsDriveActive(false);
           setIsDriveValidated(true);
           setConnectionError(null);
 
@@ -2679,7 +2679,7 @@ export default function App() {
                     onAdminToggle={setIsAdmin}
                     now={now}
                     driveMP3s={driveMP3s}
-                    isDriveActive={isDriveActive}
+                    isDriveActive={isDriveActive && locationMode !== "Local"}
                     onRefresh={handleRefresh}
                     currentViewMode={calendarSubTab}
                     onViewModeChange={(mode) => setCalendarSubTab(mode)}
@@ -3213,7 +3213,10 @@ export default function App() {
         showPixelRuler={showPixelRuler}
         togglePixelRuler={togglePixelRuler}
         isSyncing={isSyncing}
+        isAdminApp={isAdminApp}
         isAdmin={isAdmin}
+        onAdminToggle={setIsAdmin}
+        hasSavedAdminContact={hasSavedAdminContact}
         stationTimezone={stationTimezone}
         saveStationTimezone={saveStationTimezone}
         adminContactInfo={adminContactInfo}

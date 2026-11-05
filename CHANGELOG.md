@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.2] - 2026-11-04
+
+### Fixed & Changed
+- **Shared One-Time Admin Mode Verification Gate in `Folders` & `Calendar` (`#47`)**: Added the one-time *"For Administrators ONLY / Enter Admin Mode"* verification gate and inline **First-Run Setup: Admin Contact Info** prompt directly inside `LocationsModal.tsx` (`Folders`) for `AMP Admin` builds, sharing session verification with `CalendarTab.tsx` so administrators verify once per session across both `Folders` (`Folders > Help`) and `Calendar`.
+- **Show Lookaround `hh:mm` Setting (`#48`)**: Converted Show Lookaround in `LocalHelpModal.tsx`, `src/lib/compatibility.ts`, and `PlayerTab.tsx` from integer hours to an `hh:mm` duration setting (`showLookaroundMinutes`, default `01:00`, range `00:00` to `06:00`) while maintaining fractional `showLookaroundHours` backward compatibility.
+- **Persistent Station Settings Protection Against `v0.15.4` Envelope Wipes (`#49`)**: Mirrored `_stationMeta` (`stationTimezone`, `adminContactInfo`, `upNextPromo`, `scheduleWindow`) onto `data[0]._stationMeta` inside `shows.json` and `announcements.json` and added a `settings/station_settings.json` sidecar backup so station settings automatically heal after `v0.15.4` rewrites top-level envelopes during `/api/trigger-backup`.
+- **Structural Admin Contact Placeholder (`#50`)**: Replaced the placeholder example in `LocalHelpModal.tsx` with literal structural text (`"e.g., Admin 1 — admin@station.org / (555) 000-0000"`).
+- **Incomplete Gate Data On-Save Warning Modal With `"Save Anyway"` & `"Return to Editor to Fix"` (`#51`)**: Updated `validateTimeGatedMp3s` (`src/lib/scheduleEngine.ts`) and `CalendarTab.tsx` to trigger the **Incomplete Gate Data** modal on save for active/upcoming missing start dates, missing file attachments, overlaps, and gaps (ignoring historical passed issues), offering both **Save Anyway** and **Return to Editor to Fix**.
+- **Local Mode Live Read Script Copy Editor & `"Auto"` Read-Time Default (`#52`)**: Fixed `isDriveActive` and storage-mode header routing in `App.tsx`, `useLocationsController.ts`, `CopyEditorModal.tsx`, `MediaPickerModal.tsx`, and `driveService.ts` so local `.txt` scripts load, edit, split, and save cleanly in Local mode, and kept the **Auto** read-time calculation checkbox enabled by default when opening auto-estimated scripts.
+
+---
+
 ## [0.20.1] - 2026-11-04
 
 ### Changed

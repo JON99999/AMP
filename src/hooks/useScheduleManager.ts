@@ -120,20 +120,27 @@ export function useScheduleManager({
         } else if (payload && typeof payload === 'object') {
           const loadedShows = Array.isArray(payload.data) ? payload.data : [];
           const rawContact = payload.adminContactInfo !== undefined ? payload.adminContactInfo : payload._meta?.adminContactInfo;
-          if (rawContact !== undefined) {
-            const resolvedContact = setAdminContactInfo(rawContact);
+          const existingLocalContact = getAdminContactInfo();
+          const effectiveContact =
+            rawContact && String(rawContact).trim()
+              ? String(rawContact).trim()
+              : payload.hasSavedAdminContact && rawContact !== undefined
+                ? String(rawContact).trim()
+                : existingLocalContact;
+          if (effectiveContact !== undefined) {
+            const resolvedContact = setAdminContactInfo(effectiveContact);
             setAdminContactInfoState(resolvedContact);
           }
-          setHasSavedAdminContact(Boolean(payload.hasSavedAdminContact || rawContact));
+          setHasSavedAdminContact(Boolean(payload.hasSavedAdminContact || effectiveContact));
 
           const rawUpNext = payload.upNextPromo || payload._meta?.upNextPromo;
-          if (rawUpNext) {
+          if (rawUpNext && (payload.hasSavedTimezone || payload._meta)) {
             const resolvedUpNext = setUpNextPromoConfig(rawUpNext);
             setUpNextPromoConfigState(resolvedUpNext);
           }
 
           const rawScheduleWindow = payload.scheduleWindow || payload._meta?.scheduleWindow;
-          if (rawScheduleWindow) {
+          if (rawScheduleWindow && (payload.hasSavedTimezone || payload._meta)) {
             const resolvedScheduleWindow = setScheduleWindowConfig(rawScheduleWindow);
             setScheduleWindowConfigState(resolvedScheduleWindow);
           }
@@ -148,7 +155,7 @@ export function useScheduleManager({
                 headers,
                 body: JSON.stringify({
                   stationTimezone: sysTz,
-                  ...(rawContact !== undefined ? { adminContactInfo: rawContact } : {}),
+                  ...(effectiveContact !== undefined ? { adminContactInfo: effectiveContact } : {}),
                   upNextPromo: getUpNextPromoConfig(),
                   scheduleWindow: getScheduleWindowConfig(),
                   data: loadedShows

@@ -331,14 +331,14 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
       const cleanInitRead = normalizeReadTimeDisplay(initialReadTime);
       setManualReadTime(cleanInitRead);
-      setAutoApplyReadTime(!cleanInitRead);
+      setAutoApplyReadTime(true);
 
       if (isNonTextCopyMode) {
         setLoadingContent(true);
         let cancelled = false;
         (async () => {
           try {
-            const headers = await getStorageApiHeaders({}, isDriveActive ? 'Drive' : undefined);
+            const headers = await getStorageApiHeaders();
             const r = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, { headers });
             const data = r.ok ? await r.json() : null;
             if (cancelled) return;
@@ -364,7 +364,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       const loadExisting = async () => {
         setLoadingContent(true);
         try {
-          const headers = await getStorageApiHeaders({}, isDriveActive ? 'Drive' : undefined);
+          const headers = await getStorageApiHeaders();
           const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, { headers });
           if (res.ok) {
             const data = await res.json();
@@ -941,10 +941,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     setErrorMsg(null);
     setIsSaving(true);
     try {
-      const headers = await getStorageApiHeaders(
-        { 'Content-Type': 'application/json' },
-        isDriveActive ? 'Drive' : undefined
-      );
+      const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' });
       const res = await fetch('/api/live-read/copy-file', {
         method: 'POST',
         headers,
@@ -1035,10 +1032,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       const audioExt = getFileExtension(effectivePendingDuplicateSourceAudio) || '.mp3';
       const targetAudioFileName = `${targetStem}${audioExt}`;
       try {
-        const headers = await getStorageApiHeaders(
-          { 'Content-Type': 'application/json' },
-          isDriveActive ? 'Drive' : undefined
-        );
+        const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' });
         const audioRes = await fetch('/api/live-read/copy-file', {
           method: 'POST',
           headers,
@@ -1082,10 +1076,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         ? latestStats.formattedReadTime
         : (normalizedManual || manualReadTime.trim() || latestStats.formattedReadTime);
 
-      const headers = await getStorageApiHeaders(
-        { 'Content-Type': 'application/json' },
-        isDriveActive ? 'Drive' : undefined
-      );
+      const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' });
       const res = await fetch('/api/live-read/save', {
         method: 'POST',
         headers,

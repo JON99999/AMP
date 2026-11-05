@@ -209,7 +209,10 @@ export interface AppOverlaysProps {
   isSyncing: boolean;
 
   // Local Help Modal
+  isAdminApp?: boolean;
   isAdmin: boolean;
+  onAdminToggle?: (val: boolean) => void;
+  hasSavedAdminContact?: boolean;
   stationTimezone: string;
   saveStationTimezone: (newTimezone: string) => Promise<boolean>;
   adminContactInfo?: string;
@@ -415,7 +418,10 @@ export const AppOverlays: React.FC<AppOverlaysProps> = ({
   showPixelRuler,
   togglePixelRuler,
   isSyncing,
+  isAdminApp,
   isAdmin,
+  onAdminToggle,
+  hasSavedAdminContact,
   stationTimezone,
   saveStationTimezone,
   adminContactInfo,
@@ -531,6 +537,12 @@ export const AppOverlays: React.FC<AppOverlaysProps> = ({
         locationMode={locationMode}
         setLocationMode={setLocationMode}
         isAiStudio={isAiStudio}
+        isAdminApp={isAdminApp}
+        isAdmin={isAdmin}
+        onAdminToggle={onAdminToggle}
+        adminContactInfo={adminContactInfo}
+        hasSavedAdminContact={hasSavedAdminContact}
+        onSaveAdminContactInfo={saveAdminContactInfo}
         windowSize={windowSize}
         draftLocalPathAmp={draftLocalPathAmp}
         setDraftLocalPathAmp={setDraftLocalPathAmp}

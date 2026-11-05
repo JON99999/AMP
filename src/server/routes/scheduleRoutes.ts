@@ -22,7 +22,9 @@ import {
   getLogBackupPath,
   generateBackupFilename,
   atomicWriteFileSync,
-  resolveLocalAnnouncementScriptText
+  resolveLocalAnnouncementScriptText,
+  readStationSettingsSidecar,
+  writeStationSettingsSidecar
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -111,8 +113,14 @@ export function registerScheduleRoutes(app: express.Express): void {
           }
         } catch (pe) {}
       }
+      const sidecar = readStationSettingsSidecar();
+      const mergedAnnMeta = {
+        ...(sidecar?.scheduleWindow ? { scheduleWindow: sidecar.scheduleWindow } : {}),
+        ...(existingMeta || {}),
+        ...(rawPayload?._meta || {})
+      };
       const migrated = migrateAnnouncementsPayload(
-        { _meta: rawPayload?._meta || existingMeta, AnnouncementsBackupCounter: counter, data: schedules },
+        { _meta: mergedAnnMeta, AnnouncementsBackupCounter: counter, data: schedules },
         CURRENT_APP_VERSION,
         counter,
         undefined,
@@ -120,6 +128,9 @@ export function registerScheduleRoutes(app: express.Express): void {
       );
       const updatedObj = migrated.envelope;
       atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
+      if (updatedObj._meta?.scheduleWindow) {
+        writeStationSettingsSidecar({ scheduleWindow: updatedObj._meta.scheduleWindow });
+      }
 
       // Backup copy for schedules
       try {
@@ -171,22 +182,38 @@ export function registerScheduleRoutes(app: express.Express): void {
       }
       const data = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(data || '[]');
+      const sidecar = readStationSettingsSidecar();
+      const embeddedMeta = Array.isArray(parsed?.data)
+        ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
+        : undefined;
       const hasSavedTimezone = Boolean(
-        parsed &&
-        typeof parsed === 'object' &&
-        !Array.isArray(parsed) &&
-        (parsed.stationTimezone || parsed._meta?.stationTimezone)
+        (parsed &&
+          typeof parsed === 'object' &&
+          !Array.isArray(parsed) &&
+          (parsed.stationTimezone || parsed._meta?.stationTimezone)) ||
+        embeddedMeta?.stationTimezone ||
+        sidecar?.stationTimezone
       );
       const hasSavedAdminContact = Boolean(
-        parsed &&
-        typeof parsed === 'object' &&
-        !Array.isArray(parsed) &&
-        (parsed.adminContactInfo !== undefined || parsed._meta?.adminContactInfo !== undefined)
+        (parsed &&
+          typeof parsed === 'object' &&
+          !Array.isArray(parsed) &&
+          (parsed.adminContactInfo !== undefined || parsed._meta?.adminContactInfo !== undefined)) ||
+        embeddedMeta?.adminContactInfo !== undefined ||
+        sidecar?.adminContactInfo !== undefined
       );
       const lastMod = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed._meta?.lastModifiedBy)
         ? parsed._meta.lastModifiedBy
         : CURRENT_APP_VERSION;
-      const seededResult = migrateShowsPayload(parsed, lastMod);
+      const seededResult = migrateShowsPayload(
+        parsed,
+        lastMod,
+        0,
+        sidecar?.stationTimezone,
+        sidecar?.adminContactInfo,
+        sidecar?.upNextPromo,
+        sidecar?.scheduleWindow
+      );
       const seeded = seededResult.data;
       if (withEnvelope) {
         return res.json({
@@ -196,7 +223,7 @@ export function registerScheduleRoutes(app: express.Express): void {
           adminContactInfo: seededResult.envelope.adminContactInfo || '',
           hasSavedAdminContact,
           upNextPromo: seededResult.envelope.upNextPromo || { enabled: true, minutesBefore: 20 },
-          scheduleWindow: seededResult.envelope.scheduleWindow || seededResult.envelope._meta?.scheduleWindow || { windowBeforeMinutes: 5, windowAfterMinutes: 5, showLookaroundHours: 1 },
+          scheduleWindow: seededResult.envelope.scheduleWindow || seededResult.envelope._meta?.scheduleWindow || { windowBeforeMinutes: 5, windowAfterMinutes: 5, showLookaroundHours: 1, showLookaroundMinutes: 60 },
           ShowsBackupCounter: parsed?.ShowsBackupCounter || 0,
           data: seeded
         });
@@ -252,24 +279,31 @@ export function registerScheduleRoutes(app: express.Express): void {
           }
         } catch (pe) {}
       }
+      const sidecar = readStationSettingsSidecar();
       const migrated = migrateShowsPayload(
         {
           _meta: rawPayload?._meta || existingMeta,
           ShowsBackupCounter: counter,
           data: shows,
-          ...(existingAdminContact !== undefined ? { adminContactInfo: existingAdminContact } : {}),
-          ...(existingUpNextPromo !== undefined ? { upNextPromo: existingUpNextPromo } : {}),
-          ...(existingScheduleWindow !== undefined ? { scheduleWindow: existingScheduleWindow } : {})
+          ...((existingAdminContact ?? sidecar?.adminContactInfo) !== undefined ? { adminContactInfo: existingAdminContact ?? sidecar?.adminContactInfo } : {}),
+          ...((existingUpNextPromo ?? sidecar?.upNextPromo) !== undefined ? { upNextPromo: existingUpNextPromo ?? sidecar?.upNextPromo } : {}),
+          ...((existingScheduleWindow ?? sidecar?.scheduleWindow) !== undefined ? { scheduleWindow: existingScheduleWindow ?? sidecar?.scheduleWindow } : {})
         },
         CURRENT_APP_VERSION,
         counter,
-        explicitTz,
+        explicitTz ?? sidecar?.stationTimezone,
         explicitAdminContact,
         explicitUpNextPromo,
         explicitScheduleWindow
       );
       const updatedObj = migrated.envelope;
       atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
+      writeStationSettingsSidecar({
+        stationTimezone: updatedObj.stationTimezone,
+        adminContactInfo: updatedObj.adminContactInfo ?? '',
+        upNextPromo: updatedObj.upNextPromo,
+        scheduleWindow: updatedObj.scheduleWindow
+      });
 
       // Backup copy for shows
       try {
@@ -314,18 +348,47 @@ export function registerScheduleRoutes(app: express.Express): void {
         } catch (_) {}
       }
 
+      const sidecar = readStationSettingsSidecar();
       if (showsPath && fs.existsSync(showsPath)) {
         try {
           const parsed = JSON.parse(fs.readFileSync(showsPath, 'utf-8') || '{}');
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.data)) {
             if (!parsed._meta) {
               const counter = typeof parsed.ShowsBackupCounter === 'number' ? Math.max(0, parsed.ShowsBackupCounter - 1) : 0;
-              const seeded = migrateShowsPayload(parsed, CURRENT_APP_VERSION, counter);
+              const seeded = migrateShowsPayload(
+                parsed,
+                CURRENT_APP_VERSION,
+                counter,
+                sidecar?.stationTimezone,
+                sidecar?.adminContactInfo,
+                sidecar?.upNextPromo,
+                sidecar?.scheduleWindow
+              );
               atomicWriteFileSync(showsPath, JSON.stringify(seeded.envelope, null, 2));
               showsMeta = seeded.envelope._meta;
+              writeStationSettingsSidecar({
+                stationTimezone: seeded.envelope.stationTimezone,
+                adminContactInfo: seeded.envelope.adminContactInfo ?? '',
+                upNextPromo: seeded.envelope.upNextPromo,
+                scheduleWindow: seeded.envelope.scheduleWindow
+              });
             } else {
-              migrateShowsPayload(parsed, parsed._meta?.lastModifiedBy || CURRENT_APP_VERSION);
+              const seeded = migrateShowsPayload(
+                parsed,
+                parsed._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+                0,
+                sidecar?.stationTimezone,
+                sidecar?.adminContactInfo,
+                sidecar?.upNextPromo,
+                sidecar?.scheduleWindow
+              );
               showsMeta = parsed._meta;
+              writeStationSettingsSidecar({
+                stationTimezone: seeded.envelope.stationTimezone,
+                adminContactInfo: seeded.envelope.adminContactInfo ?? '',
+                upNextPromo: seeded.envelope.upNextPromo,
+                scheduleWindow: seeded.envelope.scheduleWindow
+              });
             }
           } else {
             showsMeta = { schemaVersion: 0, minAppVersion: '0.15.0', lastModifiedBy: '0.15.0' };

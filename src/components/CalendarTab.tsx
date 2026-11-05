@@ -145,6 +145,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     return true;
   })();
   const [saveValidationWarnings, setSaveValidationWarnings] = useState<string[] | null>(null);
+  const [saveValidationOverrideEndDate, setSaveValidationOverrideEndDate] = useState<string | undefined>(undefined);
   const isNew = editingId ? !announcements.some(s => s.id === editingId) : false;
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -1749,7 +1750,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     setInitialFormDataJson(JSON.stringify(newSchedule));
   };
 
-  const saveEdit = async (overrideEndDate?: string) => {
+  const saveEdit = async (overrideEndDate?: string, forceSaveAnyway: boolean = false) => {
     if (!editingId || isSavingAnnouncement) return;
     
     if (!formData.name) {
@@ -1779,9 +1780,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       return;
     }
 
-     const currentMp3s = formData.timeGatedMp3s || [];
+    const currentMp3s = formData.timeGatedMp3s || [];
     const validation = validateTimeGatedMp3s(currentMp3s, undefined, effectiveEndDate, formData.startDate);
-    if (validation.hasErrors) {
+    if (!forceSaveAnyway && validation.hasErrors) {
       const warningMessages: string[] = [];
       if (currentMp3s.length === 0) {
         warningMessages.push('At least one Announcement Gate is required.');
@@ -1805,19 +1806,20 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           for (const warn of gateWarnings) {
             if (
               warn !== 'Start date & time is required.' &&
-              warn !== 'File attachment is required.'
+              warn !== 'Start date & time is missing.' &&
+              warn !== 'File attachment is required.' &&
+              warn !== 'File attachment selection is missing.'
             ) {
               warningMessages.push(`Gate #${gateNum}: ${warn}`);
             }
           }
         });
       }
-      setSaveValidationWarnings(
-        warningMessages.length > 0
-          ? warningMessages
-          : ['Please complete all required Gate dates and file attachments before saving.']
-      );
-      return;
+      if (warningMessages.length > 0) {
+        setSaveValidationOverrideEndDate(effectiveEndDate);
+        setSaveValidationWarnings(warningMessages);
+        return;
+      }
     }
 
     const sortedMp3s: TimeGatedMp3[] = validation.sorted.map(m => {
@@ -3079,10 +3081,25 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               </ul>
             </div>
 
-            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end">
+            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setSaveValidationWarnings(null)}
+                onClick={() => {
+                  const overrideEnd = saveValidationOverrideEndDate;
+                  setSaveValidationWarnings(null);
+                  setSaveValidationOverrideEndDate(undefined);
+                  saveEdit(overrideEnd, true);
+                }}
+                className="px-3.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+              >
+                Save Anyway
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSaveValidationWarnings(null);
+                  setSaveValidationOverrideEndDate(undefined);
+                }}
                 className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
               >
                 Return to Editor to Fix

@@ -1006,7 +1006,7 @@ export function validateTimeGatedMp3s(
   const overlapEndIds = new Set<string>();
   const missingStartIds = new Set<string>();
   const missingFileIds = new Set<string>();
-  const hasErrors = false;
+  const currentNow = nowIso || getCurrentDatetimeLocal();
 
   sorted.forEach(item => {
     errors[item.id] = [];
@@ -1014,14 +1014,19 @@ export function validateTimeGatedMp3s(
   });
 
   sorted.forEach(item => {
+    const isHistoricalExpired = isGateExpiredOrInactivated(item, currentNow);
     if (!item.startDate || item.startDate.trim() === '') {
       warnings[item.id].push('Start date & time is missing.');
-      missingStartIds.add(item.id);
+      if (!isHistoricalExpired) {
+        missingStartIds.add(item.id);
+      }
     }
     const mediaItems = getGateMediaItems(item);
     if (mediaItems.length === 0) {
       warnings[item.id].push('File attachment selection is missing.');
-      missingFileIds.add(item.id);
+      if (!isHistoricalExpired) {
+        missingFileIds.add(item.id);
+      }
     } else {
       let gateMissingFile = false;
       mediaItems.forEach(mi => {
@@ -1031,13 +1036,16 @@ export function validateTimeGatedMp3s(
       });
       if (gateMissingFile) {
         warnings[item.id].push('File attachment selection is missing.');
-        missingFileIds.add(item.id);
+        if (!isHistoricalExpired) {
+          missingFileIds.add(item.id);
+        }
       }
     }
   });
 
   for (let i = 0; i < sorted.length; i++) {
     const a = sorted[i];
+    if (isGateExpiredOrInactivated(a, currentNow)) continue;
     const aStart = formatToDatetimeLocal(a.startDate);
     const aEnd = getGateEffectiveEndIso(a) || null;
 
@@ -1045,6 +1053,7 @@ export function validateTimeGatedMp3s(
 
     for (let j = i + 1; j < sorted.length; j++) {
       const b = sorted[j];
+      if (isGateExpiredOrInactivated(b, currentNow)) continue;
       const bStart = formatToDatetimeLocal(b.startDate);
       const bEnd = getGateEffectiveEndIso(b) || null;
 
@@ -1068,6 +1077,15 @@ export function validateTimeGatedMp3s(
       }
 
       if (overlap) {
+        // Ignore overlaps whose intersection window already ended in the past
+        const overlapEnd =
+          aEnd !== null && bEnd !== null
+            ? (aEnd < bEnd ? aEnd : bEnd)
+            : (aEnd || bEnd);
+        if (overlapEnd && overlapEnd <= currentNow) {
+          continue;
+        }
+
         warnings[a.id].push(`Time range overlaps with Announcement #${j + 1}`);
         warnings[b.id].push(`Time range overlaps with Announcement #${i + 1}`);
 
@@ -1093,7 +1111,6 @@ export function validateTimeGatedMp3s(
   }
 
   // 1. Check for leading gap from effective schedule start (max of now() and parentProfileStartDate) to first active/upcoming startDate
-  const currentNow = nowIso || getCurrentDatetimeLocal();
   const activeSorted = sorted.filter(
     item => !isGateExpiredOrInactivated(item, currentNow)
   );
@@ -1114,14 +1131,20 @@ export function validateTimeGatedMp3s(
     }
   }
 
-  // 2. Check for subsequent gaps between active/upcoming announcements
+  // 2. Check for subsequent gaps between active/upcoming announcements (ignoring gaps that already ended in the past)
   for (let i = 0; i < activeSorted.length - 1; i++) {
     const a = activeSorted[i];
     const b = activeSorted[i + 1];
     const aEnd = a.endDate ? formatToDatetimeLocal(a.endDate) : null;
     const bStart = b.startDate ? formatToDatetimeLocal(b.startDate) : null;
 
-    if (aEnd && bStart && aEnd < bStart && !isContiguousMidnightTransition(aEnd, bStart)) {
+    if (
+      aEnd &&
+      bStart &&
+      aEnd < bStart &&
+      bStart > currentNow &&
+      !isContiguousMidnightTransition(aEnd, bStart)
+    ) {
       warnings[b.id].push(`Gap detected: ${formatDatetime12(aEnd)} to ${formatDatetime12(bStart)}`);
       gapEndIds.add(a.id);
       gapStartIds.add(b.id);
@@ -1134,13 +1157,26 @@ export function validateTimeGatedMp3s(
     if (lastItem.endDate && lastItem.endDate.trim()) {
       const lastEnd = formatToDatetimeLocal(lastItem.endDate);
       const parentEnd = parentProfileEndDate ? formatToDatetimeLocal(parentProfileEndDate) : null;
-      if (!parentEnd || (parentEnd > lastEnd && !isContiguousMidnightTransition(lastEnd, parentEnd))) {
+      if (
+        lastEnd > currentNow &&
+        (!parentEnd || (parentEnd > lastEnd && !isContiguousMidnightTransition(lastEnd, parentEnd)))
+      ) {
         gapEndIds.add(lastItem.id);
         const gapTargetText = parentEnd ? formatDatetime12(parentEnd) : 'the future';
         warnings[lastItem.id].push(`Gap detected: ${formatDatetime12(lastEnd)} to ${gapTargetText}`);
       }
     }
   }
+
+  const hasErrors =
+    sorted.length === 0 ||
+    missingStartIds.size > 0 ||
+    missingFileIds.size > 0 ||
+    overlapStartIds.size > 0 ||
+    overlapEndIds.size > 0 ||
+    gapStartIds.size > 0 ||
+    gapEndIds.size > 0 ||
+    Object.values(errors).some(arr => arr.length > 0);
 
   return {
     errors,

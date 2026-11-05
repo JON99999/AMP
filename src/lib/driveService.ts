@@ -1182,7 +1182,7 @@ export const saveShowsToDrive = async (
   explicitStationTimezone?: string,
   explicitAdminContactInfo?: string,
   explicitUpNextPromo?: { enabled: boolean; minutesBefore: number },
-  explicitScheduleWindow?: { windowBeforeMinutes: number; windowAfterMinutes: number; showLookaroundHours: number }
+  explicitScheduleWindow?: { windowBeforeMinutes: number; windowAfterMinutes: number; showLookaroundHours: number; showLookaroundMinutes?: number }
 ): Promise<void> => {
   const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
   const res = await fetch('/api/shows', {
@@ -2057,9 +2057,13 @@ export const uploadAnnouncementMediaFile = async (
 }> => {
   const targetName = (options?.targetFileNameOverride || file.name || '').trim();
   const allowOverwrite = Boolean(options?.allowOverwrite);
-  const explicitMode = options?.isDriveActive !== undefined
-    ? (options.isDriveActive ? 'Drive' : 'Local')
-    : undefined;
+  const currentMode = getSavedSettings().mode;
+  const explicitMode =
+    currentMode === 'Local'
+      ? 'Local'
+      : options?.isDriveActive !== undefined
+        ? (options.isDriveActive ? 'Drive' : 'Local')
+        : undefined;
 
   const base64 = await readBrowserFileAsBase64(file);
   const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, explicitMode);
@@ -2137,9 +2141,13 @@ export const renameOrCopyAnnouncementMediaFile = async (params: {
   const cleanTarget = String(params.targetFileName || '').trim().split(/[/\\]/).pop() || '';
   const allowOverwrite = Boolean(params.allowOverwrite);
   const forceCopy = Boolean(params.forceCopy);
-  const explicitMode = params.isDriveActive !== undefined
-    ? (params.isDriveActive ? 'Drive' : 'Local')
-    : undefined;
+  const currentMode = getSavedSettings().mode;
+  const explicitMode =
+    currentMode === 'Local'
+      ? 'Local'
+      : params.isDriveActive !== undefined
+        ? (params.isDriveActive ? 'Drive' : 'Local')
+        : undefined;
 
   if (!cleanSource || !cleanTarget) {
     throw new Error('Both sourceFileName and targetFileName are required.');

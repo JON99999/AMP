@@ -1787,7 +1787,10 @@ export default function PlayerTab({
   const activeScheduleWindow = scheduleWindowConfig || getScheduleWindowConfig();
   const windowBeforeMinutes = activeScheduleWindow.windowBeforeMinutes ?? 5;
   const windowAfterMinutes = activeScheduleWindow.windowAfterMinutes ?? 5;
-  const showLookaroundHours = activeScheduleWindow.showLookaroundHours ?? 1;
+  const showLookaroundHours =
+    activeScheduleWindow.showLookaroundMinutes !== undefined
+      ? activeScheduleWindow.showLookaroundMinutes / 60
+      : (activeScheduleWindow.showLookaroundHours ?? 1);
 
   // Check whether the user's show folder or subfolders contain audio files for the Prerecord Playlist button
   useEffect(() => {

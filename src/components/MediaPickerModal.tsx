@@ -33,7 +33,9 @@ import {
   uploadAnnouncementMediaFile,
   copyDriveAnnouncementFile,
   availableFilesCache,
-  upsertMediaCatalogFile
+  upsertMediaCatalogFile,
+  getSavedSettings,
+  getStorageApiHeaders
 } from '../lib/driveService';
 
 export interface MediaPickerFile {
@@ -348,7 +350,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
     try {
       let duplicatedFile: MediaPickerFile;
-      if (isDriveActive) {
+      if (isDriveActive && getSavedSettings().mode !== 'Local') {
         const copied = await copyDriveAnnouncementFile(
           copyPromptState.sourceFile.name,
           finalTargetName,
@@ -374,9 +376,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
           modifiedTime: new Date(nowMs).toISOString()
         };
       } else {
+        const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' });
         const res = await fetch('/api/live-read/copy-file', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             sourceFileName: copyPromptState.sourceFile.name,
             targetFileName: finalTargetName,

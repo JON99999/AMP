@@ -224,5 +224,37 @@
     - *"Let's fix 1 and 2. They seem minor."*
   - **Outcome**: Completed — Set `"hardenedRuntime": false` under `build.mac` in `package.json` and `scripts/build-apps.cjs` so ad-hoc signed macOS builds do not emit unnecessary hardened-runtime entitlement warnings.
 
+- **#47 — Add Admin Mode Modal Warning to Folders Settings Window in Admin Version (Single One-Time Verification)**
+  - **User Note**:
+    - *"For 2.c. While those functionalities are there, the actual editing section is disabled on Windows Portable for the Admin version.  (I will retry on MacOS later.)  Not that no 2.b. banner was shown for \"Read-Only Mode.  However, once I enter the Calendar once through the Admin Mode, then it enables them and prompts me in Calendar to enter the Admin info.  After that, I can edit properly.  Note for roadmap, add the admin mode modal warning to the Folders settings window if someone is in Admin version of the app.  A person only need verify that once."*
+  - **Outcome**: Completed — Added the one-time *"For Administrators ONLY / Enter Admin Mode"* verification gate and inline **First-Run Setup: Admin Contact Info** banner directly inside `LocationsModal.tsx` (`Folders`) for `AMP Admin` builds, sharing the `isAdmin` session state with `CalendarTab.tsx` so verifying once unlocks both `Folders` (`Folders > Help`) and `Calendar`.
+
+- **#48 — Change Show Lookaround Setting From Integer Hours to `hh:mm` Format**
+  - **User Note**:
+    - *"Note for roadmap, the Show Lookaround in Hours should be an hh:mm type setting, not just an integer of hours."*
+  - **Outcome**: Completed — Added `showLookaroundMinutes` (`hh:mm`, default `01:00`, range `00:00` to `06:00`) alongside fractional `showLookaroundHours` in `src/lib/compatibility.ts`, `LocalHelpModal.tsx`, and `PlayerTab.tsx`.
+
+- **#49 — Legacy `v0.15.4` Overwriting or Deleting `_meta` Settings (`adminContactInfo` & `upNextPromo`)**
+  - **User Note**:
+    - *"Running 0.15.4 after setting the Admin Contact info seems to have deleted the value.  I believe it also over-wrote the Up Next setting I saved.  That needs to be a roadmap item."*
+  - **Outcome**: Completed — Mirrored `_stationMeta` (`stationTimezone`, `adminContactInfo`, `upNextPromo`, `scheduleWindow`) onto `data[0]._stationMeta` inside `shows.json` and `announcements.json` and persisted a `settings/station_settings.json` sidecar backup on disk so `v0.20.2` automatically restores station settings whenever `v0.15.4`'s `/api/trigger-backup` strips top-level JSON envelopes.
+
+- **#50 — Remove Fake Name (`"Kate"`) From Admin Contact Info Example & Scan Codebase for Fake/Trope Placeholder Names**
+  - **User Note**:
+    - *"Note: The example contact info has Kate as a fake name.  This is unacceptable and violates a rule for using real info.  Need a roadmap item for fixing that and scanning for any other cases of that sort of thing."*
+  - **Outcome**: Completed — Replaced the placeholder in `src/components/LocalHelpModal.tsx` with literal structural text (`"e.g., Admin 1 — admin@station.org / (555) 000-0000"`) and audited all placeholders across `src/`.
+
+- **#51 — Announcement Editor Save Button Does Not Block or Warn When Saving With Incomplete Gate Data (`2.3.b`)**
+  - **User Note**:
+    - *"For 2.3.b - Saving in this state has lots of warnings in the interface, but the save button does not actually warn or prevent."*
+    - *"Implement all.  For 8.  As long as the box allows for both a \"return to fix\" and a \"Save anyway\" type choice, then yes, it's ok to add additional warnings upon save.  Just don't trigger for historical issues that have already passed."*
+  - **Outcome**: Completed — Updated `validateTimeGatedMp3s` (`src/lib/scheduleEngine.ts`) to flag `hasErrors = true` for active/upcoming missing start dates, missing file attachments, overlaps, and gaps (ignoring historical passed issues), and added both **Save Anyway** and **Return to Editor to Fix** choices to the `Incomplete Gate Data` modal in `src/components/CalendarTab.tsx`.
+
+- **#52 — Live Read `CopyEditorModal` Failing to Seed/Save Local `.txt` Scripts (`"Could not load script..."` / `"Google Drive Station folder is not configured..."`) & Auto Read-Time Checkbox Unchecked (`2.3.e` / `2.3.f`)**
+  - **User Note**:
+    - *"For 2.3.e, before save, when clicking Edit from the Gate #x section of files, none of the actual file text is seeded in the editor.  If I hit Preview, then edit, none of the actual file text is seeded.  If I hit save, and then reopen the announcement, and go to edit the text file, none of the actual file text is seeded.  There is an error on the bottom that says \"Could not load script \"FanettiFest_Til2026_10_26.txt\".\"  In playing with the editor, I can write and it seems to function.  It looks like the \"auto\" button was unchecked though for time calculations.  (I assume since it was autopopulated already when the script was added and saved earlier in the test.)  When I go to save my test edits, I get \"Google Drive Station folder is not configured. Please set it in Settings.\"  Very odd because the Preview button on the main page still works.  Split looks like it can work, but the save error from above prevents me from testing 2.3.f."*
+  - **Outcome**: Completed — Fixed `isDriveActive` state in `src/App.tsx` and `src/hooks/useLocationsController.ts` (`false` in `Local` mode), removed the forced `'Drive'` mode override in `CopyEditorModal.tsx`, `MediaPickerModal.tsx`, and `src/lib/driveService.ts`, and initialized `autoApplyReadTime` to `true` in `CopyEditorModal.tsx` so auto-estimated scripts keep the **Auto** read-time calculation checkbox checked by default.
+
+
 
 

@@ -4,7 +4,7 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.1";
+export const CURRENT_APP_VERSION = "0.20.2";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 
@@ -183,8 +183,54 @@ export function setUpNextPromoConfig(cfg?: Partial<UpNextPromoSettings> | null):
 export const DEFAULT_SCHEDULE_WINDOW_CONFIG: ScheduleWindowConfig = {
   windowBeforeMinutes: 5,
   windowAfterMinutes: 5,
-  showLookaroundHours: 1
+  showLookaroundHours: 1,
+  showLookaroundMinutes: 60
 };
+
+export function getShowLookaroundMinutes(cfg?: Partial<ScheduleWindowConfig> | null): number {
+  if (!cfg || typeof cfg !== 'object') return 60;
+  if (typeof cfg.showLookaroundMinutes === 'number' && !isNaN(cfg.showLookaroundMinutes)) {
+    return Math.max(0, Math.min(360, Math.round(cfg.showLookaroundMinutes)));
+  }
+  if (typeof cfg.showLookaroundHours === 'number' && !isNaN(cfg.showLookaroundHours)) {
+    return Math.max(0, Math.min(360, Math.round(cfg.showLookaroundHours * 60)));
+  }
+  return 60;
+}
+
+export function formatLookaroundHhMm(input?: Partial<ScheduleWindowConfig> | number | null): string {
+  const totalMinutes =
+    typeof input === 'number' && !isNaN(input)
+      ? Math.max(0, Math.min(360, Math.round(input)))
+      : getShowLookaroundMinutes(typeof input === 'object' ? input : undefined);
+  const hh = Math.floor(totalMinutes / 60);
+  const mm = totalMinutes % 60;
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+export function parseLookaroundHhMm(raw: string | number | undefined | null, fallbackMinutes = 60): number {
+  if (typeof raw === 'number' && !isNaN(raw)) {
+    return Math.max(0, Math.min(360, Math.round(raw)));
+  }
+  if (typeof raw !== 'string') return fallbackMinutes;
+  const trimmed = raw.trim();
+  if (!trimmed) return fallbackMinutes;
+  const colonMatch = trimmed.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (colonMatch) {
+    const h = parseInt(colonMatch[1], 10) || 0;
+    const m = parseInt(colonMatch[2], 10) || 0;
+    return Math.max(0, Math.min(360, h * 60 + m));
+  }
+  const numVal = parseFloat(trimmed);
+  if (!isNaN(numVal)) {
+    // Interpret small numbers <= 6 (or ending in 'h') as hours, larger integers as minutes
+    if (/m$/i.test(trimmed)) {
+      return Math.max(0, Math.min(360, Math.round(numVal)));
+    }
+    return Math.max(0, Math.min(360, Math.round(numVal * 60)));
+  }
+  return fallbackMinutes;
+}
 
 let _activeScheduleWindowConfig: ScheduleWindowConfig = (() => {
   try {
@@ -193,6 +239,7 @@ let _activeScheduleWindowConfig: ScheduleWindowConfig = (() => {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object') {
+          const lookaroundMins = getShowLookaroundMinutes(parsed);
           return {
             windowBeforeMinutes:
               typeof parsed.windowBeforeMinutes === 'number' && !isNaN(parsed.windowBeforeMinutes)
@@ -202,10 +249,8 @@ let _activeScheduleWindowConfig: ScheduleWindowConfig = (() => {
               typeof parsed.windowAfterMinutes === 'number' && !isNaN(parsed.windowAfterMinutes)
                 ? Math.max(1, Math.min(60, Math.round(parsed.windowAfterMinutes)))
                 : 5,
-            showLookaroundHours:
-              typeof parsed.showLookaroundHours === 'number' && !isNaN(parsed.showLookaroundHours)
-                ? Math.max(0, Math.min(6, Math.round(parsed.showLookaroundHours)))
-                : 1
+            showLookaroundHours: Number((lookaroundMins / 60).toFixed(4)),
+            showLookaroundMinutes: lookaroundMins
           };
         }
       }
@@ -220,6 +265,10 @@ export function getScheduleWindowConfig(): ScheduleWindowConfig {
 
 export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | null): ScheduleWindowConfig {
   if (cfg && typeof cfg === 'object') {
+    const resolvedLookaroundMins =
+      cfg.showLookaroundMinutes !== undefined || cfg.showLookaroundHours !== undefined
+        ? getShowLookaroundMinutes(cfg)
+        : getShowLookaroundMinutes(_activeScheduleWindowConfig);
     _activeScheduleWindowConfig = {
       windowBeforeMinutes:
         typeof cfg.windowBeforeMinutes === 'number' && !isNaN(cfg.windowBeforeMinutes)
@@ -229,10 +278,8 @@ export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | nu
         typeof cfg.windowAfterMinutes === 'number' && !isNaN(cfg.windowAfterMinutes)
           ? Math.max(1, Math.min(60, Math.round(cfg.windowAfterMinutes)))
           : _activeScheduleWindowConfig.windowAfterMinutes,
-      showLookaroundHours:
-        typeof cfg.showLookaroundHours === 'number' && !isNaN(cfg.showLookaroundHours)
-          ? Math.max(0, Math.min(6, Math.round(cfg.showLookaroundHours)))
-          : _activeScheduleWindowConfig.showLookaroundHours
+      showLookaroundHours: Number((resolvedLookaroundMins / 60).toFixed(4)),
+      showLookaroundMinutes: resolvedLookaroundMins
     };
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
@@ -463,7 +510,8 @@ export function isLogForStationSlot(
 export interface ScheduleWindowConfig {
   windowBeforeMinutes: number; // -x: default 5 minutes
   windowAfterMinutes: number;  // +y: default 5 minutes
-  showLookaroundHours: number; // default 1 hour
+  showLookaroundHours: number; // default 1 hour (supports fractional hours from hh:mm)
+  showLookaroundMinutes?: number; // default 60 minutes (01:00)
 }
 
 export interface DataMetaHeader {
@@ -808,6 +856,20 @@ export function migrateAnnouncementsPayload(
     rawList = rawInput;
   }
 
+  const embeddedStationMeta = rawList.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta;
+  if (!existingWindow && embeddedStationMeta?.scheduleWindow) {
+    existingWindow = setScheduleWindowConfig(embeddedStationMeta.scheduleWindow);
+  }
+  if (embeddedStationMeta?.stationTimezone && (!rawInput?._meta?.stationTimezone)) {
+    setStationTimezone(embeddedStationMeta.stationTimezone);
+  }
+  if (embeddedStationMeta?.adminContactInfo !== undefined && !getAdminContactInfo()) {
+    setAdminContactInfo(embeddedStationMeta.adminContactInfo);
+  }
+  if (embeddedStationMeta?.upNextPromo) {
+    setUpNextPromoConfig(embeddedStationMeta.upNextPromo);
+  }
+
   const isoNow = new Date().toISOString();
   const tz = getStationTimezone();
   const persistedRawList = rawList.filter(
@@ -996,6 +1058,18 @@ export function migrateAnnouncementsPayload(
     return backfillLegacyAnnouncementRevisions(cleanItem, rawLogs, tz);
   });
 
+  if (migrated.length > 0) {
+    migrated[0] = {
+      ...migrated[0],
+      _stationMeta: {
+        stationTimezone: tz,
+        adminContactInfo: getAdminContactInfo(),
+        upNextPromo: getUpNextPromoConfig(),
+        scheduleWindow: existingWindow || getScheduleWindowConfig()
+      }
+    };
+  }
+
   counter += 1;
   const envelope: DataEnvelope<any[]> = {
     _meta: {
@@ -1055,6 +1129,23 @@ export function migrateShowsPayload(
     rawList = rawInput;
   }
 
+  // Fallback to item-level _stationMeta carrier (preserved across v0.15.4 /api/trigger-backup envelope rewrites)
+  const embeddedShowMeta = rawList.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta;
+  if (embeddedShowMeta) {
+    if (!resolvedTimezone && embeddedShowMeta.stationTimezone) {
+      resolvedTimezone = embeddedShowMeta.stationTimezone;
+    }
+    if (resolvedAdminContact === undefined && embeddedShowMeta.adminContactInfo !== undefined) {
+      resolvedAdminContact = embeddedShowMeta.adminContactInfo;
+    }
+    if (!resolvedUpNextPromo && embeddedShowMeta.upNextPromo) {
+      resolvedUpNextPromo = embeddedShowMeta.upNextPromo;
+    }
+    if (!resolvedScheduleWindow && embeddedShowMeta.scheduleWindow) {
+      resolvedScheduleWindow = embeddedShowMeta.scheduleWindow;
+    }
+  }
+
   const finalTimezone = setStationTimezone(resolvedTimezone || getStationTimezone());
   const finalAdminContact =
     resolvedAdminContact !== undefined ? setAdminContactInfo(resolvedAdminContact) : getAdminContactInfo();
@@ -1088,7 +1179,17 @@ export function migrateShowsPayload(
       validFrom: resolveSeededValidFrom(item.validFrom, revisions),
       validTo: item.validTo !== undefined ? item.validTo : null,
       isDeleted: typeof item.isDeleted === 'boolean' ? item.isDeleted : false,
-      revisions
+      revisions,
+      ...(idx === 0
+        ? {
+            _stationMeta: {
+              stationTimezone: finalTimezone,
+              adminContactInfo: finalAdminContact,
+              upNextPromo: finalUpNextPromo,
+              scheduleWindow: finalScheduleWindow
+            }
+          }
+        : {})
     };
   });
 

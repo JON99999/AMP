@@ -9,9 +9,12 @@ import {
   Zap,
   ZapOff,
   Ruler,
+  ShieldAlert,
+  X,
 } from "lucide-react";
 import GoogleAuthSection from "./GoogleAuthSection";
 import { cn, extractFolderId } from "../lib/utils";
+import { getAdminContactInfo, setAdminContactInfo } from "../lib/compatibility";
 import { getStorageApiHeaders } from "../lib/driveService";
 
 export interface LocationsModalProps {
@@ -21,6 +24,13 @@ export interface LocationsModalProps {
   setLocationMode: (mode: "Local" | "Drive" | "Demo") => void;
   isAiStudio: boolean;
   windowSize?: { width: number; height: number };
+  // Admin verification & First-run contact setup (#47)
+  isAdminApp?: boolean;
+  isAdmin?: boolean;
+  onAdminToggle?: (val: boolean) => void;
+  adminContactInfo?: string;
+  hasSavedAdminContact?: boolean;
+  onSaveAdminContactInfo?: (newContact: string) => Promise<boolean>;
   // Local draft paths
   draftLocalPathAmp?: string;
   setDraftLocalPathAmp?: (path: string) => void;
@@ -106,6 +116,12 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
   locationMode,
   setLocationMode,
   isAiStudio,
+  isAdminApp = false,
+  isAdmin = false,
+  onAdminToggle,
+  adminContactInfo,
+  hasSavedAdminContact = false,
+  onSaveAdminContactInfo,
   draftLocalPathAmp,
   setDraftLocalPathAmp,
   draftLocalPathCalendar,
@@ -184,6 +200,12 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
   const [showMissingModal, setShowMissingModal] = useState(false);
   const [missingCheckData, setMissingCheckData] = useState<{ missingItems: string[]; targetFolderDesc: string } | null>(null);
   const [isCheckingMissing, setIsCheckingMissing] = useState(false);
+  const [firstRunContactDraft, setFirstRunContactDraft] = useState("");
+  const [isSavingFirstRunContact, setIsSavingFirstRunContact] = useState(false);
+  const [dismissedFirstRunContact, setDismissedFirstRunContact] = useState(false);
+
+  const activeAdminContact = (adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo()).trim();
+  const showFirstRunAdminContactBanner = isAdmin && !hasSavedAdminContact && !activeAdminContact && !dismissedFirstRunContact;
 
   const handleBrowseAmp = async () => {
     const selected = await onBrowseNative("amp");
@@ -310,14 +332,101 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
                 </div>
               </div>
 
-              {/* Modal Core Form */}
-              <form
-                onSubmit={handleSubmit}
-                className="flex flex-col flex-1 overflow-hidden"
-              >
-                {/* Modal Content */}
-                <div className="p-3.5 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
-                  {/* Mode Selector Row */}
+              {isAdminApp && !isAdmin ? (
+                <div className="flex flex-col items-center justify-center p-6 text-center bg-white">
+                  <div className="bg-orange-50 p-4 rounded-full mb-3.5">
+                    <ShieldAlert className="w-10 h-10 text-orange-500" />
+                  </div>
+                  <h2 className="text-xs font-black text-slate-800 uppercase tracking-tighter mb-1.5">
+                    For Administrators ONLY
+                  </h2>
+                  <p className="text-xs text-slate-500 max-w-[280px] mb-4 leading-relaxed font-medium">
+                    Please don&apos;t change or edit unless you know how it all works. Thanks!
+                  </p>
+                  <div className="w-full max-w-[320px] mb-5 p-3 rounded-lg bg-slate-50 border border-slate-200 text-left">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
+                      Admin Contact
+                    </span>
+                    <p className="text-xs font-bold text-slate-800 whitespace-pre-wrap break-words leading-snug">
+                      {activeAdminContact || "No admin contact info saved yet. Configure in Admin Mode under Calendar or Folders > Help."}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 w-full justify-center">
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold uppercase rounded border border-slate-300 transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onAdminToggle?.(true)}
+                      className="admin-challenge-btn px-5 py-2 bg-slate-900 text-white rounded text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg active:scale-95 cursor-pointer"
+                    >
+                      Enter Admin Mode
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Modal Core Form */
+                <form
+                  onSubmit={handleSubmit}
+                  className="flex flex-col flex-1 overflow-hidden"
+                >
+                  {/* Modal Content */}
+                  <div className="p-3.5 space-y-3 overflow-y-auto flex-1 custom-scrollbar">
+                    {showFirstRunAdminContactBanner && (
+                      <div className="p-2.5 bg-purple-50 border border-purple-200 rounded-lg space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <span className="text-xs font-black uppercase tracking-wider text-purple-900 block">
+                              First-Run Setup: Admin Contact Info
+                            </span>
+                            <span className="text-xs text-purple-800 block mt-0.5 leading-snug">
+                              Enter contact details shown on the Admin warning screen and on &quot;Get Help&quot; alerts (editable anytime under Folders &gt; Help).
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setDismissedFirstRunContact(true)}
+                            className="p-1 text-purple-700 hover:text-purple-950 rounded cursor-pointer shrink-0"
+                            title="Dismiss for now"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            value={firstRunContactDraft}
+                            onChange={(e) => setFirstRunContactDraft(e.target.value)}
+                            placeholder="Name, email, or phone..."
+                            className="flex-1 px-2.5 py-1 bg-white border border-purple-300 rounded text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                          />
+                          <button
+                            type="button"
+                            disabled={isSavingFirstRunContact || !firstRunContactDraft.trim()}
+                            onClick={async () => {
+                              setIsSavingFirstRunContact(true);
+                              try {
+                                const cleaned = setAdminContactInfo(firstRunContactDraft);
+                                if (onSaveAdminContactInfo) {
+                                  await onSaveAdminContactInfo(cleaned);
+                                }
+                                setDismissedFirstRunContact(true);
+                              } finally {
+                                setIsSavingFirstRunContact(false);
+                              }
+                            }}
+                            className="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50"
+                          >
+                            {isSavingFirstRunContact ? "Saving..." : "Save"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {/* Mode Selector Row */}
                   <div className="space-y-1.5">
                     <p className="text-xs font-black uppercase text-slate-600 tracking-widest leading-none">
                       Select Mode
@@ -1300,6 +1409,7 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
                   )}
                 </div>
               </form>
+              )}
             </motion.div>
           </div>
         )}

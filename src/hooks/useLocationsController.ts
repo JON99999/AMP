@@ -685,7 +685,7 @@ export function useLocationsController({
           updatedSettings.localPathCalendar || "",
         );
 
-        setIsDriveActive(true);
+        setIsDriveActive(false);
         setIsDriveValidated(true);
         setLocalPathsUnavailable(!exists);
         await fetchDataForMode(updatedSettings);

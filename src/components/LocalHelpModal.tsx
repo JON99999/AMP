@@ -32,6 +32,9 @@ import {
   ScheduleWindowConfig,
   getScheduleWindowConfig,
   setScheduleWindowConfig,
+  getShowLookaroundMinutes,
+  formatLookaroundHhMm,
+  parseLookaroundHhMm,
 } from '../lib/compatibility';
 
 interface LocalHelpModalProps {
@@ -93,8 +96,8 @@ export default function LocalHelpModal({
   const [draftWindowAfter, setDraftWindowAfter] = useState<number>(() =>
     (scheduleWindowConfig || getScheduleWindowConfig()).windowAfterMinutes
   );
-  const [draftShowLookaround, setDraftShowLookaround] = useState<number>(() =>
-    (scheduleWindowConfig || getScheduleWindowConfig()).showLookaroundHours
+  const [draftShowLookaroundText, setDraftShowLookaroundText] = useState<string>(() =>
+    formatLookaroundHhMm(scheduleWindowConfig || getScheduleWindowConfig())
   );
   const [isSavingWindow, setIsSavingWindow] = useState(false);
   const [windowStatusMessage, setWindowStatusMessage] = useState<string | null>(null);
@@ -662,7 +665,7 @@ export default function LocalHelpModal({
                       rows={2}
                       value={draftAdminContact}
                       onChange={(e) => setDraftAdminContact(e.target.value)}
-                      placeholder="e.g., Admin: Kate — kate@station.org / (555) 019-2834"
+                      placeholder="e.g., Admin 1 — admin@station.org / (555) 000-0000"
                       className="w-full px-2.5 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
@@ -878,7 +881,7 @@ export default function LocalHelpModal({
                         Current Live Schedule Window
                       </span>
                       <span className="text-xs font-bold text-slate-900 block">
-                        -{activeScheduleWindow.windowBeforeMinutes}m grace / +{activeScheduleWindow.windowAfterMinutes}m early · {activeScheduleWindow.showLookaroundHours}h show lookaround
+                        -{activeScheduleWindow.windowBeforeMinutes}m grace / +{activeScheduleWindow.windowAfterMinutes}m early · {formatLookaroundHhMm(activeScheduleWindow)} show lookaround
                       </span>
                     </div>
                   </div>
@@ -887,7 +890,7 @@ export default function LocalHelpModal({
                     onClick={() => {
                       setDraftWindowBefore(activeScheduleWindow.windowBeforeMinutes);
                       setDraftWindowAfter(activeScheduleWindow.windowAfterMinutes);
-                      setDraftShowLookaround(activeScheduleWindow.showLookaroundHours);
+                      setDraftShowLookaroundText(formatLookaroundHhMm(activeScheduleWindow));
                       setWindowStatusMessage(null);
                       setWindowEditStage('editing');
                     }}
@@ -941,21 +944,24 @@ export default function LocalHelpModal({
 
                     <div className="space-y-1">
                       <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
-                        Show Lookaround (Hours)
+                        Show Lookaround (hh:mm)
                       </label>
                       <input
-                        type="number"
-                        min={0}
-                        max={6}
-                        value={draftShowLookaround}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          setDraftShowLookaround(isNaN(val) ? 1 : Math.max(0, Math.min(6, val)));
+                        type="text"
+                        placeholder="01:00"
+                        value={draftShowLookaroundText}
+                        onChange={(e) => setDraftShowLookaroundText(e.target.value)}
+                        onBlur={() => {
+                          const parsedMins = parseLookaroundHhMm(
+                            draftShowLookaroundText,
+                            getShowLookaroundMinutes(activeScheduleWindow)
+                          );
+                          setDraftShowLookaroundText(formatLookaroundHhMm(parsedMins));
                         }}
-                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
                       />
                       <p className="text-[11px] text-slate-500">
-                        Adjacent hours shown around show (default <code className="font-mono font-bold">1</code>h).
+                        Adjacent time shown around show (<code className="font-mono font-bold">00:00</code>–<code className="font-mono font-bold">06:00</code>, default <code className="font-mono font-bold">01:00</code>).
                       </p>
                     </div>
                   </div>
@@ -975,17 +981,23 @@ export default function LocalHelpModal({
                       onClick={async () => {
                         setIsSavingWindow(true);
                         try {
+                          const lookaroundMins = parseLookaroundHhMm(
+                            draftShowLookaroundText,
+                            getShowLookaroundMinutes(activeScheduleWindow)
+                          );
                           const updated = setScheduleWindowConfig({
                             windowBeforeMinutes: draftWindowBefore,
                             windowAfterMinutes: draftWindowAfter,
-                            showLookaroundHours: draftShowLookaround,
+                            showLookaroundMinutes: lookaroundMins,
+                            showLookaroundHours: Number((lookaroundMins / 60).toFixed(4)),
                           });
+                          setDraftShowLookaroundText(formatLookaroundHhMm(updated));
                           if (onSaveScheduleWindowConfig) {
                             await onSaveScheduleWindowConfig(updated);
                           }
                           setWindowEditStage('locked');
                           setWindowStatusMessage(
-                            `Live Schedule Window saved (-${updated.windowBeforeMinutes}m / +${updated.windowAfterMinutes}m · ${updated.showLookaroundHours}h lookaround).`
+                            `Live Schedule Window saved (-${updated.windowBeforeMinutes}m / +${updated.windowAfterMinutes}m · ${formatLookaroundHhMm(updated)} lookaround).`
                           );
                         } finally {
                           setIsSavingWindow(false);

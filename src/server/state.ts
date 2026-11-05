@@ -359,6 +359,52 @@ export function getShowsBackupPath(): string | null {
   return null;
 }
 
+export interface StationSettingsSidecar {
+  stationTimezone?: string;
+  adminContactInfo?: string;
+  upNextPromo?: any;
+  scheduleWindow?: any;
+  updatedAt?: string;
+}
+
+export function getStationSettingsSidecarPath(): string | null {
+  const settingsDir = getAmpSettingsDir();
+  if (settingsDir && fs.existsSync(settingsDir)) {
+    return path.join(settingsDir, 'station_settings.json');
+  }
+  return null;
+}
+
+export function readStationSettingsSidecar(): StationSettingsSidecar | null {
+  try {
+    const sidecarPath = getStationSettingsSidecarPath();
+    if (sidecarPath && fs.existsSync(sidecarPath)) {
+      const parsed = JSON.parse(fs.readFileSync(sidecarPath, 'utf-8') || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+export function writeStationSettingsSidecar(partial: StationSettingsSidecar): void {
+  try {
+    const sidecarPath = getStationSettingsSidecarPath();
+    if (!sidecarPath) return;
+    const existing = readStationSettingsSidecar() || {};
+    const merged: StationSettingsSidecar = {
+      ...existing,
+      ...(partial.stationTimezone !== undefined ? { stationTimezone: partial.stationTimezone } : {}),
+      ...(partial.adminContactInfo !== undefined ? { adminContactInfo: partial.adminContactInfo } : {}),
+      ...(partial.upNextPromo !== undefined ? { upNextPromo: partial.upNextPromo } : {}),
+      ...(partial.scheduleWindow !== undefined ? { scheduleWindow: partial.scheduleWindow } : {}),
+      updatedAt: new Date().toISOString()
+    };
+    atomicWriteFileSync(sidecarPath, JSON.stringify(merged, null, 2));
+  } catch (_) {}
+}
+
 export function generateBackupFilename(
   type: 'logs' | 'announcements' | 'shows',
   workstationMode?: string
