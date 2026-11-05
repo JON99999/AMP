@@ -1,12 +1,22 @@
 # AMP Historical Version Archives Index (`JON99999/AMP_Private` -> `archives` Branch)
 
-To keep the Google AI Studio workspace lightweight and avoid the ~200-file single-commit GitHub export bottleneck, all historical uncompressed version snapshots (`archive_v*`) are stored on the **`archives`** branch of **`JON99999/AMP_Private`**.
+To keep the Google AI Studio workspace lightweight and avoid the ~200-file single-commit GitHub export bottleneck, all historical uncompressed version snapshots (`archive_v*`) are stored on the protected **`archives`** branch of **`JON99999/AMP_Private`**.
 
 ---
 
-## 1. Archived Versions Available on `AMP_Private` (`branch: archives`)
+## 1. Security & Process Guardrails (Strictly Read-Only for the Agent)
 
-All 27 historical snapshots (`1,664` files total) reside under `dev/archives/archive_v<version>/` on the `archives` branch:
+1. **Zero Agent Write Access to GitHub Repositories**:
+   - The AI Studio agent uses a **Read-Only** Fine-Grained Personal Access Token (`GITHUB_ARCHIVE_TOKEN`, scoped strictly to `JON99999/AMP_Private` with `Contents: Read-only`).
+   - The agent is **strictly prohibited** from executing any mutating GitHub API calls (`POST`, `PUT`, `PATCH`, `DELETE`, `git push`) against `JON99999/AMP_Private` or `JON99999/AMP`.
+2. **Automated Append-Only Archiving via GitHub Actions (`.github/workflows/sync-public.yml`)**:
+   - Whenever the user exports `main` from AI Studio to `JON99999/AMP_Private`, the `Append Version Snapshot to Private Archives Branch` step in `.github/workflows/sync-public.yml` automatically copies the current release files into `dev/archives/archive_v<version>/` on the `archives` branch without ever deleting prior `archive_v*` folders.
+
+---
+
+## 2. Archived Versions Available on `AMP_Private` (`branch: archives`)
+
+All historical snapshots reside under `dev/archives/archive_v<version>/` on the `archives` branch:
 
 - `dev/archives/archive_v0.12.21/`
 - `dev/archives/archive_v0.13.1/`
@@ -38,25 +48,28 @@ All 27 historical snapshots (`1,664` files total) reside under `dev/archives/arc
 
 ---
 
-## 2. How the Agent Reads or Diffs Historical Versions on Demand
+## 3. How the Agent Reads or Diffs Historical Versions on Demand (`GET` Only)
 
 Whenever the user asks to review, inspect, or compare against a historical version:
 
-1. **Resolve `GITHUB_GIST_TOKEN` from the AI Studio Server Environment**:
+1. **Resolve the Read-Only `GITHUB_ARCHIVE_TOKEN` from the AI Studio Server Environment**:
    ```bash
-   export GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}
+   export ARCHIVE_TOKEN=${GITHUB_ARCHIVE_TOKEN:-$(grep -shz '^GITHUB_ARCHIVE_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}
+   if [ -z "$ARCHIVE_TOKEN" ]; then
+     export ARCHIVE_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}
+   fi
    ```
 
 2. **List Files Inside a Historical Archive Folder**:
    ```bash
-   curl -sH "Authorization: Bearer $GITHUB_GIST_TOKEN" \
+   curl -sH "Authorization: Bearer $ARCHIVE_TOKEN" \
      -H "Accept: application/vnd.github+json" \
      "https://api.github.com/repos/JON99999/AMP_Private/contents/dev/archives/archive_v0.15.4/src?ref=archives"
    ```
 
 3. **Fetch a Raw Historical File into `/tmp/` (Never into the Project Workspace)**:
    ```bash
-   curl -sLH "Authorization: Bearer $GITHUB_GIST_TOKEN" \
+   curl -sLH "Authorization: Bearer $ARCHIVE_TOKEN" \
      -H "Accept: application/vnd.github.raw+json" \
      "https://api.github.com/repos/JON99999/AMP_Private/contents/dev/archives/archive_v0.15.4/src/components/PlayerTab.tsx?ref=archives" \
      > /tmp/PlayerTab_v0.15.4.tsx
@@ -66,15 +79,3 @@ Whenever the user asks to review, inspect, or compare against a historical versi
    ```bash
    diff -u /tmp/PlayerTab_v0.15.4.tsx src/components/PlayerTab.tsx
    ```
-
----
-
-## 3. How the Agent Archives a New Version (`"Archive version X"`)
-
-When explicitly commanded by the user to archive a version (e.g., *"Archive version 0.20.2"*):
-
-1. **Do NOT leave a full `archive_v<version>/` folder inside the local AI Studio workspace.**
-2. **Push the Uncompressed Snapshot Directly to `JON99999/AMP_Private` (`branch: archives`)**:
-   - Use the GitHub Git Trees REST API (`POST /repos/JON99999/AMP_Private/git/trees` with `base_tree` set to the current `archives` branch tree SHA, adding all current project source/config files under `dev/archives/archive_v<version>/`, creating a commit, and updating `refs/heads/archives`).
-3. **Update This Index (`dev/archives/README.md`)**:
-   - Append `- dev/archives/archive_v<version>/` to Section 1 of this file.

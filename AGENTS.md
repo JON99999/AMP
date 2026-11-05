@@ -2,14 +2,12 @@
 
 **AMP (Announcement Media Player)** is a standalone desktop broadcast application built with Electron, Express, and React/Vite.
 
-## 🚨 1. MANDATORY ARCHIVE IMMUTABILITY & REMOTE `archives` BRANCH (`dev/archives/README.md`)
-- **STRICT PROHIBITION**: NEVER create, modify, delete, or push any archive on the remote `archives` branch (`JON99999/AMP_Private`) or inside `dev/archives/` unless the user's immediate prompt explicitly commands an archive operation (e.g., "Archive version X").
-- **NO IMPLIED PERMISSION**: Bug fixes, tests, doc updates, schema migrations, name changes, or version bumps NEVER imply permission to touch archives.
-- **DOUBLE-CHECK**: If any ambiguity exists regarding archives, ask the user and wait for explicit confirmation before touching archives.
+## 🚨 1. MANDATORY ARCHIVE IMMUTABILITY & READ-ONLY GITHUB ARCHIVES (`dev/archives/README.md`)
+- **STRICT READ-ONLY GITHUB REPO RULE**: The agent is **strictly prohibited** from executing any mutating GitHub API or git push command (`POST`, `PUT`, `PATCH`, `DELETE`, `git push`) against `JON99999/AMP_Private` or `JON99999/AMP`. Repository pushes happen exclusively through the user's AI Studio UI export and GitHub Actions (`.github/workflows/sync-public.yml`).
+- **STRICT PROHIBITION ON ARCHIVE MUTATION**: NEVER create, modify, or delete any folder or file inside `dev/archives/` unless explicitly instructed.
 - **REMOTE ARCHIVE STORAGE (`JON99999/AMP_Private` -> `branch: archives`)**:
-  - Historical version snapshots (`archive_v0.12.21` through `archive_v0.20.1+`) are offloaded to `JON99999/AMP_Private` on the `archives` branch so they do not bloat the local AI Studio file tree or trigger GitHub export batch limits.
-  - **Reading Historical Versions**: When asked to review or compare against a historical version, read `dev/archives/README.md` and fetch the needed historical files on demand via the GitHub API (`?ref=archives`) using `$GITHUB_GIST_TOKEN` into `/tmp/` (never into the workspace tree).
-  - **Archiving a New Version**: When explicitly commanded to archive a version, push the uncompressed snapshot files (`package.json` and `package-lock.json` updated together) directly to `dev/archives/archive_v<version>/` on the `archives` branch of `JON99999/AMP_Private` via the GitHub Git Trees API and append the version to `dev/archives/README.md`. Never pack into `.tar.gz`/`.zip`, and never store full `archive_v*` folders in the local workspace.
+  - Historical version snapshots (`archive_v0.12.21` through `archive_v0.20.1+`) live on the protected `archives` branch of `JON99999/AMP_Private` and are automatically appended by `.github/workflows/sync-public.yml` whenever a version is pushed to `main`.
+  - **Reading Historical Versions (`GET` Only)**: When asked to review or compare against a historical version, read `dev/archives/README.md` and fetch the needed historical files on demand via read-only `GET` requests to the GitHub API (`?ref=archives`) using `$GITHUB_ARCHIVE_TOKEN` (or `$GITHUB_GIST_TOKEN`) into `/tmp/` (never into the workspace tree).
 
 ## 2. Target Platforms, Desktop Architecture & Build Pipeline
 - **Priority Order**:
@@ -114,7 +112,8 @@
   - `dev/docs/`: All architectural/historical docs, `ARCHITECTURE_AND_GLOSSARY.md`, `ROADMAP_AND_BACKLOG.md`, `ROADMAP_newstuff.md`, and `ROADMAP_HISTORY.md`.
   - `scripts/`: Build and verification scripts (`build-apps.cjs`, `afterAllArtifactBuild.cjs`, `verify-version.cjs`, `test-schema-upgrade.cjs`).
   - **Temporary AI Studio Paste/Upload Artifacts (`public/assets/aistudio/`)**: Whenever AI Studio auto-saves pasted text blobs (`Paste_*`) or temporary `.json`/log attachments into `public/assets/aistudio/`, proactively notify the user at the end of the turn and ask permission to delete them so they do not bloat the repo, builds, or chat context.
-  - **AI Studio Secret Resolution in `run_command` Subshells (`GITHUB_GIST_TOKEN`)**: AI Studio injects user secrets from the Secrets panel (declared in `.env.example`, such as `GITHUB_GIST_TOKEN`) into the running dev-server process environment rather than bare `run_command` subshells. Whenever a shell command or Node one-liner needs `GITHUB_GIST_TOKEN` (e.g., to `PATCH` Gist `eb5e4a5f7de0299b12e40935cdfc9b32` or call the GitHub API), resolve it via:
+  - **AI Studio Secret Resolution in `run_command` Subshells (`GITHUB_ARCHIVE_TOKEN` & `GITHUB_GIST_TOKEN`)**: AI Studio injects user secrets from the Secrets panel (declared in `.env.example`) into the running dev-server process environment rather than bare `run_command` subshells. Resolve them via:
+    `GITHUB_ARCHIVE_TOKEN=${GITHUB_ARCHIVE_TOKEN:-$(grep -shz '^GITHUB_ARCHIVE_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`
     `GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`
 - **Search Hygiene**: Always pass `--exclude-dir=archives --exclude-dir=node_modules --exclude-dir=dist` when running `grep` or workspace searches.
 - **Core Architectural Constraints**:

@@ -10,12 +10,14 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Private Source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Extract Commit & Delta Info
         id: source_meta
@@ -24,6 +26,39 @@ jobs:
           echo "commit_msg<<EOF" >> $GITHUB_OUTPUT
           echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Append Version Snapshot to Private Archives Branch
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          ARCHIVE_DIR="dev/archives/archive_v${PKG_VERSION}"
+          echo "Syncing current version snapshot to ${ARCHIVE_DIR} on 'archives' branch..."
+
+          # Stage current workspace files into a temporary directory (excluding .git and dev/archives)
+          mkdir -p /tmp/current_snapshot
+          rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='release' --exclude='dev/archives' ./ /tmp/current_snapshot/
+
+          # Checkout the dedicated 'archives' branch in a separate worktree
+          git fetch origin archives:archives
+          git worktree add /tmp/archives_wt archives
+
+          # Copy snapshot into dev/archives/archive_v<version>/ (append-only; never deletes other archive_v* folders)
+          mkdir -p "/tmp/archives_wt/${ARCHIVE_DIR}"
+          rsync -a --delete /tmp/current_snapshot/ "/tmp/archives_wt/${ARCHIVE_DIR}/"
+
+          cd /tmp/archives_wt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add "${ARCHIVE_DIR}"
+          if ! git diff-index --quiet HEAD --; then
+            git commit -m "Archive snapshot v${PKG_VERSION}"
+            git push origin HEAD:archives
+            echo "Archived v${PKG_VERSION} to 'archives' branch."
+          else
+            echo "Archive v${PKG_VERSION} is already up to date on 'archives' branch."
+          fi
+          cd "$GITHUB_WORKSPACE"
+          git worktree remove --force /tmp/archives_wt
+          rm -rf /tmp/current_snapshot
 
       - name: Remove Internal Files
         run: |
