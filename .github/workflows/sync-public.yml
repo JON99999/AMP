@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Extract Commit & Delta Info
         id: source_meta
@@ -28,7 +28,14 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Append Version Snapshot to Private Archives Branch
+        env:
+          PUBLIC_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
         run: |
+          if [ -z "$PUBLIC_TOKEN" ]; then
+            echo "::error::PUBLIC_REPO_TOKEN secret is not set or empty."
+            exit 1
+          fi
+
           PKG_VERSION=$(node -p "require('./package.json').version")
           ARCHIVE_DIR="dev/archives/archive_v${PKG_VERSION}"
           echo "Syncing current version snapshot to ${ARCHIVE_DIR} on 'archives' branch..."
@@ -37,9 +44,8 @@ jobs:
           mkdir -p /tmp/current_snapshot
           rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='release' --exclude='dev/archives' ./ /tmp/current_snapshot/
 
-          # Checkout the dedicated 'archives' branch in a separate worktree
-          git fetch origin archives:archives
-          git worktree add /tmp/archives_wt archives
+          # Checkout the dedicated 'archives' branch in a separate worktree from already-fetched origin/archives
+          git worktree add -B archives /tmp/archives_wt origin/archives
 
           # Copy snapshot into dev/archives/archive_v<version>/ (append-only; never deletes other archive_v* folders)
           mkdir -p "/tmp/archives_wt/${ARCHIVE_DIR}"
@@ -51,7 +57,7 @@ jobs:
           git add "${ARCHIVE_DIR}"
           if ! git diff-index --quiet HEAD --; then
             git commit -m "Archive snapshot v${PKG_VERSION}"
-            git push origin HEAD:archives
+            git push "https://${PUBLIC_TOKEN}@github.com/JON99999/AMP_Private.git" HEAD:archives
             echo "Archived v${PKG_VERSION} to 'archives' branch."
           else
             echo "Archive v${PKG_VERSION} is already up to date on 'archives' branch."
