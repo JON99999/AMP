@@ -1004,6 +1004,8 @@ export default function App() {
             path: file.path,
             approximateReadTime: file.approximateReadTime,
             assetType: file.assetType,
+            mtimeMs: file.mtimeMs,
+            modifiedTime: file.modifiedTime,
           }));
           syncMediaCatalogFiles(mappedMP3s, { clearExisting: true });
           setDriveMP3s(mappedMP3s);
@@ -1837,12 +1839,18 @@ export default function App() {
           activeAnnouncements.forEach((s) => {
             const activeMp3 = getActiveMp3ForSlot(s, slot);
             const resolvedFilename = activeMp3?.mp3Url || '';
+            const isUpNextItem = Boolean(s.isUpNextPromo) || resolvedFilename.startsWith('__up_next_promo__:');
+            const cleanUpNextShowName = (s.name || '').replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
             itemsToExport.push({
               slotTime: format(slot, "HH:mm"),
-              fileName: resolvedFilename,
+              fileName: isUpNextItem ? `Up Next - ${cleanUpNextShowName}.txt` : resolvedFilename,
+              rawMp3Url: resolvedFilename,
+              isUpNextPromo: isUpNextItem,
+              upNextScriptText: (s as any).upNextScriptText,
               announcementName: s.name,
               announcementId: s.id,
               minute: s.minute,
+              assetType: isUpNextItem ? 'script' : activeMp3?.assetType,
               isEvergreen: false,
             });
           });

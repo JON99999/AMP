@@ -4,7 +4,7 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.2";
+export const CURRENT_APP_VERSION = "0.20.3";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 
@@ -839,17 +839,20 @@ export function migrateAnnouncementsPayload(
   lastModifiedBy = CURRENT_APP_VERSION,
   existingCounter = 0,
   rawLogs?: any,
-  scriptTextResolver?: ScriptTextResolver
+  scriptTextResolver?: ScriptTextResolver,
+  overrideScheduleWindow?: ScheduleWindowConfig
 ): { envelope: DataEnvelope<any[]>; data: any[] } {
   let rawList: any[] = [];
   let counter = existingCounter;
-  let existingWindow: ScheduleWindowConfig | undefined;
+  let existingWindow: ScheduleWindowConfig | undefined = overrideScheduleWindow
+    ? setScheduleWindowConfig(overrideScheduleWindow)
+    : undefined;
   if (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)) {
     rawList = Array.isArray(rawInput.data) ? rawInput.data : [];
     if (typeof rawInput.AnnouncementsBackupCounter === 'number') {
       counter = rawInput.AnnouncementsBackupCounter;
     }
-    if (rawInput._meta?.scheduleWindow) {
+    if (!existingWindow && rawInput._meta?.scheduleWindow) {
       existingWindow = setScheduleWindowConfig(rawInput._meta.scheduleWindow);
     }
   } else if (Array.isArray(rawInput)) {

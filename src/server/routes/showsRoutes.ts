@@ -1411,13 +1411,26 @@ export function registerShowsRoutes(app: express.Express): void {
         let itemAlbum = (item.album && typeof item.album === 'string' && item.album.trim()) || '';
 
         let status = 'Missing';
-        if (sourceFileName.startsWith('__up_next_promo__:')) {
+        const isUpNextPromoItem =
+          Boolean(item.isUpNextPromo) ||
+          sourceFileName.startsWith('__up_next_promo__:') ||
+          (typeof item.rawMp3Url === 'string' && item.rawMp3Url.startsWith('__up_next_promo__:'));
+        if (isUpNextPromoItem) {
           try {
-            const rawEncoded = sourceFileName.replace(/^__up_next_promo__:/, '').replace(/\.txt$/i, '');
-            let decodedText = rawEncoded;
-            try {
-              decodedText = decodeURIComponent(rawEncoded);
-            } catch (_) {}
+            let decodedText = '';
+            if (typeof item.upNextScriptText === 'string' && item.upNextScriptText.trim()) {
+              decodedText = item.upNextScriptText;
+            } else {
+              const promoSource =
+                typeof item.rawMp3Url === 'string' && item.rawMp3Url.startsWith('__up_next_promo__:')
+                  ? item.rawMp3Url
+                  : sourceFileName;
+              const rawEncoded = promoSource.replace(/^__up_next_promo__:/, '').replace(/\.txt$/i, '');
+              decodedText = rawEncoded;
+              try {
+                decodedText = decodeURIComponent(rawEncoded);
+              } catch (_) {}
+            }
             fs.writeFileSync(destFilePath, decodedText, 'utf-8');
             copiedCount++;
             status = 'Found & Copied';

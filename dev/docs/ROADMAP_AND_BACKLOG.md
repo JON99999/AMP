@@ -4,7 +4,7 @@
 > - **Trigger Phrases**: Whenever the user asks *"what's left"*, *"what's next"*, *"next steps"*, *"open items"*, *"roadmap"*, *"easy wins"*, or similar phrasing, **always read `dev/docs/ROADMAP_newstuff.md`, this file, and `dev/docs/ROADMAP_HISTORY.md` first**.
 > - **Inbox Intake (`dev/docs/ROADMAP_newstuff.md`)**: On every roadmap check (or when `ROADMAP_newstuff.md` has pending entries), parse any raw notes in `dev/docs/ROADMAP_newstuff.md`, add them as numbered `#ID` items in this file recording **only** the verbatim `User Note` (hold off on analysis or implementation plans until asked), clear the consumed raw notes from `## Pending Inbox`, and log a 1-line receipt in `## Ingested Batch Log`.
 > - **Roadmap Items Are Reminders, Not Commands**: Selecting a `#ID` opens analysis/discussion on that reminder; always present a numbered checklist separating **Core Scoped Changes** from **Related / Edge-of-Scope Suggestions** using continuous `1–N` numbering across subgroupings (e.g., `- **1.**` through `- **6.**` with nested `a., b., c.` sub-bullets so Markdown parsers never reset numbering to `1–3` under a second header) and wait for confirmation before editing files.
-> - **Immutable Monotonic `#ID` Numbering (Never Renumber)**: Every new item MUST receive the next sequential integer `#ID` (`max(existing #ID across ROADMAP_AND_BACKLOG.md and ROADMAP_HISTORY.md) + 1`, so the next item added is **`#53`**). Never renumber, reuse, or shift existing `#ID`s.
+> - **Immutable Monotonic `#ID` Numbering (Never Renumber)**: Every new item MUST receive the next sequential integer `#ID` (`max(existing #ID across ROADMAP_AND_BACKLOG.md and ROADMAP_HISTORY.md) + 1`, so the next item added is **`#59`**). Never renumber, reuse, or shift existing `#ID`s.
 > - **Historical Preservation (`dev/docs/ROADMAP_HISTORY.md`) & Verbatim Note Permanence**: The user's original verbatim `User Note` must **always** accompany an item across any future changes, revisions, or archiving. When an item is completed, rejected, abandoned, or resolved, move it out of this active backlog into `dev/docs/ROADMAP_HISTORY.md`, preserving its permanent `#ID`, its original verbatim `User Note`, and a brief, non-technical high-level outcome summary.
 > - **Three-Tier Subgrouping (`Pending / Dependent`, `Current / Next`, `Future / Deferred / Low Priority`)**:
 >   1. **Pending / Dependent**: Items whose code or migration logic is implemented and awaiting external validation (such as live two-version desktop workstation testing) or future station-wide version retirement before final cutover.
@@ -21,12 +21,13 @@
   * *"18.1 doesn't seem to upgrade the old data as expected.  Properly logged shows show as missed."*
   * *(Merged from `#28`)*: *"For any legacy read cards which do not have estimated times that do have readable text, as a part of the upgrade path for converting old schma's to the current, write in the WPM based estimate into prior meta data where the approx read time is null or not present."*
   * *(11/04/2026 Testing Progress)*: *"Steps 1 and 2 check out _for windows_.  (Note, prepare to reprompt me later on everything so I can redo the tests on a mac later.)"*
-* **Implemented & Automated Verification Complete (`v0.19.4`)**:
+  * *(11/05/2026 Testing Progress)*: Completed full `v0.20.2` Windows pass across Phases 1–4 (`Steps 1–7`); uncovered `#54`–`#58` (all 5 fixed in `v0.20.3`) and `#53` (added to `Current / Next`). Ready for Windows `v0.20.3` delta re-test of `#54`–`#58` and full macOS Universal (`-Mac.dmg`) verification.
+* **Implemented & Automated Verification Complete (`v0.20.3`)**:
   * **Dual-Value Sibling Bridge (`#5`)**: Bidirectional seeding and dual-write of `logs.json` (`scheduledFor`/`executedAt` <-> `announcementTime`/`timestamp`/`logTimeStamp`), `announcements.json` (`validFrom`, `validTo`, `isDeleted`, `revisions`, `timeGatedMp3s`), and `shows.json` (`active` + temporal fields), plus automatic `_meta` healing on shared folders (`dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md`).
   * **Legacy Script WPM Approximate Read-Time Backfill (`#28`)**: `migrateAnnouncementsPayload` (`src/lib/compatibility.ts`), `normalizeAnnouncement` (`src/lib/utils.ts`), and `resolveLocalAnnouncementScriptText` (`server.ts`) automatically compute and backfill the ~150 WPM duration (`0mXXs`, rounded up to the nearest 5s) across active `timeGatedMp3s` and historical `revisions` whenever a legacy script card (`assetType === 'script'` or `.txt`/`.md`) has `null` or missing `approximateReadTime` and readable text is available on disk or inline, while preserving any existing explicit duration (`scripts/test-schema-upgrade.ts` Stage 5).
 * **What `#5b` Is Still Tracking (Pending / Dependent)**:
-  * **Live Two-Version Desktop Workstation Check**:
-    * On the next desktop executable build, run `v0.15.4/5` and `v0.19.4+` side-by-side against the same shared folder to confirm live coexistence, zero false Missed counts, and automatic WPM `approximateReadTime` backfill on legacy `.txt`/`.md` script cards in production. *(Windows Phase 1 Steps 1–2 verified; full Windows pass + macOS re-run pending.)*
+  * **Live Two-Version Desktop Workstation Check (`dev/docs/TESTING_PLAN_v0.20.2.md` / `dev/docs/TESTING_PLAN_v0.20.3.md`)**:
+    * Run the Windows `v0.20.3` Delta Re-Test for `#54`–`#58` and the full macOS Universal (`-Mac.dmg`) verification pass across Phases 1–4 (`Steps 1–7`).
   * **Future Sunset (`schemaVersion: 2`)**:
     * Once all station machines have permanently retired `v0.15.4/5`, remove the duplicate legacy sibling fields per `dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md`.
 
@@ -36,6 +37,7 @@
   * *"While Option B is recommended, is Option C how you should be designing this feature  in the first place?  If the only tradeoff is refactoring, but the gain is \"doing it right\", then I prefer to refactor to a proper architecture."*
   * *"Yes, proceed with Option C Refactor, and then give me a list of suggested ways to test that it is working as expected."*
   * *"For now, store that testing as a way to close out 31.  I will defer for now."*
+  * *(11/05/2026 Testing Progress)*: Verified on Windows `v0.20.2` in Phase 3 (`Step 4`); awaiting macOS Universal pass to close out `#31`.
 * **Implemented & Automated Verification Complete**:
   * Removed sub-item `id` from `TimeGatedMediaItem` (`src/types.ts`, `src/lib/utils.ts`, `src/lib/compatibility.ts`), preserved parent `gate.id` on `ResolvedTimeGatedMp3` (`buildResolvedGateMp3`), removed unused `trackId` from `calculateGatedTrackAudit`, and refactored all editor, `MediaPickerModal`, `CopyEditorModal` (`SPLIT`), script preview, and `scheduleDiagnostics.ts` addressing to use `(gateId, itemIndex)` coordinates (`scripts/test-schema-upgrade.ts` Stage 6).
 * **Manual Verification Checklist to Close Out `#31`**:
@@ -86,6 +88,10 @@
 ### 42. [ ] Removing Scheduled Days in Weekly Announcement Grid Hides Prior Scheduled Events on Calendar
 * **User Note**:
   * *"New Bug for roadmap...  When saving changes to the \"Weekly Announcement\" grid under the announcement editor... If you remove scheduled days... PRIOR events on the calendar which were scheduled are no longer shown.  This is likely a logic path that we did not consider for changes going forward vs. history."*
+
+### 53. [ ] Announcement Time Gate & Media-Row Delete vs. Inactivate Rules and Confirmation Prompts
+* **User Note**:
+  * *"On Phase 3, 6.d (Step 5) - There is unexpected behavior with the Delete button of gated items.  The Delete that removes gated items, when there is only one gated media left, doesn't just delete that media and leave the gate blank.  It deletes the entire announcement gate.  And, none of the Deletes asks \"are you sure\".  So, we need to do 2 things.  First, the Inactivate button for the entire announcement gate should be accompanied by a Delete button for whenever there are 0 plays of the entire announcement gate.  Second, the Delete buttons on the gate media should only be allowed for unplayed ones too.  Otherwise, it should be an inactivate button.  This is not a breaking bug/note.  It kind of needs its own roadmap for me to flesh out."*
 
 ---
 

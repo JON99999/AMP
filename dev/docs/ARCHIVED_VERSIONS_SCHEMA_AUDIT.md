@@ -6,7 +6,15 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.2
+### Current Release: v0.20.3
+- **App Version**: `0.20.3`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.2**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Schedule Window Authority (`#54`)**: `migrateAnnouncementsPayload` accepts `overrideScheduleWindow` from `station-settings.json` so saving announcements or switching between Local and Google Drive modes never overwrites user-configured `scheduleWindow` values with stale `announcements.json` `_meta.scheduleWindow` data; `POST /api/shows` also keeps `announcements.json` `_meta.scheduleWindow` and `_stationMeta` synchronized.
+  - **Admin-Only Schedule Window Guard (`#55`), Local `File Date` Metadata (`#56`), Prerecord Export `"Up Next"` & Unified Sequence (`#57`), and Playlist Deck Playback / Per-Slot Scoping (`#58`)**: Application/UI and export pipeline fixes with full schema v1 compatibility.
+
+### v0.20.2
 * **Data Schema Version**: `v1` (Formal `_meta` Envelope with `v0.15.4/0.15.5` Coexistence, Dual-Value Sibling Bridge, `_stationMeta` Item-Level + `settings/station_settings.json` Sidecar Backup Protection Against `v0.15.4` Envelope Wipes, `upNextPromo` Show Promo Settings, `_meta.scheduleWindow` with `showLookaroundMinutes` `hh:mm` Support, Live Read `.txt`/`.md` Copy Editor, Legacy Script WPM Read-Time Backfill, Rotating Multi-Item `mediaItems: TimeGatedMediaItem[]`, Non-Destructive Gate Inactivation `inactivated`/`inactivatedAt`, Unified `scheduleEngine.ts`, & Modular `src/server/` Storage Provider)
 * **Schedule Storage File**: `announcements.json` (stores `mediaItems` value-arrays per time gate, preserves `inactivated` and `inactivatedAt` on `TimeGatedMp3`, dual-writes top-level `TimeGatedMp3` media siblings for `v0.15.4/5` coexistence, mirrors `_stationMeta` on `data[0]` + `settings/station_settings.json`, and automatically backfills ~150 WPM `approximateReadTime` on legacy readable `.txt`/`.md` script slots and historical revisions)
 * **Shows File**: `shows.json` (enveloped with `_meta`, `stationTimezone`, `adminContactInfo`, `upNextPromo`, `scheduleWindow`, `data[0]._stationMeta` mirror, and per-show `includeInUpNext`)

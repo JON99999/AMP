@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { format } from 'date-fns';
 import {
   Download,
@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Announcement, Show, TimeGatedMp3 } from '../types';
 import { cn } from '../lib/utils';
+import { getStorageApiHeaders } from '../lib/driveService';
 
 export interface PrerecordExportBreakItem {
   slot: Date;
@@ -33,6 +34,37 @@ export interface PrerecordExportTrackEntry {
   breakItems?: PrerecordExportBreakItem[];
 }
 
+export interface PrerecordExportSequenceItem {
+  index: number;
+  paddedIdx: string;
+  slotTime: string;
+  slotTimeAmPm: string;
+  fileName: string;
+  rawMp3Url?: string;
+  announcementName: string;
+  announcementId: string;
+  minute: number;
+  exists: boolean;
+  targetFileName: string;
+  slotISO: string;
+  assetType?: 'audio' | 'script';
+  isUpNextPromo?: boolean;
+  upNextScriptText?: string;
+  scriptText?: string;
+  approximateReadTime?: string;
+  durationSeconds?: number;
+  durationLabel?: string;
+  backupMp3Url?: string;
+  backupMp3Exists?: boolean;
+  backupTargetFileName?: string;
+  isEvergreen?: boolean;
+  showNameShort?: string;
+  showName?: string;
+  artist?: string;
+  albumArtist?: string;
+  album?: string;
+}
+
 interface PrerecordExportPopupProps {
   isOpen: boolean;
   onClose: () => void;
@@ -41,6 +73,7 @@ interface PrerecordExportPopupProps {
   timeframeEnd: Date;
   breakItems: PrerecordExportBreakItem[];
   playlistSequence?: PrerecordExportTrackEntry[];
+  exportItems?: PrerecordExportSequenceItem[];
   hasUnloggedBreaks: boolean;
   isExporting: boolean;
   isLoggingExports?: boolean;
@@ -56,6 +89,7 @@ export default function PrerecordExportPopup({
   timeframeEnd,
   breakItems,
   playlistSequence,
+  exportItems,
   hasUnloggedBreaks,
   isExporting,
   isLoggingExports = false,
@@ -64,23 +98,83 @@ export default function PrerecordExportPopup({
 }: PrerecordExportPopupProps) {
   const [previewMode, setPreviewMode] = useState<'plan' | 'playlist' | 'live_reads'>('plan');
   const [copiedMode, setCopiedMode] = useState<string | null>(null);
+  const [loadedScriptTexts, setLoadedScriptTexts] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!isOpen || !exportItems || exportItems.length === 0) return;
+    let cancelled = false;
+    const scriptFilesToLoad = Array.from(
+      new Set(
+        exportItems
+          .filter(
+            (it) =>
+              (it.assetType === 'script' || it.isUpNextPromo) &&
+              !it.isUpNextPromo &&
+              !it.upNextScriptText &&
+              !it.scriptText &&
+              it.fileName &&
+              !it.fileName.startsWith('__up_next_promo__:') &&
+              /\.(txt|md)$/i.test(it.fileName)
+          )
+          .map((it) => it.fileName)
+      )
+    );
+    if (scriptFilesToLoad.length === 0) return;
+
+    (async () => {
+      try {
+        const headers = await getStorageApiHeaders();
+        const fetched: Record<string, string> = {};
+        for (const fName of scriptFilesToLoad) {
+          try {
+            const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fName)}`, { headers });
+            if (res.ok) {
+              const data = await res.json();
+              if (typeof data?.content === 'string' && data.content.trim()) {
+                fetched[fName] = data.content.trim();
+              }
+            }
+          } catch (_) {}
+        }
+        if (!cancelled && Object.keys(fetched).length > 0) {
+          setLoadedScriptTexts((prev) => ({ ...prev, ...fetched }));
+        }
+      } catch (_) {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, exportItems]);
 
   const showTitle = show?.name || 'Prerecord Show';
   const subheaderLabel = `${showTitle} · ${format(timeframeStart, 'EEE, MMM dd')} (${format(timeframeStart, 'h:mm a')}–${format(timeframeEnd, 'h:mm a')})`;
 
   const planCopyText = useMemo(() => {
     const header = `${showTitle} — Broadcast Plan\n${format(timeframeStart, 'EEE, MMM dd, yyyy')} · ${format(timeframeStart, 'h:mm a')} – ${format(timeframeEnd, 'h:mm a')}\n${'-'.repeat(44)}`;
+    if (exportItems && exportItems.length > 0) {
+      const lines = exportItems.map((item) => {
+        if (item.isEvergreen) {
+          return `${item.paddedIdx}. [TRACK] ${item.announcementName} (${item.durationLabel || '3:00'})\n   Exported File: ${item.targetFileName}`;
+        }
+        const tag = item.isUpNextPromo ? 'PROMO' : item.assetType === 'script' ? 'READ' : 'MP3';
+        return `${item.paddedIdx}. ${item.slotTimeAmPm} [${tag}] ${item.announcementName} (${item.durationLabel || '0:30'})\n   Exported ${item.assetType === 'script' ? 'Script' : 'File'}: ${item.targetFileName}`;
+      });
+      return `${header}\n${lines.join('\n')}`;
+    }
+
     if (playlistSequence && playlistSequence.length > 0) {
       const lines: string[] = [];
-      let trackIdx = 1;
+      let seqIdx = 1;
       for (const entry of playlistSequence) {
         if (entry.kind === 'track') {
-          lines.push(`[TRACK ${String(trackIdx).padStart(2, '0')}] ${entry.title} (${entry.durationLabel})`);
-          trackIdx += 1;
+          lines.push(`${String(seqIdx).padStart(2, '0')}. [TRACK] ${entry.title} (${entry.durationLabel})`);
+          seqIdx += 1;
         } else if (entry.breakItems && entry.breakItems.length > 0) {
           for (const b of entry.breakItems) {
             const tag = b.isUpNextPromo ? 'PROMO' : b.isScript ? 'READ' : 'MP3';
-            lines.push(`${format(b.slot, 'h:mm a')} [${tag}] ${b.announcement.name} (${b.durationLabel})`);
+            lines.push(`${String(seqIdx).padStart(2, '0')}. ${format(b.slot, 'h:mm a')} [${tag}] ${b.announcement.name} (${b.durationLabel})`);
+            seqIdx += 1;
           }
         }
       }
@@ -90,38 +184,63 @@ export default function PrerecordExportPopup({
     if (breakItems.length === 0) {
       return `${header}\nNo scheduled announcements in this timeframe.`;
     }
-    const lines = breakItems.map((b) => {
+    const lines = breakItems.map((b, idx) => {
       const tag = b.isUpNextPromo ? 'PROMO' : b.isScript ? 'READ' : 'MP3';
-      return `${format(b.slot, 'h:mm a')} [${tag}] ${b.announcement.name} (${b.durationLabel})`;
+      return `${String(idx + 1).padStart(2, '0')}. ${format(b.slot, 'h:mm a')} [${tag}] ${b.announcement.name} (${b.durationLabel})`;
     });
     return `${header}\n${lines.join('\n')}`;
-  }, [showTitle, timeframeStart, timeframeEnd, breakItems, playlistSequence]);
+  }, [showTitle, timeframeStart, timeframeEnd, breakItems, playlistSequence, exportItems]);
 
   const m3uEntries = useMemo(() => {
     const entries: { extinfSeconds: number; extinfTitle: string; filename: string }[] = [];
-    let index = 1;
 
+    if (exportItems && exportItems.length > 0) {
+      for (const item of exportItems) {
+        const typePrefix = item.isEvergreen ? 'Track' : 'Break';
+        const isScript = item.assetType === 'script';
+        const isMp3Target = item.targetFileName.toLowerCase().endsWith('.mp3') || item.fileName.toLowerCase().endsWith('.mp3');
+        if (!isScript && isMp3Target) {
+          entries.push({
+            extinfSeconds: -1,
+            extinfTitle: `${item.paddedIdx} ${typePrefix} - ${item.slotTime} - ${item.announcementName}`,
+            filename: item.targetFileName,
+          });
+        } else if (isScript && item.backupMp3Url && item.backupTargetFileName && item.backupMp3Exists) {
+          entries.push({
+            extinfSeconds: -1,
+            extinfTitle: `${item.paddedIdx} ${typePrefix} - ${item.slotTime} - ${item.announcementName} (Backup MP3)`,
+            filename: item.backupTargetFileName,
+          });
+        }
+      }
+      return entries;
+    }
+
+    let index = 1;
     if (playlistSequence && playlistSequence.length > 0) {
       for (const entry of playlistSequence) {
         if (entry.kind === 'track' && entry.filename) {
           const cleanBase = entry.filename.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
           const ext = entry.filename.match(/\.[^/.]+$/)?.[0] || '.mp3';
           entries.push({
-            extinfSeconds: Math.max(0, Math.round(entry.durationSeconds || 0)),
-            extinfTitle: entry.title,
+            extinfSeconds: -1,
+            extinfTitle: `${String(index).padStart(2, '0')} Track - ${entry.title}`,
             filename: `${String(index).padStart(2, '0')}_TRACK_${cleanBase}${ext}`,
           });
           index += 1;
         } else if (entry.kind === 'break' && entry.breakItems) {
           for (const b of entry.breakItems) {
-            if (b.isScript) continue;
+            if (b.isScript) {
+              index += 1;
+              continue;
+            }
             const rawUrl = b.activeMp3?.mp3Url || b.resolvedUrl || b.announcement.name;
             const rawFilename = rawUrl.split(/[\\/]/).pop() || `${b.announcement.name}.mp3`;
             const ext = rawFilename.match(/\.[^/.]+$/)?.[0] || '.mp3';
             const safeName = b.announcement.name.replace(/[^a-zA-Z0-9_-]/g, '_');
             entries.push({
-              extinfSeconds: Math.max(0, Math.round(b.durationSeconds || 30)),
-              extinfTitle: `${format(b.slot, 'h:mm a')} - ${b.announcement.name}`,
+              extinfSeconds: -1,
+              extinfTitle: `${String(index).padStart(2, '0')} Break - ${format(b.slot, 'HH:mm')} - ${b.announcement.name}`,
               filename: `${String(index).padStart(2, '0')}_${format(b.slot, 'HHmm')}_${safeName}${ext}`,
             });
             index += 1;
@@ -131,21 +250,22 @@ export default function PrerecordExportPopup({
       return entries;
     }
 
-    const audioBreaks = breakItems.filter((b) => !b.isScript);
-    for (const b of audioBreaks) {
+    for (let i = 0; i < breakItems.length; i++) {
+      const b = breakItems[i];
+      const seqNum = String(i + 1).padStart(2, '0');
+      if (b.isScript) continue;
       const rawUrl = b.activeMp3?.mp3Url || b.resolvedUrl || b.announcement.name;
       const rawFilename = rawUrl.split(/[\\/]/).pop() || `${b.announcement.name}.mp3`;
       const ext = rawFilename.match(/\.[^/.]+$/)?.[0] || '.mp3';
       const safeName = b.announcement.name.replace(/[^a-zA-Z0-9_-]/g, '_');
       entries.push({
-        extinfSeconds: Math.max(0, Math.round(b.durationSeconds || 30)),
-        extinfTitle: `${format(b.slot, 'h:mm a')} - ${b.announcement.name}`,
-        filename: `${String(index).padStart(2, '0')}_${format(b.slot, 'HHmm')}_${safeName}${ext}`,
+        extinfSeconds: -1,
+        extinfTitle: `${seqNum} Break - ${format(b.slot, 'HH:mm')} - ${b.announcement.name}`,
+        filename: `${seqNum}_${format(b.slot, 'HHmm')}_${safeName}${ext}`,
       });
-      index += 1;
     }
     return entries;
-  }, [breakItems, playlistSequence]);
+  }, [breakItems, playlistSequence, exportItems]);
 
   const m3uCopyText = useMemo(() => {
     if (m3uEntries.length === 0) {
@@ -157,31 +277,58 @@ export default function PrerecordExportPopup({
     return `#EXTM3U\n${blocks.join('\n')}`;
   }, [m3uEntries]);
 
-  const liveReadItems = useMemo(() => {
-    return breakItems.filter((b) => b.isScript);
-  }, [breakItems]);
-
-  const getLiveReadDisplayFilename = (b: PrerecordExportBreakItem): string => {
-    const rawUrl = b.activeMp3?.mp3Url || '';
-    if (b.isUpNextPromo || rawUrl.startsWith('__up_next_promo__:')) {
-      const cleanShowName = b.announcement.name.replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
-      return `Up Next - ${cleanShowName}.txt`;
+  const sequencedLiveReadItems = useMemo(() => {
+    if (exportItems && exportItems.length > 0) {
+      return exportItems
+        .filter((it) => it.assetType === 'script' || it.isUpNextPromo)
+        .map((it) => {
+          const textBody =
+            (it.upNextScriptText || it.scriptText || loadedScriptTexts[it.fileName] || '').trim();
+          return {
+            paddedIdx: it.paddedIdx,
+            slotTimeAmPm: it.slotTimeAmPm,
+            announcementName: it.announcementName,
+            targetFileName: it.targetFileName,
+            sourceFileName: it.fileName,
+            isUpNextPromo: Boolean(it.isUpNextPromo),
+            scriptText: textBody,
+          };
+        });
     }
-    return rawUrl || b.announcement.name;
-  };
+    return breakItems
+      .map((b, idx) => ({ b, paddedIdx: String(idx + 1).padStart(2, '0') }))
+      .filter(({ b }) => b.isScript)
+      .map(({ b, paddedIdx }) => {
+        const rawUrl = b.activeMp3?.mp3Url || '';
+        const cleanShowName = b.announcement.name.replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
+        const displayFile =
+          b.isUpNextPromo || rawUrl.startsWith('__up_next_promo__:')
+            ? `Up Next - ${cleanShowName}.txt`
+            : rawUrl || b.announcement.name;
+        return {
+          paddedIdx,
+          slotTimeAmPm: format(b.slot, 'h:mm a'),
+          announcementName: b.announcement.name,
+          targetFileName: displayFile,
+          sourceFileName: displayFile,
+          isUpNextPromo: Boolean(b.isUpNextPromo),
+          scriptText: (b.scriptText || loadedScriptTexts[displayFile] || '').trim(),
+        };
+      });
+  }, [exportItems, breakItems, loadedScriptTexts]);
 
   const liveReadsCopyText = useMemo(() => {
-    if (liveReadItems.length === 0) {
+    if (sequencedLiveReadItems.length === 0) {
       return 'No live read scripts scheduled in this timeframe.';
     }
-    return liveReadItems
-      .map((b) => {
-        const displayFile = getLiveReadDisplayFilename(b);
-        const body = (b.scriptText || '').trim() || `(Open ${displayFile} to view script content)`;
-        return `${format(b.slot, 'h:mm a')} · ${b.announcement.name}\n${body}`;
+    return sequencedLiveReadItems
+      .map((item) => {
+        const body =
+          item.scriptText || `(Open ${item.targetFileName} to view script content)`;
+        return `#${item.paddedIdx} · ${item.slotTimeAmPm} · ${item.announcementName}\nExported Script: ${item.targetFileName}\n${body}`;
       })
       .join('\n\n---\n\n');
-  }, [liveReadItems]);
+  }, [sequencedLiveReadItems]);
 
   if (!isOpen) return null;
 
@@ -202,6 +349,11 @@ export default function PrerecordExportPopup({
       console.error('Failed to copy preview text:', err);
     }
   };
+
+  const hasExportableItems =
+    (exportItems && exportItems.length > 0) ||
+    breakItems.length > 0 ||
+    (playlistSequence && playlistSequence.length > 0);
 
   return (
     <div className="absolute inset-0 z-30 bg-slate-950/60 backdrop-blur-[1px] flex flex-col p-1">
@@ -237,11 +389,11 @@ export default function PrerecordExportPopup({
           {/* 1. Export Files */}
           <button
             type="button"
-            disabled={isExporting || (breakItems.length === 0 && (!playlistSequence || playlistSequence.length === 0))}
+            disabled={isExporting || !hasExportableItems}
             onClick={onExecuteExport}
             className={cn(
               "w-full py-1.5 px-2 rounded border-b-[3px] font-black uppercase text-xs tracking-tight flex items-center justify-center gap-1.5 shadow-xs transition-colors",
-              isExporting || (breakItems.length === 0 && (!playlistSequence || playlistSequence.length === 0))
+              isExporting || !hasExportableItems
                 ? "bg-slate-200 text-slate-400 border-slate-300 cursor-not-allowed"
                 : "bg-blue-600 hover:bg-blue-500 text-white border-blue-800 cursor-pointer"
             )}
@@ -369,29 +521,31 @@ export default function PrerecordExportPopup({
                   </div>
                 </div>
                 <div className="p-1.5 rounded bg-slate-50 border border-slate-200 space-y-1">
-                  {playlistSequence && playlistSequence.length > 0 ? (
-                    (() => {
-                      let trackNum = 1;
-                      return playlistSequence.map((entry, idx) => {
-                        if (entry.kind === 'track') {
-                          const num = trackNum++;
-                          return (
-                            <div key={`plan-trk-${idx}`}>
-                              <span className="font-bold text-purple-700">[TRACK {String(num).padStart(2, '0')}]</span>{' '}
-                              {entry.title} ({entry.durationLabel})
-                            </div>
-                          );
-                        }
-                        return (entry.breakItems || []).map((b, bIdx) => {
-                          const tag = b.isUpNextPromo ? 'PROMO' : b.isScript ? 'READ' : 'MP3';
-                          return (
-                            <div key={`plan-brk-${idx}-${bIdx}`}>
-                              <span className="font-bold text-slate-900">{format(b.slot, 'h:mm a')}</span> [{tag}] {b.announcement.name} ({b.durationLabel})
-                            </div>
-                          );
-                        });
-                      });
-                    })()
+                  {exportItems && exportItems.length > 0 ? (
+                    exportItems.map((item) => {
+                      if (item.isEvergreen) {
+                        return (
+                          <div key={`plan-exp-${item.index}`} className="break-words">
+                            <span className="font-bold text-slate-900">{item.paddedIdx}.</span>{' '}
+                            <span className="font-bold text-purple-700">[TRACK]</span>{' '}
+                            {item.announcementName} ({item.durationLabel || '3:00'})
+                          </div>
+                        );
+                      }
+                      const tag = item.isUpNextPromo
+                        ? 'PROMO'
+                        : item.assetType === 'script'
+                          ? 'READ'
+                          : 'MP3';
+                      return (
+                        <div key={`plan-exp-${item.index}`} className="break-words">
+                          <span className="font-bold text-slate-900">{item.paddedIdx}.</span>{' '}
+                          <span className="font-bold text-slate-800">{item.slotTimeAmPm}</span>{' '}
+                          <span className="font-semibold text-blue-700">[{tag}]</span>{' '}
+                          {item.announcementName} ({item.durationLabel || '0:30'})
+                        </div>
+                      );
+                    })
                   ) : breakItems.length === 0 ? (
                     <div className="text-slate-400 italic font-sans">
                       No scheduled announcements in this timeframe.
@@ -401,7 +555,10 @@ export default function PrerecordExportPopup({
                       const tag = b.isUpNextPromo ? 'PROMO' : b.isScript ? 'READ' : 'MP3';
                       return (
                         <div key={`plan-item-${idx}`}>
-                          <span className="font-bold text-slate-900">{format(b.slot, 'h:mm a')}</span> [{tag}] {b.announcement.name} ({b.durationLabel})
+                          <span className="font-bold text-slate-900">
+                            {String(idx + 1).padStart(2, '0')}. {format(b.slot, 'h:mm a')}
+                          </span>{' '}
+                          [{tag}] {b.announcement.name} ({b.durationLabel})
                         </div>
                       );
                     })
@@ -434,25 +591,27 @@ export default function PrerecordExportPopup({
 
             {previewMode === 'live_reads' && (
               <div className="space-y-1.5">
-                {liveReadItems.length === 0 ? (
+                {sequencedLiveReadItems.length === 0 ? (
                   <div className="p-2 rounded bg-slate-50 border border-slate-200 text-[10px] text-slate-400 italic">
                     No live read scripts scheduled in this timeframe.
                   </div>
                 ) : (
-                  liveReadItems.map((b, idx) => (
+                  sequencedLiveReadItems.map((item, idx) => (
                     <div
-                      key={`lr-preview-${idx}`}
+                      key={`lr-preview-${item.paddedIdx}-${idx}`}
                       className={cn(
                         "p-1.5 rounded bg-slate-50 border border-slate-200 border-l-2 space-y-0.5",
-                        b.isUpNextPromo ? "border-l-teal-500" : "border-l-blue-500"
+                        item.isUpNextPromo ? "border-l-teal-500" : "border-l-blue-500"
                       )}
                     >
-                      <div className="text-[10px] font-black text-slate-800 truncate">
-                        {format(b.slot, 'h:mm a')} · {b.announcement.name}
+                      <div className="text-[10px] font-black text-slate-800 break-words">
+                        #{item.paddedIdx} · {item.slotTimeAmPm} · {item.announcementName}
                       </div>
-                      <p className="text-[11px] text-slate-600 leading-snug whitespace-pre-wrap break-words">
-                        {(b.scriptText || '').trim() ||
-                          `Script file: ${getLiveReadDisplayFilename(b)}`}
+                      <div className="text-[9px] font-mono text-slate-500 break-all">
+                        {item.targetFileName}
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-snug whitespace-pre-wrap break-words pt-0.5">
+                        {item.scriptText || `Script file: ${item.sourceFileName}`}
                       </p>
                     </div>
                   ))

@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.3] - 2026-11-05
+
+### Fixed
+- **Live Schedule Window Persistence Across Mode & Folder Switches (`#54`)**: Prioritized `station-settings.json` sidecar `scheduleWindow` over stale `announcements.json` `_meta.scheduleWindow` across `GET/POST /api/announcements`, `POST /api/shows`, `/api/compatibility/inspect`, `/api/compatibility/upgrade`, and `/api/trigger-backup` so edited schedule window values are never overwritten when announcements save or folders switch.
+- **Admin-Only Lock on Live Schedule Window Editing (`#55`)**: Locked `Live Schedule Window` editing inside the `Local & Network Folders` help modal (`LocalHelpModal.tsx`) behind an explicit `isAdmin` check so `AMP Studio` displays the current schedule window as read-only (`Admin Only`).
+- **Media Picker `File Date` Column in Local Mode (`#56`)**: Preserved `mtimeMs` and `modifiedTime` when mapping `/api/local-mp3s` in `src/App.tsx` so `Select Audio / Media` (`MediaPickerModal.tsx`) populates and sorts the `File Date` column in Local/Network mode.
+- **Prerecord Export `"Up Next"` Promo & Sequence Display Correlation (`#57`)**:
+  - Updated `/api/export-prerecord` (`src/server/routes/showsRoutes.ts`) to export virtual `"Up Next"` promo segments (`isUpNextPromo` / `__up_next_promo__:`) by writing `upNextScriptText` to the target `.txt` file with status `Found & Copied` instead of `Missing Source File`.
+  - Filtered cancelled playlist tracks out of `itemsToExport` and passed the unified `itemsToExport` array directly into `PrerecordExportPopup.tsx` so `Plan`, `.m3u LIST`, and `Live Reads` tabs and copy buttons match the exact `01..NN` exported file sequence and load exported `.txt`/`.md` script contents.
+- **Playlist Deck Active Playback Visibility, Execution-Order Sorting & Per-Slot Announcement Scoping (`#58`)**:
+  - Kept actively playing playlist tracks visible in the `Next` column with a purple `Playing` state until playback finishes instead of disappearing during playback.
+  - Recorded wall-clock execution timestamps (`executedAt` / `logTimeStamp`) on Live Read playlist entries and sorted `Played/Read` items by actual execution time so played tracks and played/read announcements interleave in exact chronological order played/read.
+  - Scoped announcement completion keys in `playedPlaylistTracks` to `${slotISO}-${announcementId}` (`slotIsoKey`) instead of bare `announcementId` or shared `fileName` so duplicate occurrences of the same announcement later in the same show remain unplayed in `Next`.
+
 ## [0.20.2] - 2026-11-04
 
 ### Fixed & Changed

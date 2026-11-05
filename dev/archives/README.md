@@ -45,6 +45,8 @@ All historical snapshots reside under `dev/archives/archive_v<version>/` on the 
 - `dev/archives/archive_v0.19.5/`
 - `dev/archives/archive_v0.20.0/`
 - `dev/archives/archive_v0.20.1/`
+- `dev/archives/archive_v0.20.2/`
+- `dev/archives/archive_v0.20.3/`
 
 ---
 

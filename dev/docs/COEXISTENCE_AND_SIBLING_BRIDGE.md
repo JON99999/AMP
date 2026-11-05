@@ -38,6 +38,9 @@ Rather than forcing a destructive one-way schema cutover that breaks `v0.15.4 / 
 
 ## 3. Unified `v0.15.4/5` (`Live`/`Studio`) + `v0.20.2` (`Admin`) Rollout & Full Feature Test Plan
 
+> **Dedicated Handoff & Test Plan Document (`dev/docs/TESTING_PLAN_v0.20.2.md`)**:
+> See **`dev/docs/TESTING_PLAN_v0.20.2.md`** for the full `v0.20.2` test plan plus conversation-specific agent handoff guidance (exact profile of the user's real `v0.15.4` test dataset, `RWR_Underwriting_Read.txt` null-read-time backfill specifics, `#47`–`#52` root-cause context, and the Windows-first -> macOS Universal re-prompt requirement).
+
 ### Rollout Topology & Assumptions
 * **Single `v0.20.2` Admin Writer**: `v0.20.2` (`AMP Admin`) is the sole workstation editing schedules (`announcements.json`, `shows.json`).
 * **Concurrent `v0.15.4 / v0.15.5` Readers + Log Writers**: Existing DJs continue running `v0.15.4/5` (`AMP Live` and `AMP Studio`) using only the **Player** and **Log** tabs (reading `announcements.json` and `shows.json`, and writing play entries to `logs.json`) until all workstations are upgraded.

@@ -872,7 +872,18 @@ export default function LocalHelpModal({
                 </div>
               )}
 
-              {windowEditStage === 'locked' ? (
+              {!isAdmin ? (
+                <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center gap-2 text-xs text-slate-600">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>
+                    Live Schedule Window settings are read-only in Live / Non-Admin mode (currently{' '}
+                    <strong className="text-slate-900">
+                      -{activeScheduleWindow.windowBeforeMinutes}m grace / +{activeScheduleWindow.windowAfterMinutes}m early · {formatLookaroundHhMm(activeScheduleWindow)} show lookaround
+                    </strong>
+                    ). Switch to <strong className="text-slate-800">Admin Mode</strong> to edit schedule window settings.
+                  </span>
+                </div>
+              ) : windowEditStage === 'locked' ? (
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-lg">
                   <div className="flex items-start gap-2 min-w-0">
                     <Lock className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />

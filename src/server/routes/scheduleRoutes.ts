@@ -69,10 +69,18 @@ export function registerScheduleRoutes(app: express.Express): void {
           rawLogs = JSON.parse(fs.readFileSync(logPath, 'utf-8') || '[]');
         }
       } catch (_) {}
+      const sidecar = readStationSettingsSidecar();
       const lastMod = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed._meta?.lastModifiedBy)
         ? parsed._meta.lastModifiedBy
         : CURRENT_APP_VERSION;
-      const migrated = migrateAnnouncementsPayload(parsed, lastMod, 0, rawLogs, resolveLocalAnnouncementScriptText);
+      const migrated = migrateAnnouncementsPayload(
+        parsed,
+        lastMod,
+        0,
+        rawLogs,
+        resolveLocalAnnouncementScriptText,
+        sidecar?.scheduleWindow
+      );
       const seeded = migrated.data;
       if (withEnvelope) {
         return res.json({
@@ -114,17 +122,20 @@ export function registerScheduleRoutes(app: express.Express): void {
         } catch (pe) {}
       }
       const sidecar = readStationSettingsSidecar();
+      const explicitAnnWindow = rawPayload?._meta?.scheduleWindow || rawPayload?.scheduleWindow;
+      const effectiveScheduleWindow = explicitAnnWindow || sidecar?.scheduleWindow || existingMeta?.scheduleWindow;
       const mergedAnnMeta = {
-        ...(sidecar?.scheduleWindow ? { scheduleWindow: sidecar.scheduleWindow } : {}),
         ...(existingMeta || {}),
-        ...(rawPayload?._meta || {})
+        ...(rawPayload?._meta || {}),
+        ...(effectiveScheduleWindow ? { scheduleWindow: effectiveScheduleWindow } : {})
       };
       const migrated = migrateAnnouncementsPayload(
         { _meta: mergedAnnMeta, AnnouncementsBackupCounter: counter, data: schedules },
         CURRENT_APP_VERSION,
         counter,
         undefined,
-        resolveLocalAnnouncementScriptText
+        resolveLocalAnnouncementScriptText,
+        effectiveScheduleWindow
       );
       const updatedObj = migrated.envelope;
       atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
@@ -305,6 +316,29 @@ export function registerScheduleRoutes(app: express.Express): void {
         scheduleWindow: updatedObj.scheduleWindow
       });
 
+      // Keep announcements.json _meta.scheduleWindow and data[0]._stationMeta synchronized with station settings
+      try {
+        const calPath = getCalendarFilePath();
+        if (calPath && fs.existsSync(calPath)) {
+          const calParsed = JSON.parse(fs.readFileSync(calPath, 'utf-8') || '{}');
+          if (calParsed && typeof calParsed === 'object' && !Array.isArray(calParsed) && Array.isArray(calParsed.data)) {
+            if (calParsed._meta && updatedObj.scheduleWindow) {
+              calParsed._meta.scheduleWindow = updatedObj.scheduleWindow;
+            }
+            if (calParsed.data.length > 0 && calParsed.data[0] && typeof calParsed.data[0] === 'object') {
+              calParsed.data[0]._stationMeta = {
+                ...(calParsed.data[0]._stationMeta || {}),
+                stationTimezone: updatedObj.stationTimezone,
+                adminContactInfo: updatedObj.adminContactInfo ?? '',
+                upNextPromo: updatedObj.upNextPromo,
+                scheduleWindow: updatedObj.scheduleWindow
+              };
+            }
+            atomicWriteFileSync(calPath, JSON.stringify(calParsed, null, 2));
+          }
+        }
+      } catch (_) {}
+
       // Backup copy for shows
       try {
         const backupPath = getShowsBackupPath();
@@ -422,11 +456,15 @@ export function registerScheduleRoutes(app: express.Express): void {
                 parsed._meta?.lastModifiedBy || CURRENT_APP_VERSION,
                 counter,
                 parsedLogsForBackfill,
-                resolveLocalAnnouncementScriptText
+                resolveLocalAnnouncementScriptText,
+                sidecar?.scheduleWindow
               );
               atomicWriteFileSync(calPath, JSON.stringify(seeded.envelope, null, 2));
               announcementsMeta = seeded.envelope._meta;
             } else {
+              if (sidecar?.scheduleWindow) {
+                parsed._meta.scheduleWindow = sidecar.scheduleWindow;
+              }
               announcementsMeta = parsed._meta;
             }
           } else {
@@ -531,13 +569,22 @@ export function registerScheduleRoutes(app: express.Express): void {
 
       const isoNow = now.toISOString();
 
+      const upgradeSidecar = readStationSettingsSidecar();
       // 2. Transactional Phase 1: Transform in-memory using canonical compatibility engine
       let showsMigrationResult: { envelope: any; data: any[] } | null = null;
       if (showsPath && fs.existsSync(showsPath)) {
         try {
           const rawShows = fs.readFileSync(showsPath, 'utf-8');
           const parsed = JSON.parse(rawShows || '[]');
-          showsMigrationResult = migrateShowsPayload(parsed, CURRENT_APP_VERSION);
+          showsMigrationResult = migrateShowsPayload(
+            parsed,
+            CURRENT_APP_VERSION,
+            0,
+            upgradeSidecar?.stationTimezone,
+            upgradeSidecar?.adminContactInfo,
+            upgradeSidecar?.upNextPromo,
+            upgradeSidecar?.scheduleWindow
+          );
         } catch (err: any) {
           console.error('Error parsing shows during upgrade:', err);
           throw new Error(`Failed to parse shows.json: ${err.message}`);
@@ -567,7 +614,8 @@ export function registerScheduleRoutes(app: express.Express): void {
             CURRENT_APP_VERSION,
             0,
             rawLogsParsed,
-            resolveLocalAnnouncementScriptText
+            resolveLocalAnnouncementScriptText,
+            upgradeSidecar?.scheduleWindow
           );
         } catch (err: any) {
           console.error('Error parsing announcements during upgrade:', err);
@@ -752,6 +800,8 @@ export function registerScheduleRoutes(app: express.Express): void {
         return res.json({ success: true, skipped: true, reason: 'Folders not configured' });
       }
 
+      const backupSidecar = readStationSettingsSidecar();
+
       // Backup schedules (preserving _meta and sibling fields)
       if (calendarPath) {
         if (!fs.existsSync(calendarPath)) {
@@ -759,7 +809,14 @@ export function registerScheduleRoutes(app: express.Express): void {
           if (calendarDir && !fs.existsSync(calendarDir)) {
             fs.mkdirSync(calendarDir, { recursive: true });
           }
-          const initialAnn = migrateAnnouncementsPayload({ AnnouncementsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
+          const initialAnn = migrateAnnouncementsPayload(
+            { AnnouncementsBackupCounter: 0, data: [] },
+            CURRENT_APP_VERSION,
+            -1,
+            undefined,
+            undefined,
+            backupSidecar?.scheduleWindow
+          );
           fs.writeFileSync(calendarPath, JSON.stringify(initialAnn.envelope, null, 2));
         }
 
@@ -778,7 +835,8 @@ export function registerScheduleRoutes(app: express.Express): void {
             parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
             existingCounter,
             undefined,
-            resolveLocalAnnouncementScriptText
+            resolveLocalAnnouncementScriptText,
+            backupSidecar?.scheduleWindow
           );
           const updatedStr = JSON.stringify(migratedAnn.envelope, null, 2);
           fs.writeFileSync(calendarPath, updatedStr);
@@ -879,7 +937,15 @@ export function registerScheduleRoutes(app: express.Express): void {
           }
 
           const existingCounter = Array.isArray(parsed) ? 0 : (parsed.ShowsBackupCounter || 0);
-          const migratedShows = migrateShowsPayload(parsed, parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION, existingCounter);
+          const migratedShows = migrateShowsPayload(
+            parsed,
+            parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+            existingCounter,
+            backupSidecar?.stationTimezone,
+            backupSidecar?.adminContactInfo,
+            backupSidecar?.upNextPromo,
+            backupSidecar?.scheduleWindow
+          );
           const updatedStr = JSON.stringify(migratedShows.envelope, null, 2);
           fs.writeFileSync(showsPath, updatedStr);
 

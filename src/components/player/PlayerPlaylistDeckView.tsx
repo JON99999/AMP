@@ -224,11 +224,12 @@ export function PlayerPlaylistDeckView({
       const isCurrentlyPlaying =
         !!playingStates[item.track.id] || isAudioPlaying(item.track.id);
       const isPlayedTrack =
-        !!item.played ||
-        !!playedPlaylistTracks[item.track.id] ||
-        !!playedPlaylistTracks[item.track.fileName] ||
-        !!pendingPlayedPlaylistTracksRef.current[item.track.id] ||
-        !!pendingPlayedPlaylistTracksRef.current[item.track.fileName];
+        !isCurrentlyPlaying &&
+        (!!item.played ||
+          !!playedPlaylistTracks[item.track.id] ||
+          !!playedPlaylistTracks[item.track.fileName] ||
+          !!pendingPlayedPlaylistTracksRef.current[item.track.id] ||
+          !!pendingPlayedPlaylistTracksRef.current[item.track.fileName]);
       const playedAtTime =
         item.playedAt ||
         playedPlaylistTracks[item.track.id]?.playedAt ||

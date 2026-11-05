@@ -255,6 +255,31 @@
     - *"For 2.3.e, before save, when clicking Edit from the Gate #x section of files, none of the actual file text is seeded in the editor.  If I hit Preview, then edit, none of the actual file text is seeded.  If I hit save, and then reopen the announcement, and go to edit the text file, none of the actual file text is seeded.  There is an error on the bottom that says \"Could not load script \"FanettiFest_Til2026_10_26.txt\".\"  In playing with the editor, I can write and it seems to function.  It looks like the \"auto\" button was unchecked though for time calculations.  (I assume since it was autopopulated already when the script was added and saved earlier in the test.)  When I go to save my test edits, I get \"Google Drive Station folder is not configured. Please set it in Settings.\"  Very odd because the Preview button on the main page still works.  Split looks like it can work, but the save error from above prevents me from testing 2.3.f."*
   - **Outcome**: Completed — Fixed `isDriveActive` state in `src/App.tsx` and `src/hooks/useLocationsController.ts` (`false` in `Local` mode), removed the forced `'Drive'` mode override in `CopyEditorModal.tsx`, `MediaPickerModal.tsx`, and `src/lib/driveService.ts`, and initialized `autoApplyReadTime` to `true` in `CopyEditorModal.tsx` so auto-estimated scripts keep the **Auto** read-time calculation checkbox checked by default.
 
+- **#54 — Live Schedule Window Persistence Across Mode & Folder Switches (`v0.20.2` Phase 2, Step 3d)**
+  - **User Note**:
+    - *"Phase 2, 3.d...  The schedule window values I set got lost/overwritten.  Looks like the other values were preserved.  Everything else seems to work when switching between them through Phase 1 and 2."*
+  - **Outcome**: Completed — Prioritized `station-settings.json` sidecar `scheduleWindow` over stale `announcements.json` `_meta.scheduleWindow` across `GET/POST /api/announcements`, `POST /api/shows`, `/api/compatibility/inspect`, `/api/compatibility/upgrade`, and `/api/trigger-backup` so edited schedule window values persist across announcement saves and Local/Drive switches.
+
+- **#55 — Admin-Only Lock on Live Schedule Window Editing (`AMP Studio` vs. `AMP Admin`)**
+  - **User Note**:
+    - *"In the AMP Studio on windows, this is editable.  It should only be editable with Admin versions of the app. \"Live Schedule Window (“Now” Window & Show Lookaround) ... Edit Schedule Window..\""*
+  - **Outcome**: Completed — Added an `!isAdmin` read-only lock banner guard in `LocalHelpModal.tsx` so `AMP Studio` displays the current Live Schedule Window settings as read-only (`Admin Only`) and only `AMP Admin` can edit or save them.
+
+- **#56 — Media Picker `File Date` Column Blank in Local Mode (`v0.20.2` Phase 3, Step 4c)**
+  - **User Note**:
+    - *"On Phase 3, 5.c (Step 4) - The File Date column isn't populating.  But, all other sorting and filtering seems to work."*
+  - **Outcome**: Completed — Preserved `mtimeMs` and `modifiedTime` when mapping `/api/local-mp3s` in `src/App.tsx` so `MediaPickerModal.tsx` displays and sorts file modification dates in Local/Network mode.
+
+- **#57 — Prerecord Export `"Up Next"` Promo & Sequence Display Correlation (`v0.20.2` Phase 4, Step 7d.b)**
+  - **User Note**:
+    - *"For 4.Step7d.b, there are two errors.  First, the export doesn't know how to handle the \"Up Next\" segment and calls it a missing file.  Second, the numbering sequence that is correct in the actual export is not respected in the export window display of Plan or .mu3list, or the live reads.  The full export sequence and numbering as coded into the export is important to be correlated with the display there."*
+  - **Outcome**: Completed — Updated `/api/export-prerecord` (`src/server/routes/showsRoutes.ts`) to write `"Up Next"` promo script text (`isUpNextPromo` / `__up_next_promo__:`) to the exported `.txt` file as `Found & Copied`, excluded cancelled playlist tracks from `itemsToExport`, and wired `PrerecordExportPopup.tsx` (`Plan`, `.m3u LIST`, and `Live Reads`) directly to `itemsToExport` with `01..NN` numbering and `.txt`/`.md` script loading.
+
+- **#58 — Playlist Deck Active Playback Visibility, Execution-Order Sorting & Per-Slot Announcement Scoping (`v0.20.2` Phase 4, Step 7d.c)**
+  - **User Note**:
+    - *"For 4.Step7d.c, when playing a playlist track, the card just disappears.  After playing, then it appears again properly as read.  Additionally, all played tracks seem to sort above played/read announcements in the played/read section.  Ideally, they should sort in the order played/read.  Finally, when the same track is listed twice because the announcement occurs twice in the same show, the announcement card that is _not_ being played gets sorted to Played/Read.  It remains unplayed.  (Note,  announcement audio _does_ stay visible while playing.  Only Playlist audio goes blank.)"*
+  - **Outcome**: Completed — Kept actively playing playlist tracks in `Next` with purple `Playing` state until playback finishes, recorded wall-clock execution timestamps on Live Read playlist entries so `Played/Read` sorts tracks and announcements in exact execution order, and scoped announcement keys in `playedPlaylistTracks` to `${slotISO}-${announcementId}` so repeat occurrences of the same announcement in the same show stay unplayed in `Next`.
+
 
 
 

@@ -11,7 +11,7 @@ import { getPlayableUrl, updateAudioCache, getAccessToken, formatShowPlaylistLog
 import { mp3BlobCache, mp3DurationCache, availableFilesCache, driveFileNameCache } from '../lib/audioCache';
 import { ShowPlaylistLog } from '../types';
 import FolderChooserModal from './FolderChooserModal';
-import PrerecordExportPopup, { PrerecordExportBreakItem, PrerecordExportTrackEntry } from './PrerecordExportPopup';
+import PrerecordExportPopup, { PrerecordExportBreakItem, PrerecordExportTrackEntry, PrerecordExportSequenceItem } from './PrerecordExportPopup';
 import { PinnedLiveShowBanner, PersistentModeShowHeader } from './player/PlayerShowSpacer';
 import { PlayerPlaylistDeckView } from './player/PlayerPlaylistDeckView';
 import { PlayerLiveTimelineView } from './player/PlayerLiveTimelineView';
@@ -640,7 +640,7 @@ export default function PlayerTab({
                 isAnnouncement: pt.isAnnouncement || false
               };
               if (pt.id) restoredPlayedMap[pt.id] = info;
-              if (pt.fileName) restoredPlayedMap[pt.fileName] = info;
+              if (pt.fileName && !pt.isAnnouncement) restoredPlayedMap[pt.fileName] = info;
             }
           });
           setPlayedPlaylistTracks(restoredPlayedMap);
@@ -1340,17 +1340,21 @@ export default function PlayerTab({
       const activeShow = effectiveShow || playlistShow;
       const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
       if (isPlaylistActive && activeShow && logEntry?.announcementId) {
+        const slotDate = new Date(logEntry.scheduledFor || logEntry.announcementTime || logEntry.timestamp || Date.now());
+        const slotIso = stationSlotDateToUtcIso(slotDate);
+        const slotIsoKey = `${slotIso}-${logEntry.announcementId}`;
         const targetAnnouncement = announcements.find(s => s.id === logEntry.announcementId);
-        const activeMp3 = targetAnnouncement ? getActiveMp3ForSlot(targetAnnouncement, new Date(logEntry.announcementTime || logEntry.timestamp || Date.now())) : null;
+        const activeMp3 = targetAnnouncement ? getActiveMp3ForSlot(targetAnnouncement, slotDate) : null;
         const durSec = activeMp3?.duration ? parseInt(activeMp3.duration, 10) || 60 : 60;
         const mins = Math.floor(durSec / 60);
         const secs = durSec % 60;
         const durFmt = `${mins}:${secs.toString().padStart(2, '0')}`;
+        const execPlayedAt = logEntry.executedAt || logEntry.logTimeStamp || new Date().toISOString();
         const updatedPlayed = {
           ...playedPlaylistTracksRef.current,
-          [logEntry.announcementId]: {
-            id: logEntry.announcementId,
-            playedAt: logEntry.timestamp,
+          [slotIsoKey]: {
+            id: slotIsoKey,
+            playedAt: execPlayedAt,
             fileName: logEntry.mp3Name || activeMp3?.mp3Url || (logEntry.status === 'backup play' ? `${targetAnnouncement?.name || 'Announcement'} (backup mp3)` : 'Live Read'),
             title: logEntry.announcementName || targetAnnouncement?.name || 'Live Read',
             durationSeconds: durSec,
@@ -2066,11 +2070,14 @@ export default function PlayerTab({
 
     // 2.b. Played Announcement Breaks
     const playedBreakIds = new Set<string>();
+    let playedBreaksDurationSec = 0;
     for (const b of scheduledBreaks) {
+      const bSlotIso = stationSlotDateToUtcIso(b.slotTime);
       const playedInBreak = b.announcements.filter(s => {
         const slotKey = `${b.slotTime.toISOString()}-${s.id}`;
+        const slotIsoKey = `${bSlotIso}-${s.id}`;
         if (playingStates[slotKey] || isAudioPlaying(slotKey)) return false;
-        if (playedPlaylistTracks[s.id]) return true;
+        if (playedPlaylistTracks[slotIsoKey] || playedPlaylistTracks[slotKey]) return true;
         return logs.some(l => 
           l.announcementId === s.id && 
           isLogForStationSlot(l, b.slotTime) &&
@@ -2081,9 +2088,12 @@ export default function PlayerTab({
 
       if (playedInBreak.length > 0) {
         playedBreakIds.add(b.id);
+        playedBreaksDurationSec += b.totalDurationSec;
         let earliestPlayedAt = b.slotTime;
         for (const s of playedInBreak) {
-          const pInfo = playedPlaylistTracks[s.id];
+          const slotKey = `${b.slotTime.toISOString()}-${s.id}`;
+          const slotIsoKey = `${bSlotIso}-${s.id}`;
+          const pInfo = playedPlaylistTracks[slotIsoKey] || playedPlaylistTracks[slotKey];
           if (pInfo?.playedAt) {
             const d = new Date(pInfo.playedAt);
             if (!isNaN(d.getTime())) earliestPlayedAt = d;
@@ -2094,8 +2104,9 @@ export default function PlayerTab({
               (l.status === 'played' || l.status === 'backup play') &&
               (playMode === 'Prerecord' || l.playMode !== 'Export')
             );
-            if (pLog?.timestamp) {
-              const d = new Date(pLog.timestamp);
+            const execTs = pLog?.executedAt || pLog?.logTimeStamp || pLog?.timestamp;
+            if (execTs) {
+              const d = new Date(execTs);
               if (!isNaN(d.getTime())) earliestPlayedAt = d;
             }
           }
@@ -2118,21 +2129,32 @@ export default function PlayerTab({
       }
     }
 
-    // Sort played items chronologically by playedAt / startTime
+    // Sort played items chronologically by playedAt / startTime (actual execution order)
     playedItems.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
     items.push(...playedItems);
 
     const unplayedScheduledBreaks = scheduledBreaks.filter(b => !playedBreakIds.has(b.id));
 
     // 3. Mode-specific unplayed cursor and announcement classification
-    let totalPlayedSec = 0;
+    let totalPlayedTracksSec = 0;
+    const countedTrackIds = new Set<string>();
     Object.values(playedPlaylistTracks).forEach((p: any) => {
-      if (p.durationSeconds && p.durationSeconds > 0) totalPlayedSec += p.durationSeconds;
-      else totalPlayedSec += 180;
+      if (!p || p.isAnnouncement) return;
+      const trackKey = p.id || p.fileName;
+      if (trackKey && countedTrackIds.has(trackKey)) return;
+      if (p.id && (playingStates[p.id] || isAudioPlaying(p.id))) return;
+      if (trackKey) countedTrackIds.add(trackKey);
+      if (p.durationSeconds && p.durationSeconds > 0) totalPlayedTracksSec += p.durationSeconds;
+      else totalPlayedTracksSec += 180;
     });
+    const totalPlayedSec = totalPlayedTracksSec + playedBreaksDurationSec;
 
     const isLivePlaylist = playMode === 'Playlist';
-    const virtualCursor = new Date(Math.max(showStart.getTime() + totalPlayedSec * 1000, maxPlayedEnd.getTime()));
+    const virtualCursor = new Date(
+      isLivePlaylist
+        ? Math.max(showStart.getTime() + totalPlayedSec * 1000, maxPlayedEnd.getTime())
+        : showStart.getTime() + totalPlayedSec * 1000
+    );
     
     // In Live with Playlist, reference current wall-clock. In Prerecord and Export, decouple completely from wall-clock.
     const unplayedStartCursor = isLivePlaylist
@@ -2166,7 +2188,15 @@ export default function PlayerTab({
     }
 
     // 4. Calculate default track insertion indices for upcoming breaks, and interleave with active unplayed tracks
-    const activeUnplayedTracks = playlistTracks.filter(t => !t.isAnnouncement && !playedPlaylistTracks[t.id] && !playedPlaylistTracks[t.fileName] && !cancelledTrackIds.includes(t.id) && !cancelledTrackIds.includes(t.fileName));
+    // Keep any currently playing track in activeUnplayedTracks until playback finishes so its card stays visible in Next while playing.
+    const activeUnplayedTracks = playlistTracks.filter(
+      t =>
+        !t.isAnnouncement &&
+        (Boolean(playingStates[t.id] || isAudioPlaying(t.id)) ||
+          (!playedPlaylistTracks[t.id] && !playedPlaylistTracks[t.fileName])) &&
+        !cancelledTrackIds.includes(t.id) &&
+        !cancelledTrackIds.includes(t.fileName)
+    );
 
     const getTrackDurationSec = (track: any): number => {
       const exactCachedDurationStr = mp3DurationCache.get(track.streamUrl) || availableFilesCache.get(track.fileName)?.duration;
@@ -2771,7 +2801,9 @@ export default function PlayerTab({
           onLogCommit={(logEntry) => {
             if (activeLiveReadOverlay.playMode !== 'Export' && !activeLiveReadOverlay.isPreview) {
               onLog(logEntry);
-              const targetDate = new Date(logEntry.announcementTime || logEntry.timestamp || Date.now());
+              const targetDate = new Date(logEntry.scheduledFor || logEntry.announcementTime || logEntry.timestamp || Date.now());
+              const slotIso = stationSlotDateToUtcIso(targetDate);
+              const slotIsoKey = `${slotIso}-${logEntry.announcementId}`;
               const activeShow = getShowForSlot(targetDate);
               const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
               if (isPlaylistActive && activeShow && logEntry.announcementId) {
@@ -2781,11 +2813,12 @@ export default function PlayerTab({
                 const mins = Math.floor(durSec / 60);
                 const secs = durSec % 60;
                 const durFmt = `${mins}:${secs.toString().padStart(2, '0')}`;
+                const execPlayedAt = logEntry.executedAt || logEntry.logTimeStamp || new Date().toISOString();
                 const updatedPlayed = {
                   ...playedPlaylistTracksRef.current,
-                  [logEntry.announcementId]: {
-                    id: logEntry.announcementId,
-                    playedAt: logEntry.timestamp,
+                  [slotIsoKey]: {
+                    id: slotIsoKey,
+                    playedAt: execPlayedAt,
                     fileName: logEntry.mp3Name || activeMp3?.mp3Url || 'Live Read',
                     title: logEntry.announcementName || targetAnnouncement?.name || 'Live Read',
                     durationSeconds: durSec,
@@ -2944,10 +2977,11 @@ export default function PlayerTab({
       const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
       if (isPlaylistActive && activeShow) {
         const durRes = resolveTrackDuration({ streamUrl: targetMp3Url, fileName: targetMp3Url }, undefined, audio.duration);
+        const slotIsoKey = `${slotISO}-${s.id}`;
         const updatedPlayed = {
           ...playedPlaylistTracksRef.current,
-          [s.id]: {
-            id: s.id,
+          [slotIsoKey]: {
+            id: slotIsoKey,
             playedAt,
             fileName: targetMp3Url,
             title: s.name,
@@ -3019,10 +3053,11 @@ export default function PlayerTab({
       const isPlaylistActive = playMode === 'Playlist' || (playMode === 'Prerecord' && selectedFolderPathRef.current !== '__no_playlist__');
       if (isPlaylistActive && activeShow) {
         const durRes = resolveTrackDuration({ streamUrl: backupUrl, fileName: backupUrl }, undefined, audio.duration);
+        const slotIsoKey = `${slotISO}-${s.id}`;
         const updatedPlayed = {
           ...playedPlaylistTracksRef.current,
-          [s.id]: {
-            id: s.id,
+          [slotIsoKey]: {
+            id: slotIsoKey,
             playedAt,
             fileName: backupUrl,
             title: `${s.name} (backup mp3)`,
@@ -3054,114 +3089,161 @@ export default function PlayerTab({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const itemsToExport = useMemo(() => {
+  const itemsToExport = useMemo<PrerecordExportSequenceItem[]>(() => {
     if (playMode !== 'Prerecord' || !prerecordDate) return [];
     
-    const items: Array<{
-      slotTime: string;
-      fileName: string;
-      announcementName: string;
-      announcementId: string;
-      minute: number;
-      exists: boolean;
-      targetFileName: string;
-      slotISO: string;
-      assetType?: 'audio' | 'script';
-      approximateReadTime?: string;
-      backupMp3Url?: string;
-      backupMp3Exists?: boolean;
-      isEvergreen?: boolean;
-      showNameShort?: string;
-      showName?: string;
-      artist?: string;
-      albumArtist?: string;
-      album?: string;
-    }> = [];
+    const items: PrerecordExportSequenceItem[] = [];
 
-    const showPrefix = (playlistShow?.nameShort || playlistShow?.name || 'Show').trim();
+    const showPrefix = (playlistShow?.nameShort || playlistShow?.name || effectiveShow?.nameShort || effectiveShow?.name || 'Show').trim();
 
-    playlistTimeline.forEach((item) => {
-      if (item.type === 'break') {
-        item.announcements.forEach((s) => {
-          const activeMp3 = getActiveMp3ForSlot(s, item.slotTime);
-          const itemAssetType = getGatedAssetType(activeMp3);
+    const pushAnnouncementBreakItem = (slotTime: Date, s: Announcement) => {
+      const activeMp3 = getActiveMp3ForSlot(s, slotTime);
+      const itemAssetType = getGatedAssetType(activeMp3);
+      const isScript = itemAssetType === 'script';
+      const itemIdx = items.length + 1;
+      const paddedIdx = String(itemIdx).padStart(2, '0');
+      const slotTimeStr = format(slotTime, 'HH:mm');
+      const slotTimeAmPm = format(slotTime, 'h:mm a');
+      const safeSlotTime = formatExportTimeAmPm(slotTime.getHours(), slotTime.getMinutes());
+      const rawName = s.name || 'Unnamed Break';
+      const safeAnnouncementName = rawName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
+      const rawMp3Url = activeMp3?.mp3Url || '';
+      const isUpNextItem = Boolean(s.isUpNextPromo) || isUpNextPromoUrl(rawMp3Url);
+      const cleanUpNextShowName = rawName.replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
+      const sourceFileName = isUpNextItem ? `Up Next - ${cleanUpNextShowName}.txt` : rawMp3Url;
+      const dotIndex = sourceFileName.lastIndexOf('.');
+      const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : (isScript ? '.txt' : '.mp3');
+      const targetFileName = `${showPrefix} ${paddedIdx} Break at ${safeSlotTime} - ${safeAnnouncementName}${ext}`;
+      const exists = isUpNextItem ? true : (rawMp3Url ? getMP3Status(rawMp3Url).exists : false);
+
+      const backupUrl = activeMp3?.backupMp3Url;
+      const backupMp3Exists = backupUrl ? getMP3Status(backupUrl).exists : false;
+      let backupTargetFileName: string | undefined = undefined;
+      if (isScript && backupUrl) {
+        const backupDot = backupUrl.lastIndexOf('.');
+        const backupExt = backupDot !== -1 ? backupUrl.substring(backupDot) : '.mp3';
+        const targetDot = targetFileName.lastIndexOf('.');
+        const baseTargetWithoutExt = targetDot !== -1 ? targetFileName.substring(0, targetDot) : targetFileName;
+        backupTargetFileName = `${baseTargetWithoutExt} (Backup)${backupExt}`;
+      }
+
+      const rawDur = isScript
+        ? activeMp3?.approximateReadTime
+          ? activeMp3.approximateReadTime.startsWith('~')
+            ? activeMp3.approximateReadTime
+            : `~${activeMp3.approximateReadTime}`
+          : '0:20'
+        : mp3DurationCache.get(rawMp3Url) || activeMp3?.duration || '0:30';
+      let durSec = 30;
+      const cleanDur = rawDur.replace(/^~/, '');
+      const parts = cleanDur.split(':');
+      if (parts.length === 2) {
+        const m = parseInt(parts[0], 10);
+        const sec = parseInt(parts[1], 10);
+        if (!isNaN(m) && !isNaN(sec)) durSec = m * 60 + sec;
+      }
+
+      const upNextScriptText = isUpNextItem
+        ? (decodeUpNextPromoText(rawMp3Url) || (s as any).upNextScriptText || rawName)
+        : undefined;
+
+      items.push({
+        index: itemIdx,
+        paddedIdx,
+        slotTime: slotTimeStr,
+        slotTimeAmPm,
+        fileName: sourceFileName,
+        rawMp3Url,
+        announcementName: rawName,
+        announcementId: s.id,
+        minute: s.minute,
+        exists,
+        targetFileName,
+        slotISO: stationSlotDateToUtcIso(slotTime),
+        assetType: isUpNextItem ? 'script' : itemAssetType,
+        isUpNextPromo: isUpNextItem,
+        upNextScriptText,
+        scriptText: upNextScriptText,
+        approximateReadTime: activeMp3?.approximateReadTime,
+        durationSeconds: durSec,
+        durationLabel: rawDur,
+        backupMp3Url: backupUrl,
+        backupMp3Exists,
+        backupTargetFileName,
+        isEvergreen: false,
+        showNameShort: playlistShow?.nameShort || effectiveShow?.nameShort,
+        showName: playlistShow?.name || effectiveShow?.name,
+      });
+    };
+
+    if (playlistTimeline.length > 0) {
+      playlistTimeline.forEach((item) => {
+        if (item.type === 'break') {
+          item.announcements.forEach((s) => {
+            pushAnnouncementBreakItem(item.slotTime, s);
+          });
+        } else if (item.type === 'track' && !item.cancelled) {
           const itemIdx = items.length + 1;
-          const slotTimeStr = format(item.slotTime, 'HH:mm');
-          const safeSlotTime = formatExportTimeAmPm(item.slotTime.getHours(), item.slotTime.getMinutes());
-          const rawName = s.name || 'Unnamed Break';
-          const safeAnnouncementName = rawName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
-          const rawMp3Url = activeMp3?.mp3Url || '';
-          const isUpNextItem = Boolean(s.isUpNextPromo) || isUpNextPromoUrl(rawMp3Url);
-          const cleanUpNextShowName = rawName.replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
-          const sourceFileName = isUpNextItem ? `Up Next - ${cleanUpNextShowName}.txt` : rawMp3Url;
-          const dotIndex = sourceFileName.lastIndexOf('.');
-          const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : (itemAssetType === 'script' ? '.txt' : '.mp3');
           const paddedIdx = String(itemIdx).padStart(2, '0');
-          const targetFileName = `${showPrefix} ${paddedIdx} Break at ${safeSlotTime} - ${safeAnnouncementName}${ext}`;
-          const exists = rawMp3Url ? getMP3Status(rawMp3Url).exists : false;
+          const slotTimeStr = format(item.startTime, 'HH:mm');
+          const slotTimeAmPm = format(item.startTime, 'h:mm a');
+          const safeSlotTime = formatExportTimeAmPm(item.startTime.getHours(), item.startTime.getMinutes());
+          const rawName = item.track.title || item.track.fileName || 'Evergreen Track';
+          const safeTrackName = rawName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
+          const sourceFileName = item.track.fileName || '';
+          const dotIndex = sourceFileName.lastIndexOf('.');
+          const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : '.mp3';
+          const targetFileName = `${showPrefix} ${paddedIdx} Track at ${safeSlotTime} - ${safeTrackName}${ext}`;
+          const exists = getMP3Status(sourceFileName).exists;
 
-          const backupUrl = activeMp3?.backupMp3Url;
-          const backupMp3Exists = backupUrl ? getMP3Status(backupUrl).exists : false;
+          const meta = trackMetadataMap[item.track.streamUrl] || 
+                       trackMetadataMap[item.track.fileName] || 
+                       trackMetadataMap[item.track.id];
+
+          const artist = meta?.artist?.trim() || item.track.artist?.trim() || undefined;
+          const albumArtist = meta?.albumArtist?.trim() || item.track.albumArtist?.trim() || undefined;
+          const album = meta?.album?.trim() || item.track.album?.trim() || undefined;
+          const durLabel =
+            mp3DurationCache.get(item.track.streamUrl) ||
+            availableFilesCache.get(item.track.fileName)?.duration ||
+            item.track.durationFormatted ||
+            '3:00';
 
           items.push({
+            index: itemIdx,
+            paddedIdx,
             slotTime: slotTimeStr,
+            slotTimeAmPm,
             fileName: sourceFileName,
             announcementName: rawName,
-            announcementId: s.id,
-            minute: s.minute,
+            announcementId: item.track.id,
+            minute: item.startTime.getMinutes(),
             exists,
             targetFileName,
-            slotISO: stationSlotDateToUtcIso(item.slotTime),
-            assetType: itemAssetType,
-            approximateReadTime: activeMp3?.approximateReadTime,
-            backupMp3Url: backupUrl,
-            backupMp3Exists,
-            isEvergreen: false,
+            slotISO: stationSlotDateToUtcIso(item.startTime),
+            assetType: 'audio',
+            durationSeconds: item.track.durationSeconds || 180,
+            durationLabel: durLabel,
+            isEvergreen: true,
+            showNameShort: playlistShow?.nameShort || effectiveShow?.nameShort,
+            showName: playlistShow?.name || effectiveShow?.name,
+            artist,
+            albumArtist,
+            album,
           });
-        });
-      } else if (item.type === 'track') {
-        const itemIdx = items.length + 1;
-        const slotTimeStr = format(item.startTime, 'HH:mm');
-        const safeSlotTime = formatExportTimeAmPm(item.startTime.getHours(), item.startTime.getMinutes());
-        const rawName = item.track.title || item.track.fileName || 'Evergreen Track';
-        const safeTrackName = rawName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
-        const sourceFileName = item.track.fileName || '';
-        const dotIndex = sourceFileName.lastIndexOf('.');
-        const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : '.mp3';
-        const paddedIdx = String(itemIdx).padStart(2, '0');
-        const targetFileName = `${showPrefix} ${paddedIdx} Track at ${safeSlotTime} - ${safeTrackName}${ext}`;
-        const exists = getMP3Status(sourceFileName).exists;
-
-        const meta = trackMetadataMap[item.track.streamUrl] || 
-                     trackMetadataMap[item.track.fileName] || 
-                     trackMetadataMap[item.track.id];
-
-        const artist = meta?.artist?.trim() || item.track.artist?.trim() || undefined;
-        const albumArtist = meta?.albumArtist?.trim() || item.track.albumArtist?.trim() || undefined;
-        const album = meta?.album?.trim() || item.track.album?.trim() || undefined;
-
-        items.push({
-          slotTime: slotTimeStr,
-          fileName: sourceFileName,
-          announcementName: rawName,
-          announcementId: item.track.id,
-          minute: item.startTime.getMinutes(),
-          exists,
-          targetFileName,
-          slotISO: stationSlotDateToUtcIso(item.startTime),
-          assetType: 'audio',
-          isEvergreen: true,
-          showNameShort: playlistShow?.nameShort,
-          showName: playlistShow?.name,
-          artist,
-          albumArtist,
-          album,
-        });
+        }
+      });
+    } else {
+      for (const slot of timeline) {
+        const sForSlot = getAnnouncementsForSlot(slot);
+        for (const s of sForSlot) {
+          pushAnnouncementBreakItem(slot, s);
+        }
       }
-    });
+    }
 
     return items;
-  }, [playMode, prerecordDate, playlistTimeline, playlistShow, trackMetadataMap]);
+  }, [playMode, prerecordDate, playlistTimeline, timeline, announcements, playlistShow, effectiveShow, trackMetadataMap]);
 
   const previewText = useMemo(() => {
     if (playMode !== 'Prerecord' || !prerecordDate) return '';
@@ -3727,6 +3809,7 @@ export default function PlayerTab({
           timeframeEnd={addMinutes(prerecordDate, prerecordLengthMinutes)}
           breakItems={prerecordExportBreakItems}
           playlistSequence={prerecordExportPlaylistSequence}
+          exportItems={itemsToExport}
           hasUnloggedBreaks={hasUnlogged}
           isExporting={false}
           isLoggingExports={isLoggingExports}
