@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Plus, Trash2, Save, FileText, Calendar, Clock, CheckCircle, AlertCircle, AlertTriangle, ShieldAlert, Copy, Check, XCircle, X, FolderOpen, Music, Search, Play, Square, ChevronUp, ChevronDown, RefreshCw, Eye, User, BookOpen, ArrowRight, Edit3, ListChecks, CheckSquare } from 'lucide-react';
-import { Announcement, AnnouncementType, AnnouncementMetadata, MediaAssetFile, Show, ShowRevision, TimeGatedMediaItem, TimeGatedMp3, ScheduleIssue, LogEntry, UpNextPromoConfig } from '../types';
+import { Announcement, AnnouncementRevision, AnnouncementType, AnnouncementMetadata, MediaAssetFile, Show, ShowRevision, TimeGatedMediaItem, TimeGatedMp3, ScheduleIssue, LogEntry, UpNextPromoConfig } from '../types';
 import { cn, getMP3Status, formatDuration, getFilenameFromUrlOrPath, isTimeInShow, getSortedShows, getShowShade, readMp3ID3Metadata, parseID3Bytes, normalizeAnnouncement, normalizeAnnouncements, formatToDatetimeLocal, getCurrentDatetimeLocal, getDatePart, getTimePart, sortMp3sByStartDate, findFirstGapOrEnd, validateTimeGatedMp3s, getActiveMp3ForSlot, getGatedAssetType, isContiguousMidnightTransition, computeBackfilledEndTime, getNextGapAutoFillStart, formatTime12, formatDatetime12, formatHour12, formatHourShort12, isAudioFile, isScriptFile, classifyMediaAsset, AUDIO_EXTENSIONS, SCRIPT_EXTENSIONS, buildUpNextPromoAnnouncements, getGateMediaItems, formatRotatedAnnouncementName, formatRotatedFileName, DAYS_ORDER, isAnnouncementWithinDateBounds, isAnnouncementRuleMatch } from '../lib/utils';
 import { evaluateScheduleDiagnostics } from '../lib/scheduleDiagnostics';
 import { getPlayableUrl, DRIVE_FOLDERS, getSavedSettings, getStorageApiHeaders, cacheMP3, getAccessToken } from '../lib/driveService';
@@ -16,6 +16,7 @@ import { CopyEditorModal } from './CopyEditorModal';
 import { normalizeReadTimeDisplay } from '../lib/liveReadFormatting';
 import {
   DeleteAnnouncementModal,
+  DeleteShowModal,
   CancelUnsavedModal,
   AnnouncementConflictModal,
   ShowOverlapModal,
@@ -190,6 +191,23 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     setIsPickerOpen(true);
   };
 
+  const handleReuseGate = (gate: TimeGatedMp3) => {
+    const items = getGateMediaItems(gate).map(mi => ({ ...mi }));
+    const first = items[0];
+    const firstFileName = first?.mp3Url ? getFilenameFromUrlOrPath(first.mp3Url) : 'Reused Gate Media';
+    const inferredType = first?.mp3Url ? classifyMediaAsset(first.mp3Url, first.assetType) : undefined;
+    applyAddMp3WithDateChecks(
+      {
+        name: firstFileName,
+        duration: first?.duration,
+        approximateReadTime: first?.approximateReadTime,
+        backupMp3Url: first?.backupMp3Url,
+      },
+      inferredType,
+      items
+    );
+  };
+
    const applyAddMp3WithDateChecks = (
     selectedFile?: {
       name: string;
@@ -255,7 +273,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     );
 
     // Always show the pop-up modal offering detected gaps (including now() -> first startDate),
-    // subsequent gaps, the 1-week-out option or trailing end check, and "enter my own"
+    // subsequent gaps, the open-ended transition prompt or trailing end check, and "enter my own"
     const defaultPreset = presets[0] || presets[presets.length - 1];
     setPlacementModal({
       pendingFile: selectedFile,
@@ -269,7 +287,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       endDate: defaultPreset.endDate,
       endTime: defaultPreset.endTime,
       transitionMp3Id: defaultPreset.transitionMp3Id,
-      transitionMp3Index: defaultPreset.transitionMp3Index
+      transitionMp3Index: defaultPreset.transitionMp3Index,
+      transitionMp3Title: defaultPreset.transitionMp3Title,
+      previousGateEndDate: '',
+      previousGateEndTime: ''
     });
   };
 
@@ -284,14 +305,59 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         endDate: preset.endDate,
         endTime: preset.endTime,
         transitionMp3Id: preset.transitionMp3Id,
-        transitionMp3Index: preset.transitionMp3Index
+        transitionMp3Index: preset.transitionMp3Index,
+        transitionMp3Title: preset.transitionMp3Title,
+        previousGateEndDate: '',
+        previousGateEndTime: ''
       };
     });
   };
 
-  const handleUpdatePlacementModalDates = (updates: Partial<{ startDate: string; startTime: string; endDate: string; endTime: string }>) => {
+  const handleUpdatePlacementModalDates = (
+    updates: Partial<{
+      startDate: string;
+      startTime: string;
+      endDate: string;
+      endTime: string;
+      previousGateEndDate: string;
+      previousGateEndTime: string;
+    }>
+  ) => {
     setPlacementModal(prev => {
       if (!prev) return null;
+
+      // If user edited the open-ended previous gate's End date/time directly,
+      // automatically set the new gate's Start date/time to 1 minute later (#68).
+      if (updates.previousGateEndDate !== undefined || updates.previousGateEndTime !== undefined) {
+        const nextPrevEndDate =
+          updates.previousGateEndDate !== undefined
+            ? updates.previousGateEndDate
+            : prev.previousGateEndDate || '';
+        const nextPrevEndTime =
+          updates.previousGateEndTime !== undefined
+            ? updates.previousGateEndTime
+            : prev.previousGateEndTime || '23:59';
+        if (nextPrevEndDate) {
+          const prevEndIso = `${nextPrevEndDate}T${nextPrevEndTime || '23:59'}`;
+          const autoStart = getNextGapAutoFillStart(prevEndIso);
+          return {
+            ...prev,
+            previousGateEndDate: nextPrevEndDate,
+            previousGateEndTime: nextPrevEndTime || '23:59',
+            startDate: autoStart.startDate,
+            startTime: autoStart.startTime,
+          };
+        } else {
+          return {
+            ...prev,
+            previousGateEndDate: '',
+            previousGateEndTime: updates.previousGateEndTime ?? '',
+            startDate: '',
+            startTime: '',
+          };
+        }
+      }
+
       const nextStartDate = updates.startDate !== undefined ? updates.startDate : prev.startDate;
       const nextStartTime = updates.startTime !== undefined ? updates.startTime : prev.startTime;
       const nextEndDate = updates.endDate !== undefined ? updates.endDate : prev.endDate;
@@ -299,7 +365,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
       // 1. Check if this combination matches any of the gap presets (excluding 'custom')
       const matchingPreset = prev.presets.find(p => {
-        if (p.id === 'custom') return false;
+        if (p.id === 'custom' || p.transitionMp3Id) return false;
         const matchStart = (p.startDate || '') === (nextStartDate || '') && (p.startTime || '') === (nextStartTime || '');
         const matchEnd = (p.endDate || '') === (nextEndDate || '') && (p.endTime || '') === (nextEndTime || '');
         return matchStart && matchEnd;
@@ -314,25 +380,32 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           endTime: nextEndTime,
           selectedPresetId: matchingPreset.id,
           transitionMp3Id: matchingPreset.transitionMp3Id,
-          transitionMp3Index: matchingPreset.transitionMp3Index
+          transitionMp3Index: matchingPreset.transitionMp3Index,
+          transitionMp3Title: matchingPreset.transitionMp3Title,
+          previousGateEndDate: '',
+          previousGateEndTime: ''
         };
       }
 
       // 2. Check for "After" edits in "Last file has a blank end" scenarios
       const trailingTransitionPreset = prev.presets.find(p => p.transitionMp3Id);
-      if (trailingTransitionPreset && !nextEndDate) {
+      if (trailingTransitionPreset && (prev.transitionMp3Id || !nextEndDate)) {
         const refStart = trailingTransitionPreset.referenceStartDate;
         const nextStartDt = nextStartDate ? `${nextStartDate}T${nextStartTime || '00:00'}` : '';
-        if (refStart && nextStartDt && nextStartDt >= refStart) {
+        if (refStart && nextStartDt && nextStartDt > refStart) {
+          const backfillEndIso = computeBackfilledEndTime(nextStartDt);
           return {
             ...prev,
             startDate: nextStartDate,
-            startTime: nextStartTime,
+            startTime: nextStartTime || '00:00',
             endDate: nextEndDate,
             endTime: nextEndTime,
             selectedPresetId: trailingTransitionPreset.id,
             transitionMp3Id: trailingTransitionPreset.transitionMp3Id,
-            transitionMp3Index: trailingTransitionPreset.transitionMp3Index
+            transitionMp3Index: trailingTransitionPreset.transitionMp3Index,
+            transitionMp3Title: trailingTransitionPreset.transitionMp3Title,
+            previousGateEndDate: getDatePart(backfillEndIso),
+            previousGateEndTime: getTimePart(backfillEndIso) || '23:59'
           };
         }
       }
@@ -345,7 +418,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         endTime: nextEndTime,
         selectedPresetId: 'custom',
         transitionMp3Id: undefined,
-        transitionMp3Index: undefined
+        transitionMp3Index: undefined,
+        transitionMp3Title: undefined,
+        previousGateEndDate: '',
+        previousGateEndTime: ''
       };
     });
   };
@@ -378,9 +454,12 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
     let updatedCurrent = [...current];
     if (placementModal.transitionMp3Id && startIso) {
-      const backfillEnd = computeBackfilledEndTime(startIso);
+      const explicitPrevEnd =
+        placementModal.previousGateEndDate
+          ? `${placementModal.previousGateEndDate}T${placementModal.previousGateEndTime || '23:59'}`
+          : computeBackfilledEndTime(startIso);
       updatedCurrent = updatedCurrent.map(m =>
-        m.id === placementModal.transitionMp3Id ? { ...m, endDate: backfillEnd } : m
+        m.id === placementModal.transitionMp3Id ? { ...m, endDate: explicitPrevEnd } : m
       );
     } else {
       const sortedCurrent = sortMp3sByStartDate(current);
@@ -393,7 +472,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       }
     }
 
-     const gateId = `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const gateId = `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const resolvedItems: TimeGatedMediaItem[] =
       placementModal.pendingMediaItems && placementModal.pendingMediaItems.length > 0
         ? placementModal.pendingMediaItems
@@ -545,6 +624,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const [editingShowId, setEditingShowId] = useState<string | null>(null);
   const [showFormData, setShowFormData] = useState<Partial<Show>>({});
   const [isNameShortManuallyEdited, setIsNameShortManuallyEdited] = useState(false);
+  const [showValidationErrors, setShowValidationErrors] = useState<string[]>([]);
+  const [deleteShowConfirmId, setDeleteShowConfirmId] = useState<string | null>(null);
   const [isVerifyingEvergreens, setIsVerifyingEvergreens] = useState(false);
   const [folderCheckModal, setFolderCheckModal] = useState<{
     isOpen: boolean;
@@ -563,12 +644,15 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       if (isPickerOpen) return true;
       if (previewScriptFile !== null) return true;
       if (deleteConfirmId !== null) return true;
+      if (deleteShowConfirmId !== null) return true;
       if (inactivateEndModal !== null) return true;
       return false;
     };
     window.ampDiscardEdits = () => {
       setEditingId(null);
       setEditingShowId(null);
+      setShowValidationErrors([]);
+      setDeleteShowConfirmId(null);
       setPlacementModal(null);
       setCopyEditorState({ isOpen: false });
       setIsPickerOpen(false);
@@ -590,6 +674,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     isPickerOpen,
     previewScriptFile,
     deleteConfirmId,
+    deleteShowConfirmId,
     inactivateEndModal
   ]);
 
@@ -660,6 +745,16 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         `  • Announcements: ${data.announcementsPath || 'Verified'}`
       ];
 
+      if (data.evergreensFolderCreated) {
+        resultLines.push(`[Fixed] Created missing base Evergreens folder: ${data.evergreensPath || 'media_evergreens'}`);
+      }
+      if (data.playlistsFolderCreated) {
+        resultLines.push(`[Fixed] Created missing base Playlists folder: ${data.playlistsPath || 'media_shows'}`);
+      }
+      if (data.announcementsFolderCreated) {
+        resultLines.push(`[Fixed] Created missing base Announcements folder: ${data.announcementsPath || 'media_announcements'}`);
+      }
+
       if (data.announcementsReadonlyError) {
         resultLines.push(`[Warning] ${data.announcementsReadonlyMessage}`);
       }
@@ -677,6 +772,16 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         ? data.createdPlaylistFolders
         : [];
       const fallbackCreated: string[] = Array.isArray(data.createdFolders) ? data.createdFolders : [];
+      const extraEvergreens: string[] = Array.isArray(data.extraEvergreenFolders)
+        ? data.extraEvergreenFolders
+        : [];
+      const extraPlaylists: string[] = Array.isArray(data.extraPlaylistFolders)
+        ? data.extraPlaylistFolders
+        : [];
+
+      const anyBaseFolderCreated = Boolean(
+        data.evergreensFolderCreated || data.playlistsFolderCreated || data.announcementsFolderCreated
+      );
 
       if (createdEvergreens.length > 0 || createdPlaylists.length > 0) {
         for (const folder of createdEvergreens) {
@@ -689,9 +794,20 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         for (const folder of fallbackCreated) {
           resultLines.push(`[Fixed] Created missing show folder: ${folder}`);
         }
-      } else if (!data.announcementsReadonlyError) {
+      } else if (!data.announcementsReadonlyError && !anyBaseFolderCreated) {
         resultLines.push(
           '[OK] All show Evergreen and Playlist folders were already present. No fixes needed.'
+        );
+      }
+
+      for (const extraFolder of extraEvergreens) {
+        resultLines.push(
+          `[Notice] Extra folder found in media_evergreens (not matched to any show Short Name): ${extraFolder}`
+        );
+      }
+      for (const extraFolder of extraPlaylists) {
+        resultLines.push(
+          `[Notice] Extra folder found in media_shows (not matched to any show Short Name): ${extraFolder}`
         );
       }
 
@@ -716,6 +832,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const createNewShow = () => {
     setEditingShowId('new');
     setIsNameShortManuallyEdited(false);
+    setShowValidationErrors([]);
     const maxIdNum = shows.reduce((max, s) => {
       const num = parseInt(s.id, 10);
       return !isNaN(num) && num > max ? num : max;
@@ -741,52 +858,78 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const startEditShow = (show: Show) => {
     setEditingShowId(show.id);
     setIsNameShortManuallyEdited(false);
+    setShowValidationErrors([]);
     setShowFormData({ ...show });
   };
 
-  const handleDeleteShow = async (id: string) => {
+  const handleDeleteShow = (id: string) => {
     if (isSavingShow) return;
-    if (confirm("Are you sure you want to delete this show?")) {
-      const filtered = shows.filter(s => s.id !== id);
-      if (onSaveShows) {
-        setIsSavingShow(true);
-        try {
-          const result = await onSaveShows(filtered);
-          if (result !== false) {
-            setEditingShowId(null);
-          }
-        } catch (err) {
-          console.error("Delete show failed:", err);
-        } finally {
-          setIsSavingShow(false);
+    setDeleteShowConfirmId(id);
+  };
+
+  const confirmDeleteShow = async (id: string) => {
+    if (isSavingShow) return;
+    const filtered = shows.filter(s => s.id !== id);
+    if (onSaveShows) {
+      setIsSavingShow(true);
+      try {
+        const result = await onSaveShows(filtered);
+        if (result !== false) {
+          setDeleteShowConfirmId(null);
+          setShowValidationErrors([]);
+          setEditingShowId(null);
         }
-      } else {
-        setEditingShowId(null);
+      } catch (err) {
+        console.error("Delete show failed:", err);
+      } finally {
+        setIsSavingShow(false);
       }
+    } else {
+      setDeleteShowConfirmId(null);
+      setShowValidationErrors([]);
+      setEditingShowId(null);
     }
   };
 
   const handleSaveShow = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSavingShow) return;
-    if (!showFormData.name) {
-      alert("Show name is required.");
-      return;
-    }
 
-    const finalNameShort = showFormData.nameShort ? cleanNameShort(showFormData.nameShort) : cleanNameShort(showFormData.name);
+    const validationErrors: string[] = [];
+    const trimmedName = String(showFormData.name || '').trim();
+    const trimmedHost = String(showFormData.host || '').trim();
+    const rawShort = String(showFormData.nameShort || '').trim();
+    const finalNameShort = rawShort ? cleanNameShort(rawShort) : cleanNameShort(trimmedName);
+    const totalDurationMinutes =
+      (Number(showFormData.durationHours) || 0) * 60 + (Number(showFormData.durationMinutes) || 0);
+
+    if (!trimmedName) {
+      validationErrors.push('Show Name is required.');
+    }
     if (!finalNameShort) {
-      alert("Short Name is required.");
+      validationErrors.push('Short Name (for filenames) is required.');
+    } else {
+      const otherShows = shows.filter(s => s.id !== editingShowId && !s.isDeleted);
+      const isUnique = !otherShows.some(s => s.nameShort.toLowerCase() === finalNameShort.toLowerCase());
+      if (!isUnique) {
+        validationErrors.push(
+          `The Short Name "${finalNameShort}" is already in use by another show. Please provide a unique Short Name.`
+        );
+      }
+    }
+    if (!trimmedHost) {
+      validationErrors.push('Show Host is required.');
+    }
+    if (totalDurationMinutes <= 0) {
+      validationErrors.push('Duration of Show must be greater than 0 minutes.');
+    }
+
+    if (validationErrors.length > 0) {
+      setShowValidationErrors(validationErrors);
       return;
     }
 
-    // 6.a. Before adding or editing, ensure nameShort is unique
-    const otherShows = shows.filter(s => s.id !== editingShowId);
-    const isUnique = !otherShows.some(s => s.nameShort.toLowerCase() === finalNameShort.toLowerCase());
-    if (!isUnique) {
-      alert(`The short name "${finalNameShort}" is already in use by another show. Please provide a unique short name.`);
-      return;
-    }
+    setShowValidationErrors([]);
 
     const isNewShow = editingShowId === 'new';
     let renameFolder = false;
@@ -1738,6 +1881,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       enabled: true, // Reset to active as requested
       startDate: newStartDate,
       endDate: newEndDate,
+      validFrom: '1970-01-01T00:00:00.000Z',
+      validTo: null,
+      isDeleted: false,
+      revisions: [],
       metadata: {
         ...s.metadata,
         createdBy: 'Admin',
@@ -1848,17 +1995,76 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     });
 
     const now = new Date().toISOString();
+    const existingAnnouncement = announcements.find(s => s.id === editingId);
+    const exists = Boolean(existingAnnouncement);
+    const existingRevisions: AnnouncementRevision[] = Array.isArray(existingAnnouncement?.revisions)
+      ? [...existingAnnouncement!.revisions!]
+      : [];
+    let nextValidFrom =
+      existingAnnouncement?.validFrom || (exists ? '1970-01-01T00:00:00.000Z' : now);
+
+    const resolvedEndDate = effectiveEndDate || formData.endDate;
+
+    if (existingAnnouncement) {
+      const sortNumArr = (arr?: number[]) => [...(arr || [])].map(Number).sort((a, b) => a - b).join(',');
+      const sortStrArr = (arr?: string[]) => [...(arr || [])].map(String).sort().join(',');
+
+      const hasScheduleChanged =
+        (existingAnnouncement.name || '') !== (formData.name || '') ||
+        existingAnnouncement.type !== formData.type ||
+        Boolean(existingAnnouncement.enabled) !== Boolean(formData.enabled) ||
+        (Number(existingAnnouncement.minute) || 0) !== (Number(formData.minute) || 0) ||
+        (existingAnnouncement.date || '') !== (formData.date || '') ||
+        (existingAnnouncement.time || '') !== (formData.time || '') ||
+        (existingAnnouncement.startDate || '') !== (formData.startDate || '') ||
+        (existingAnnouncement.endDate || '') !== (resolvedEndDate || '') ||
+        sortNumArr(existingAnnouncement.days) !== sortNumArr(formData.days) ||
+        sortNumArr(existingAnnouncement.hours) !== sortNumArr(formData.hours) ||
+        sortStrArr(existingAnnouncement.gridRules) !== sortStrArr(formData.gridRules);
+
+      if (hasScheduleChanged) {
+        const prevValidFrom =
+          !existingAnnouncement.validFrom ||
+          (existingAnnouncement.validFrom === '2026-08-01T00:00:00.000Z' && existingRevisions.length === 0)
+            ? '1970-01-01T00:00:00.000Z'
+            : existingAnnouncement.validFrom;
+
+        existingRevisions.push({
+          name: existingAnnouncement.name,
+          type: existingAnnouncement.type,
+          enabled: existingAnnouncement.enabled,
+          minute: existingAnnouncement.minute,
+          ...(existingAnnouncement.date !== undefined ? { date: existingAnnouncement.date } : {}),
+          ...(existingAnnouncement.time !== undefined ? { time: existingAnnouncement.time } : {}),
+          ...(existingAnnouncement.days !== undefined ? { days: [...existingAnnouncement.days] } : {}),
+          ...(existingAnnouncement.hours !== undefined ? { hours: [...existingAnnouncement.hours] } : {}),
+          ...(existingAnnouncement.gridRules !== undefined ? { gridRules: [...existingAnnouncement.gridRules] } : {}),
+          ...(existingAnnouncement.startDate !== undefined ? { startDate: existingAnnouncement.startDate } : {}),
+          ...(existingAnnouncement.endDate !== undefined ? { endDate: existingAnnouncement.endDate } : {}),
+          ...(existingAnnouncement.timeGatedMp3s !== undefined
+            ? { timeGatedMp3s: existingAnnouncement.timeGatedMp3s }
+            : {}),
+          validFrom: prevValidFrom,
+          validTo: now,
+        });
+        nextValidFrom = now;
+      }
+    }
+
     const updated: Announcement = normalizeAnnouncement({
       ...formData as Announcement,
-      endDate: effectiveEndDate || formData.endDate,
+      endDate: resolvedEndDate,
       timeGatedMp3s: sortedMp3s,
+      validFrom: nextValidFrom,
+      validTo: existingAnnouncement?.validTo !== undefined ? existingAnnouncement.validTo : null,
+      isDeleted: Boolean(existingAnnouncement?.isDeleted),
+      revisions: existingRevisions,
       metadata: {
         ...(formData.metadata as AnnouncementMetadata),
         lastModifiedDate: now
       }
     });
     
-    const exists = announcements.some(s => s.id === editingId);
     let newAnnouncements: Announcement[];
     if (exists) {
       newAnnouncements = announcements.map(s => s.id === editingId ? updated : s);
@@ -2187,6 +2393,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           isSavingShow={isSavingShow}
           handleSaveShow={handleSaveShow}
           handleDeleteShow={handleDeleteShow}
+          showValidationErrors={showValidationErrors}
+          onClearShowValidationErrors={() => {
+            if (showValidationErrors.length > 0) setShowValidationErrors([]);
+          }}
         />
       ) : !editingId ? (
         <div className="flex flex-col h-full min-h-0 flex-1">
@@ -2313,6 +2523,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           setIsDraggingClock={setIsDraggingClock}
           handleClockInteraction={handleClockInteraction}
           handleAddMp3={handleAddMp3}
+          onReuseGate={handleReuseGate}
           logs={logs}
           pickerDurations={pickerDurations}
           metadataCache={metadataCache}
@@ -2551,6 +2762,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           );
           const wasEditingExistingInPicker =
             copyEditorState.fromPicker && Boolean(copyEditorState.initialFileName);
+          const wasCopyingInPicker =
+            copyEditorState.fromPicker && Boolean(copyEditorState.sourceFileToCopy);
           const targetGateId = copyEditorState.targetGateId;
           const targetGateIndex = copyEditorState.targetGateIndex;
           const targetItemIndex = copyEditorState.targetItemIndex;
@@ -2599,6 +2812,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           }
 
           if (copyEditorState.fromPicker) {
+            if (wasCopyingInPicker) {
+              // User clicked Copy on an item inside Select Announcement: keep Select Announcement open showing the newly created copy
+              return;
+            }
             if (!wasEditingExistingInPicker || isSplitFromExisting) {
               handleSelectFileFromPicker(
                 { name, path, size },
@@ -2829,6 +3046,22 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           setDeleteConfirmId(null);
           if (targetId) {
             await deleteAnnouncement(targetId);
+          }
+        }}
+      />
+
+      {/* Delete Show Confirmation Modal Overlay */}
+      <DeleteShowModal
+        isOpen={!!deleteShowConfirmId}
+        showName={
+          shows.find(s => s.id === deleteShowConfirmId)?.name ||
+          (editingShowId === deleteShowConfirmId ? showFormData.name : undefined)
+        }
+        isSaving={isSavingShow}
+        onCancel={() => setDeleteShowConfirmId(null)}
+        onConfirm={async () => {
+          if (deleteShowConfirmId) {
+            await confirmDeleteShow(deleteShowConfirmId);
           }
         }}
       />
@@ -3173,6 +3406,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                 {folderCheckModal.lines.map((line, idx) => {
                   const isError = line.startsWith('[Error]') || line.startsWith('[Warning]');
                   const isFixed = line.startsWith('[Fixed]');
+                  const isNotice = line.startsWith('[Notice]');
                   const isOk =
                     line.startsWith('[Validated]') ||
                     line.startsWith('[OK]') ||
@@ -3186,9 +3420,11 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                           ? 'text-rose-300 font-semibold'
                           : isFixed
                             ? 'text-amber-300 font-semibold'
-                            : isOk
-                              ? 'text-emerald-300'
-                              : 'text-slate-300'
+                            : isNotice
+                              ? 'text-sky-300 font-semibold'
+                              : isOk
+                                ? 'text-emerald-300'
+                                : 'text-slate-300'
                       )}
                     >
                       {line}

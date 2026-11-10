@@ -60,6 +60,66 @@ export function DeleteAnnouncementModal({
   );
 }
 
+interface DeleteShowModalProps {
+  isOpen: boolean;
+  showName?: string;
+  isSaving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+export function DeleteShowModal({
+  isOpen,
+  showName,
+  isSaving,
+  onCancel,
+  onConfirm,
+}: DeleteShowModalProps) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200">
+        <div className="p-4 bg-red-50 border-b border-red-100 flex items-center gap-3">
+          <div className="bg-red-600 p-2 rounded">
+            <Trash2 className="w-4 h-4 text-white" />
+          </div>
+          <h3 className="text-xs font-black text-red-800 uppercase tracking-widest">
+            Delete Show?
+          </h3>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-xs text-slate-650 font-bold leading-relaxed">
+            Are you sure you want to permanently delete{showName ? ` "${showName}"` : ' this show'}?
+          </p>
+          <p className="text-xs text-slate-500 font-medium leading-normal">
+            If you want to keep the show profile but remove it from the active schedule, cancel and set Show Broadcast Status to Inactive instead.
+          </p>
+        </div>
+        <div className="p-3 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={onCancel}
+            className="px-4 py-2 border border-slate-200 rounded text-xs font-black text-slate-500 hover:bg-slate-100 uppercase tracking-widest transition-all cursor-pointer disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={onConfirm}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-black uppercase tracking-widest transition-all shadow-md shadow-red-100 cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {isSaving && <RefreshCw className="w-3 h-3 animate-spin" />}
+            <span>{isSaving ? "Deleting..." : "I understand, delete"}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface CancelUnsavedModalProps {
   isOpen: boolean;
   onKeepEditing: () => void;

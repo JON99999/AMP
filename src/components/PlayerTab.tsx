@@ -1235,6 +1235,9 @@ export default function PlayerTab({
       (playMode === 'Prerecord' && dateMs !== lastPrerecordDateMsRef.current);
 
     if (showChanged) {
+      if (onCloseExportPopup) {
+        onCloseExportPopup();
+      }
       lastShowIdRef.current = effectiveShow ? effectiveShow.id : null;
       lastPlayModeRef.current = playMode;
       lastPrerecordDateMsRef.current = dateMs;
@@ -3112,7 +3115,8 @@ export default function PlayerTab({
       const cleanUpNextShowName = rawName.replace(/^Up Next:\s*/i, '').trim() || 'Upcoming Show';
       const sourceFileName = isUpNextItem ? `Up Next - ${cleanUpNextShowName}.txt` : rawMp3Url;
       const dotIndex = sourceFileName.lastIndexOf('.');
-      const ext = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : (isScript ? '.txt' : '.mp3');
+      const rawExt = dotIndex !== -1 ? sourceFileName.substring(dotIndex) : (isScript ? '.txt' : '.mp3');
+      const ext = isScript && /^\.(txt|md)$/i.test(rawExt) ? '.txt' : rawExt;
       const targetFileName = `${showPrefix} ${paddedIdx} Break at ${safeSlotTime} - ${safeAnnouncementName}${ext}`;
       const exists = isUpNextItem ? true : (rawMp3Url ? getMP3Status(rawMp3Url).exists : false);
 

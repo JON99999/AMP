@@ -36,4 +36,7 @@
 - **11/04/2026 Direct Chat Prompt (Admin Mode Modal Warning in Folders Settings Window & Show Lookaround hh:mm Setting)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Items #47 & #48** on 11/04/2026.
 - **11/04/2026 Direct Chat Prompt (v0.15.4 Overwriting _meta Settings, Remove Fake "Kate" Name & Scan, Save Blocking on Incomplete Gate Data, & CopyEditorModal Local Script Seed/Save Fix)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Items #49, #50, #51, & #52** on 11/04/2026.
 - **11/05/2026 Direct Chat Prompt (`v0.20.2` Windows Test Findings: Gate Delete vs. Inactivate Rules, Schedule Window Persistence, Admin-Only Schedule Window Lock, Local File Date Column, Prerecord Export Up Next & Sequence Display, & Playlist Deck Playback/Sorting/Scoping)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Item #53** and resolved/archived **Items #54, #55, #56, #57, & #58** in `v0.20.3` (`dev/docs/ROADMAP_HISTORY.md`) on 11/05/2026.
+- **11/05/2026 Direct Chat Prompt (`v0.20.3` Windows Delta Re-Test Findings: `Select Announcement` Horizontal Scroll Fix & Auto-Close `Export Show` Popup on Show Change)** -> Resolved and archived as **Items #59 & #60** in `dev/docs/ROADMAP_HISTORY.md` on 11/05/2026.
+- **11/09/2026 Direct Chat Prompt (`v0.20.3` macOS Intel Full Test Notes `A`–`M`)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Items #65–#74** and updated `#5b`, `#31`, `#27`, and `dev/docs/TESTING_PLAN_v0.20.4.md` on 11/09/2026.
+
 

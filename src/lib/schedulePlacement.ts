@@ -35,6 +35,7 @@ export interface SchedulePresetOption {
   suggestedStartTime?: string;
   transitionMp3Id?: string;
   transitionMp3Index?: number;
+  transitionMp3Title?: string;
   referenceStartDate?: string;
   isLeadingGap?: boolean;
 }
@@ -58,6 +59,9 @@ export interface AnnouncementPlacementModalState {
   endTime: string;
   transitionMp3Id?: string;
   transitionMp3Index?: number;
+  transitionMp3Title?: string;
+  previousGateEndDate?: string;
+  previousGateEndTime?: string;
 }
 
 export function computeSchedulePlacementOptions(
@@ -72,7 +76,8 @@ export function computeSchedulePlacementOptions(
   const nowDate = getDatePart(nowIso);
   const nowTime = getTimePart(nowIso) || '00:00';
   const profStartIso = profileStartDate ? formatToDatetimeLocal(profileStartDate) : '';
-  const effectiveLeadStartIso = profStartIso && profStartIso > nowIso ? profStartIso : (profStartIso || nowIso);
+  const isProfStartDateOnly = Boolean(profileStartDate && !profileStartDate.includes('T'));
+  const effectiveLeadStartIso = profStartIso && profStartIso > nowIso ? profStartIso : nowIso;
   const leadStartDate = getDatePart(effectiveLeadStartIso) || nowDate;
   const leadStartTime = getTimePart(effectiveLeadStartIso) || nowTime;
   const isLeadFromNow = effectiveLeadStartIso === nowIso && (!profStartIso || profStartIso <= nowIso);
@@ -91,11 +96,16 @@ export function computeSchedulePlacementOptions(
   // 1. Check for leading gap from effective schedule start to first active/upcoming gate's startDate
   const firstItem = activeSorted[0];
   const firstItemStart = firstItem?.startDate ? formatToDatetimeLocal(firstItem.startDate) : '';
+  const isSameDayAsDateOnlyProfileStart =
+    isProfStartDateOnly &&
+    Boolean(firstItemStart) &&
+    getDatePart(profStartIso) === getDatePart(firstItemStart);
   let hasLeadingGap = false;
   if (
     firstItem &&
     firstItemStart &&
     firstItemStart > effectiveLeadStartIso &&
+    !isSameDayAsDateOnlyProfileStart &&
     !isContiguousMidnightTransition(effectiveLeadStartIso, firstItemStart)
   ) {
     const fTitle = getItemTitle(firstItem);
@@ -174,7 +184,7 @@ export function computeSchedulePlacementOptions(
         endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
       });
     } else {
-      // Open-ended last item -> 1 week forward transition option
+      // Open-ended last item -> Prompt user for when Gate #lastIdx should end
       const lastFormatted = lastItem.startDate
         ? formatToDatetimeLocal(lastItem.startDate)
         : (profStartIso || '');
@@ -197,17 +207,18 @@ export function computeSchedulePlacementOptions(
 
       presets.push({
         id: 'trailing-1week',
-        label: `After #${lastIdx} ${lastTitle}`,
+        label: `After #${lastIdx} ${lastTitle} (Open-Ended)`,
         displayStartDate: lastSetDate,
         displayStartTime: lastSetTime,
-        startDate: suggestedDate,
-        startTime: suggestedTime,
+        startDate: '',
+        startTime: '',
         suggestedStartDate: suggestedDate,
         suggestedStartTime: suggestedTime,
         endDate: validProfEnd ? getDatePart(validProfEnd) : '',
         endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
         transitionMp3Id: lastItem.id,
         transitionMp3Index: lastIdx,
+        transitionMp3Title: lastTitle,
         referenceStartDate: lastFormatted || `${nowDate}T${nowTime}`,
       });
     }

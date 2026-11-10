@@ -93,11 +93,11 @@ Paste this short pointer into `System Instructions > Custom Instructions` on any
 
 ```markdown
 ## Global Shared Agent Methodology
-1. Before your first action in a new session (or if `.agents_global.md` is missing), run:
-   `curl -sL "https://gist.githubusercontent.com/JON99999/eb5e4a5f7de0299b12e40935cdfc9b32/raw/AGENTS_GLOBAL.md" -o .agents_global.md`
-   and read `.agents_global.md` with `view_file`.
-2. Enforce all rules in `.agents_global.md` (Universal Layer 1) alongside `./AGENTS.md` (App-Specific Layer 2).
-3. When instructed to update a global rule, edit `.agents_global.md` and push it back to Gist `eb5e4a5f7de0299b12e40935cdfc9b32` via `PATCH https://api.github.com/gists/eb5e4a5f7de0299b12e40935cdfc9b32` using `$GITHUB_GIST_TOKEN`.
+1. Before your first action in a new session (or if `/tmp/agents_global.md` is missing), run via `run_command`:
+   `curl -sL "https://gist.githubusercontent.com/JON99999/eb5e4a5f7de0299b12e40935cdfc9b32/raw/AGENTS_GLOBAL.md" | tr -d '\000\r' | tee /tmp/agents_global.md`
+   so you read the full methodology from stdout while caching it in `/tmp/agents_global.md` outside the workspace file tree (never write `.agents_global.md` inside the project workspace).
+2. Enforce all rules in `/tmp/agents_global.md` (Universal Layer 1) alongside `./AGENTS.md` (App-Specific Layer 2).
+3. When instructed to update a global rule, update `/tmp/agents_global.md` and push it back to Gist `eb5e4a5f7de0299b12e40935cdfc9b32` via `PATCH https://api.github.com/gists/eb5e4a5f7de0299b12e40935cdfc9b32` using `$GITHUB_GIST_TOKEN` (resolving the token in subshells via `GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`).
 ```
 
 ---
@@ -163,14 +163,14 @@ To connect any AI Studio project to this shared methodology:
 1. **Paste into `System Instructions > Custom Instructions`**:
    ```markdown
    ## Global Shared Agent Methodology
-   1. Before your first action in a new session (or if `.agents_global.md` is missing), run:
-      `curl -sL "https://gist.githubusercontent.com/JON99999/eb5e4a5f7de0299b12e40935cdfc9b32/raw/AGENTS_GLOBAL.md" | tr -d '\000\r' > .agents_global.md`
-      and read `.agents_global.md` with `view_file`.
-   2. Enforce all rules in `.agents_global.md` (Universal Layer 1) alongside `./AGENTS.md` (App-Specific Layer 2).
-   3. When instructed to update a global rule, edit `.agents_global.md` and push it back to Gist `eb5e4a5f7de0299b12e40935cdfc9b32` via `PATCH https://api.github.com/gists/eb5e4a5f7de0299b12e40935cdfc9b32` using `$GITHUB_GIST_TOKEN` (resolved via `GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`).
+   1. Before your first action in a new session (or if `/tmp/agents_global.md` is missing), run via `run_command`:
+      `curl -sL "https://gist.githubusercontent.com/JON99999/eb5e4a5f7de0299b12e40935cdfc9b32/raw/AGENTS_GLOBAL.md" | tr -d '\000\r' | tee /tmp/agents_global.md`
+      so you read the full methodology from stdout while caching it in `/tmp/agents_global.md` outside the workspace file tree (never write `.agents_global.md` inside the project workspace).
+   2. Enforce all rules in `/tmp/agents_global.md` (Universal Layer 1) alongside `./AGENTS.md` (App-Specific Layer 2).
+   3. When instructed to update a global rule, update `/tmp/agents_global.md` and push it back to Gist `eb5e4a5f7de0299b12e40935cdfc9b32` via `PATCH https://api.github.com/gists/eb5e4a5f7de0299b12e40935cdfc9b32` using `$GITHUB_GIST_TOKEN` (resolving the token in subshells via `GITHUB_GIST_TOKEN=${GITHUB_GIST_TOKEN:-$(grep -shz '^GITHUB_GIST_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | head -z -n 1 | tr -d '\0' | cut -d= -f2-)}`).
    ```
 2. **Add Write-Back Secret (Optional)**:
    - Add `GITHUB_GIST_TOKEN=""` to `.env.example` and paste your GitHub Gist Personal Access Token (`gist` scope only) into `GITHUB_GIST_TOKEN` in AI Studio's Secrets panel.
 3. **Send Initial Onboarding Prompt in Project Chat**:
-   - Tell the agent: *"Initialize our Global Shared Agent Methodology: (1) Fetch `.agents_global.md` from the Gist in Custom Instructions, read it, and add `.agents_global.md` and `.env*` to `.gitignore`, (2) add `GITHUB_GIST_TOKEN=\"\"` to `.env.example`, (3) create or slim `./AGENTS.md` so it holds only Layer 2 app-specific architecture and domain rules, and (4) ensure `ROADMAP` + `ROADMAP_newstuff.md` follow the two-file persistent memory protocol."*
+   - Tell the agent: *"Initialize our Global Shared Agent Methodology: (1) Fetch `/tmp/agents_global.md` from the Gist in Custom Instructions and read it, (2) add `GITHUB_GIST_TOKEN=\"\"` to `.env.example`, (3) create or slim `./AGENTS.md` so it holds only Layer 2 app-specific architecture and domain rules, and (4) ensure `ROADMAP`, `ROADMAP_newstuff.md`, and `ROADMAP_HISTORY.md` follow the three-file persistent memory protocol."*
 ````

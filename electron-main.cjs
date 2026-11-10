@@ -388,7 +388,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: `Version 0.20.3\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
+              detail: `Version 0.20.4\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
             });
           }
         }
@@ -536,6 +536,13 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(windowOptions);
   attachEditContextMenu(mainWindow);
+
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    if (level >= 2) {
+      const prefix = level >= 3 ? '[Renderer Error]' : '[Renderer Warn]';
+      console.error(`${prefix} ${message} (${sourceId}:${line})`);
+    }
+  });
 
   // Active polling inter-process status loop to load as soon as port is listening
   function loadAppWhenReady(port, url, win, attempts = 0) {
@@ -849,5 +856,86 @@ ipcMain.handle('open-path', async (event, targetPath) => {
     return { success: false, error: err.message || 'Failed to open path' };
   }
 });
+
+ipcMain.handle('clear-app-cache', async (event, options) => {
+  const keepFolders = !!(options && options.keepFolders);
+  try {
+    if (session && session.defaultSession) {
+      try {
+        await session.defaultSession.clearCache();
+      } catch (cacheErr) {
+        console.warn('session.defaultSession.clearCache warning:', cacheErr);
+      }
+      try {
+        const storages = keepFolders
+          ? ['serviceworkers', 'cachestorage', 'shadercache', 'indexdb']
+          : ['serviceworkers', 'cachestorage', 'shadercache', 'indexdb', 'localstorage', 'cookies'];
+        await session.defaultSession.clearStorageData({ storages });
+      } catch (storageErr) {
+        console.warn('session.defaultSession.clearStorageData warning:', storageErr);
+      }
+    }
+
+    const cacheSubdirs = [
+      'Cache',
+      'Code Cache',
+      'GPUCache',
+      'Service Worker',
+      'DawnCache',
+      'Blob_storage',
+      'Network Persistent State',
+      ...(keepFolders ? [] : ['Session Storage'])
+    ];
+
+    const targetRuntimeDirs = new Set();
+    try {
+      targetRuntimeDirs.add(app.getPath('userData'));
+    } catch (_) {}
+    if (!isPortableMode) {
+      try {
+        const baseAppData = app.getPath('appData');
+        for (const modeName of ['AMP-Admin', 'AMP-Live', 'AMP-Studio']) {
+          targetRuntimeDirs.add(path.join(baseAppData, modeName));
+        }
+      } catch (_) {}
+    }
+
+    for (const runtimeDir of targetRuntimeDirs) {
+      if (!runtimeDir || !fs.existsSync(runtimeDir)) continue;
+      for (const sub of cacheSubdirs) {
+        const target = path.join(runtimeDir, sub);
+        if (fs.existsSync(target)) {
+          try {
+            fs.rmSync(target, { recursive: true, force: true });
+          } catch (_) {}
+        }
+      }
+    }
+
+    return { success: true };
+  } catch (err) {
+    console.error('Failed to clear Electron app cache:', err);
+    return { success: false, error: err.message || 'Failed to clear app cache' };
+  }
+});
+
+ipcMain.handle('open-dev-tools', async () => {
+  try {
+    if (appMode !== 'Admin') {
+      return { success: false, error: 'Diagnostic console is only available in Admin mode.' };
+    }
+    const targetWin = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (targetWin && !targetWin.isDestroyed()) {
+      targetWin.webContents.openDevTools({ mode: 'detach' });
+      return { success: true };
+    }
+    return { success: false, error: 'No active application window found.' };
+  } catch (err) {
+    console.error('Failed to open developer tools:', err);
+    return { success: false, error: err.message || 'Failed to open developer tools' };
+  }
+});
+
+
 
 

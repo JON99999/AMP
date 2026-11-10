@@ -165,6 +165,14 @@ export function resolveAnnouncementsForDate(
         rev.validFrom <= targetIso && rev.validTo > targetIso
       );
       if (matchedRev) {
+        const currentGates = Array.isArray(ann.timeGatedMp3s) ? ann.timeGatedMp3s : [];
+        const revGates = Array.isArray(matchedRev.timeGatedMp3s) ? matchedRev.timeGatedMp3s : [];
+        const currentGateIds = new Set(currentGates.map(g => g.id));
+        const mergedGates =
+          currentGates.length > 0
+            ? [...currentGates, ...revGates.filter(rg => !currentGateIds.has(rg.id))]
+            : revGates;
+
         resolved = {
           ...ann,
           name: matchedRev.name,
@@ -178,7 +186,7 @@ export function resolveAnnouncementsForDate(
           gridRules: matchedRev.gridRules,
           startDate: matchedRev.startDate,
           endDate: matchedRev.endDate,
-          timeGatedMp3s: matchedRev.timeGatedMp3s || ann.timeGatedMp3s,
+          timeGatedMp3s: mergedGates,
           isDeleted: false
         };
       }
@@ -668,12 +676,20 @@ export function calculateGateSlotAssessment(
   const scanEndMs = new Date(scanEndIso).getTime();
 
   if (!isNaN(startMs) && !isNaN(scanEndMs) && startMs <= scanEndMs) {
-    const annMinute = Number(announcement.minute) || 0;
+    const baseMinute = Number(announcement.minute) || 0;
     const cursor = new Date(startMs);
-    cursor.setMinutes(annMinute, 0, 0);
+    cursor.setMinutes(baseMinute, 0, 0);
     if (cursor.getTime() < startMs) {
       cursor.setHours(cursor.getHours() + 1);
     }
+
+    const tz = getStationTimezone();
+    const hasRevisions = Array.isArray(announcement.revisions) && announcement.revisions.length > 0;
+    const headValidFrom =
+      !announcement.validFrom || (announcement.validFrom === '2026-08-01T00:00:00.000Z' && !hasRevisions)
+        ? '1970-01-01T00:00:00.000Z'
+        : announcement.validFrom;
+    const headValidTo = announcement.validTo || null;
 
     let slotIndex = 0;
     let safety = 0;
@@ -686,11 +702,39 @@ export function calculateGateSlotAssessment(
       const d = cursor.getDate();
       const h = cursor.getHours();
       const localDateStr = `${y}-${pad(m)}-${pad(d)}`;
-      const slotIso = `${localDateStr}T${pad(h)}:${pad(annMinute)}`;
       const dayOfWeek = cursor.getDay();
 
+      let effectiveAnnForSlot: Partial<Announcement> = announcement;
+      if (hasRevisions) {
+        const slotCheckUtcIso = stationLocalToUtcIso(`${localDateStr}T${pad(h)}:59:59`, tz);
+        if (!(headValidFrom <= slotCheckUtcIso && (!headValidTo || headValidTo > slotCheckUtcIso))) {
+          const matchedRev = announcement.revisions!.find(
+            rev => rev.validFrom <= slotCheckUtcIso && rev.validTo > slotCheckUtcIso
+          );
+          if (matchedRev) {
+            effectiveAnnForSlot = {
+              ...announcement,
+              name: matchedRev.name,
+              type: matchedRev.type,
+              enabled: matchedRev.enabled,
+              minute: matchedRev.minute,
+              date: matchedRev.date,
+              time: matchedRev.time,
+              days: matchedRev.days,
+              hours: matchedRev.hours,
+              gridRules: matchedRev.gridRules,
+              startDate: matchedRev.startDate,
+              endDate: matchedRev.endDate,
+            };
+          }
+        }
+      }
+
+      const annMinute = Number(effectiveAnnForSlot.minute ?? baseMinute) || 0;
+      const slotIso = `${localDateStr}T${pad(h)}:${pad(annMinute)}`;
+
       const matchesRule = isAnnouncementRuleMatch(
-        announcement as Announcement,
+        effectiveAnnForSlot as Announcement,
         dayOfWeek,
         h,
         annMinute,

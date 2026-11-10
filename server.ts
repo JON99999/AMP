@@ -16,6 +16,16 @@ async function startServer() {
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
+  // Prevent Chromium disk caching of JSON API responses (#61)
+  app.use('/api', (req, res, next) => {
+    if (!req.path.startsWith('/media/stream')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+    next();
+  });
+
   // Register Modular Route Domains (#33)
   registerSettingsRoutes(app);
   registerMediaRoutes(app);

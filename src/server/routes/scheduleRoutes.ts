@@ -24,7 +24,8 @@ import {
   atomicWriteFileSync,
   resolveLocalAnnouncementScriptText,
   readStationSettingsSidecar,
-  writeStationSettingsSidecar
+  writeStationSettingsSidecar,
+  readJsonFileWithCloudCatchUp
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -50,7 +51,9 @@ export function registerScheduleRoutes(app: express.Express): void {
       }
 
       const filePath = getCalendarFilePath();
-      if (!filePath || !fs.existsSync(filePath)) {
+      const backupPath = getCalendarBackupPath();
+      const { parsed, fileExists } = await readJsonFileWithCloudCatchUp(filePath, backupPath);
+      if (!fileExists) {
         if (withEnvelope) {
           return res.json({
             _meta: null,
@@ -60,8 +63,6 @@ export function registerScheduleRoutes(app: express.Express): void {
         }
         return res.json([]);
       }
-      const data = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(data || '[]');
       let rawLogs: any = undefined;
       try {
         const logPath = getLogFilePath();
@@ -92,7 +93,7 @@ export function registerScheduleRoutes(app: express.Express): void {
       res.json(seeded);
     } catch (e: any) {
       console.error('Failed to read schedules:', e);
-      res.status(isServerDriveStorageRequest(req) ? 500 : 300).json(isServerDriveStorageRequest(req) ? { error: e?.message || 'Failed to read schedules' } : []);
+      res.status(500).json(isServerDriveStorageRequest(req) ? { error: e?.message || 'Failed to read schedules' } : []);
     }
   });
 
@@ -175,7 +176,9 @@ export function registerScheduleRoutes(app: express.Express): void {
       }
 
       const filePath = getShowsFilePath();
-      if (!filePath || !fs.existsSync(filePath)) {
+      const backupPath = getShowsBackupPath();
+      const { parsed, fileExists } = await readJsonFileWithCloudCatchUp(filePath, backupPath);
+      if (!fileExists) {
         if (withEnvelope) {
           return res.json({
             _meta: null,
@@ -191,8 +194,6 @@ export function registerScheduleRoutes(app: express.Express): void {
         }
         return res.json([]);
       }
-      const data = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(data || '[]');
       const sidecar = readStationSettingsSidecar();
       const embeddedMeta = Array.isArray(parsed?.data)
         ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
@@ -699,11 +700,11 @@ export function registerScheduleRoutes(app: express.Express): void {
       }
 
       const filePath = getLogFilePath();
-      if (!filePath || !fs.existsSync(filePath)) {
+      const backupPath = getLogBackupPath();
+      const { parsed, fileExists } = await readJsonFileWithCloudCatchUp(filePath, backupPath);
+      if (!fileExists) {
         return res.json([]);
       }
-      const data = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(data || '[]');
       const rawLogs = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
         ? (Array.isArray(parsed.data) ? parsed.data : [])
         : (Array.isArray(parsed) ? parsed : []);
@@ -761,17 +762,15 @@ export function registerScheduleRoutes(app: express.Express): void {
         LogsBackupCounter: counter,
         data: logs
       };
-      // Save main log as object structure
-      fs.writeFileSync(filePath, JSON.stringify(updatedObj, null, 2));
+      // Save main log as object structure atomically
+      atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
 
       // Simple backup mechanism
       try {
         const backupPath = getLogBackupPath();
-        const backupParent = path.dirname(backupPath);
-        if (!fs.existsSync(backupParent)) {
-          fs.mkdirSync(backupParent, { recursive: true });
+        if (backupPath) {
+          atomicWriteFileSync(backupPath, JSON.stringify(updatedObj, null, 2));
         }
-        fs.writeFileSync(backupPath, JSON.stringify(updatedObj, null, 2));
       } catch (e) {
         console.error('Backup failed:', e);
       }
@@ -805,10 +804,6 @@ export function registerScheduleRoutes(app: express.Express): void {
       // Backup schedules (preserving _meta and sibling fields)
       if (calendarPath) {
         if (!fs.existsSync(calendarPath)) {
-          const calendarDir = path.dirname(calendarPath);
-          if (calendarDir && !fs.existsSync(calendarDir)) {
-            fs.mkdirSync(calendarDir, { recursive: true });
-          }
           const initialAnn = migrateAnnouncementsPayload(
             { AnnouncementsBackupCounter: 0, data: [] },
             CURRENT_APP_VERSION,
@@ -817,7 +812,7 @@ export function registerScheduleRoutes(app: express.Express): void {
             undefined,
             backupSidecar?.scheduleWindow
           );
-          fs.writeFileSync(calendarPath, JSON.stringify(initialAnn.envelope, null, 2));
+          atomicWriteFileSync(calendarPath, JSON.stringify(initialAnn.envelope, null, 2));
         }
 
         if (fs.existsSync(calendarPath)) {
@@ -839,26 +834,19 @@ export function registerScheduleRoutes(app: express.Express): void {
             backupSidecar?.scheduleWindow
           );
           const updatedStr = JSON.stringify(migratedAnn.envelope, null, 2);
-          fs.writeFileSync(calendarPath, updatedStr);
+          atomicWriteFileSync(calendarPath, updatedStr);
 
           const backupFileName = generateBackupFilename('announcements', req.body?.workstationMode);
 
           const calendarDir = path.dirname(calendarPath);
           const calendarBackupDir = path.join(calendarDir, 'backups');
-          if (!fs.existsSync(calendarBackupDir)) {
-            fs.mkdirSync(calendarBackupDir, { recursive: true });
-          }
-          fs.writeFileSync(path.join(calendarBackupDir, backupFileName), updatedStr);
+          atomicWriteFileSync(path.join(calendarBackupDir, backupFileName), updatedStr);
 
           // Also save to schedules_backup.json
           try {
             const backupPath = getCalendarBackupPath();
             if (backupPath) {
-              const backupParent = path.dirname(backupPath);
-              if (!fs.existsSync(backupParent)) {
-                fs.mkdirSync(backupParent, { recursive: true });
-              }
-              fs.writeFileSync(backupPath, updatedStr);
+              atomicWriteFileSync(backupPath, updatedStr);
             }
           } catch (e) {
             console.error('Schedules trigger backup failed to copy:', e);
@@ -869,12 +857,8 @@ export function registerScheduleRoutes(app: express.Express): void {
       // Backup logs (preserving _meta and seeding sibling fields)
       if (logPath) {
         if (!fs.existsSync(logPath)) {
-          const logDir = path.dirname(logPath);
-          if (logDir && !fs.existsSync(logDir)) {
-            fs.mkdirSync(logDir, { recursive: true });
-          }
           const initialLogs = migrateLogsPayload({ LogsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
-          fs.writeFileSync(logPath, JSON.stringify(initialLogs.envelope, null, 2));
+          atomicWriteFileSync(logPath, JSON.stringify(initialLogs.envelope, null, 2));
         }
 
         if (fs.existsSync(logPath)) {
@@ -889,26 +873,19 @@ export function registerScheduleRoutes(app: express.Express): void {
           const existingCounter = Array.isArray(parsed) ? 0 : (parsed.LogsBackupCounter || 0);
           const migratedLogs = migrateLogsPayload(parsed, parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION, existingCounter);
           const updatedStr = JSON.stringify(migratedLogs.envelope, null, 2);
-          fs.writeFileSync(logPath, updatedStr);
+          atomicWriteFileSync(logPath, updatedStr);
 
           const backupFileName = generateBackupFilename('logs', req.body?.workstationMode);
 
           const logDir = path.dirname(logPath);
           const logBackupDir = path.join(logDir, 'backups');
-          if (!fs.existsSync(logBackupDir)) {
-            fs.mkdirSync(logBackupDir, { recursive: true });
-          }
-          fs.writeFileSync(path.join(logBackupDir, backupFileName), updatedStr);
+          atomicWriteFileSync(path.join(logBackupDir, backupFileName), updatedStr);
 
           // Also save to logs_backup.json
           try {
             const backupPath = getLogBackupPath();
             if (backupPath) {
-              const backupParent = path.dirname(backupPath);
-              if (!fs.existsSync(backupParent)) {
-                fs.mkdirSync(backupParent, { recursive: true });
-              }
-              fs.writeFileSync(backupPath, updatedStr);
+              atomicWriteFileSync(backupPath, updatedStr);
             }
           } catch (e) {
             console.error('Logs trigger backup failed to copy:', e);
@@ -919,12 +896,8 @@ export function registerScheduleRoutes(app: express.Express): void {
       // Backup shows (preserving _meta and sibling fields)
       if (showsPath) {
         if (!fs.existsSync(showsPath)) {
-          const showsDir = path.dirname(showsPath);
-          if (showsDir && !fs.existsSync(showsDir)) {
-            fs.mkdirSync(showsDir, { recursive: true });
-          }
           const initialShows = migrateShowsPayload({ ShowsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
-          fs.writeFileSync(showsPath, JSON.stringify(initialShows.envelope, null, 2));
+          atomicWriteFileSync(showsPath, JSON.stringify(initialShows.envelope, null, 2));
         }
 
         if (fs.existsSync(showsPath)) {
@@ -947,26 +920,19 @@ export function registerScheduleRoutes(app: express.Express): void {
             backupSidecar?.scheduleWindow
           );
           const updatedStr = JSON.stringify(migratedShows.envelope, null, 2);
-          fs.writeFileSync(showsPath, updatedStr);
+          atomicWriteFileSync(showsPath, updatedStr);
 
           const backupFileName = generateBackupFilename('shows', req.body?.workstationMode);
 
           const showsDir = path.dirname(showsPath);
           const showsBackupDir = path.join(showsDir, 'backups');
-          if (!fs.existsSync(showsBackupDir)) {
-            fs.mkdirSync(showsBackupDir, { recursive: true });
-          }
-          fs.writeFileSync(path.join(showsBackupDir, backupFileName), updatedStr);
+          atomicWriteFileSync(path.join(showsBackupDir, backupFileName), updatedStr);
 
           // Also save to shows_backup.json
           try {
             const backupPath = getShowsBackupPath();
             if (backupPath) {
-              const backupParent = path.dirname(backupPath);
-              if (!fs.existsSync(backupParent)) {
-                fs.mkdirSync(backupParent, { recursive: true });
-              }
-              fs.writeFileSync(backupPath, updatedStr);
+              atomicWriteFileSync(backupPath, updatedStr);
             }
           } catch (e) {
             console.error('Shows trigger backup failed to copy:', e);

@@ -15,6 +15,8 @@ export interface ShowEditorFormProps {
   isSavingShow: boolean;
   handleSaveShow: (e: React.FormEvent) => void;
   handleDeleteShow: (id: string) => void;
+  showValidationErrors?: string[];
+  onClearShowValidationErrors?: () => void;
 }
 
 export function ShowEditorForm({
@@ -28,11 +30,25 @@ export function ShowEditorForm({
   isSavingShow,
   handleSaveShow,
   handleDeleteShow,
+  showValidationErrors = [],
+  onClearShowValidationErrors,
 }: ShowEditorFormProps) {
   const isNewShow = editingShowId === 'new';
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+  const hasValidationErrors = showValidationErrors.length > 0;
+  const isNameInvalid = hasValidationErrors && !String(showFormData.name || '').trim();
+  const isShortNameInvalid =
+    hasValidationErrors &&
+    (!String(showFormData.nameShort || '').trim() ||
+      showValidationErrors.some(msg => msg.toLowerCase().includes('short name')));
+  const isHostInvalid = hasValidationErrors && !String(showFormData.host || '').trim();
+  const totalDurationMins =
+    (Number(showFormData.durationHours) || 0) * 60 + (Number(showFormData.durationMinutes) || 0);
+  const isDurationInvalid = hasValidationErrors && totalDurationMins <= 0;
+
   const handleResetForm = () => {
+    onClearShowValidationErrors?.();
     if (isNewShow) {
       setShowFormData({
         id: showFormData.id,
@@ -59,7 +75,7 @@ export function ShowEditorForm({
   };
 
   return (
-    <form onSubmit={handleSaveShow} className="flex-1 flex flex-col min-h-0 bg-slate-100 p-6 overflow-y-auto">
+    <form onSubmit={handleSaveShow} noValidate className="flex-1 flex flex-col min-h-0 bg-slate-100 p-6 overflow-y-auto">
       <div className="max-w-3xl mx-auto w-full bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
         <div className="py-3.5 px-5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -78,7 +94,10 @@ export function ShowEditorForm({
             </span>
             <button
               type="button"
-              onClick={() => setEditingShowId(null)}
+              onClick={() => {
+                onClearShowValidationErrors?.();
+                setEditingShowId(null);
+              }}
               className="text-slate-400 hover:text-slate-600 font-bold text-base cursor-pointer leading-none"
             >
               &times;
@@ -87,17 +106,36 @@ export function ShowEditorForm({
         </div>
 
         <div className="p-6 space-y-5 flex-1 overflow-y-auto">
+          {hasValidationErrors && (
+            <div
+              role="alert"
+              className="bg-red-50 border border-red-200 rounded-lg p-3.5 text-red-900 flex items-start gap-2.5"
+            >
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1 text-xs">
+                <p className="font-black uppercase tracking-wider text-red-800">
+                  Missing or Invalid Show Information
+                </p>
+                <ul className="list-disc pl-4 space-y-0.5 font-bold text-red-700">
+                  {showValidationErrors.map((err, idx) => (
+                    <li key={idx}>{err}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
-                Show Name
+                Show Name <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
-                required
                 placeholder="Enter Show name"
                 value={showFormData.name || ''}
                 onChange={e => {
+                  onClearShowValidationErrors?.();
                   const newName = e.target.value;
                   const updates: Partial<Show> = { name: newName };
                   if (!isNameShortManuallyEdited) {
@@ -105,26 +143,32 @@ export function ShowEditorForm({
                   }
                   setShowFormData({ ...showFormData, ...updates });
                 }}
-                className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800"
+                className={cn(
+                  'w-full px-3 py-2 bg-white border rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800',
+                  isNameInvalid ? 'border-red-400 bg-red-50/30' : 'border-slate-300'
+                )}
               />
             </div>
 
             <div className="space-y-1.5">
               <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
-                Short Name (for filenames)
+                Short Name (for filenames) <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
-                required
                 placeholder="Enter Short name"
                 value={showFormData.nameShort || ''}
                 onChange={e => {
+                  onClearShowValidationErrors?.();
                   setIsNameShortManuallyEdited(true);
                   const rawVal = e.target.value;
                   const sanitized = rawVal.replace(/[^a-zA-Z0-9_]/g, '');
                   setShowFormData({ ...showFormData, nameShort: sanitized.slice(0, 24) });
                 }}
-                className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800"
+                className={cn(
+                  'w-full px-3 py-2 bg-white border rounded-lg text-sm font-sans font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800',
+                  isShortNameInvalid ? 'border-red-400 bg-red-50/30' : 'border-slate-300'
+                )}
               />
               <p className="text-xs text-slate-400 font-medium">
                 Max 24 characters. Alphanumeric and underscores only.
@@ -134,14 +178,20 @@ export function ShowEditorForm({
 
           <div className="space-y-1.5">
             <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
-              Show Host
+              Show Host <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
               placeholder="Enter Show host"
               value={showFormData.host || ''}
-              onChange={e => setShowFormData({ ...showFormData, host: e.target.value })}
-              className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800 h-10"
+              onChange={e => {
+                onClearShowValidationErrors?.();
+                setShowFormData({ ...showFormData, host: e.target.value });
+              }}
+              className={cn(
+                'w-full px-3 py-2 bg-white border rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800 h-10',
+                isHostInvalid ? 'border-red-400 bg-red-50/30' : 'border-slate-300'
+              )}
             />
           </div>
 
@@ -152,7 +202,10 @@ export function ShowEditorForm({
               </label>
               <select
                 value={showFormData.day || 'Monday'}
-                onChange={e => setShowFormData({ ...showFormData, day: e.target.value as any })}
+                onChange={e => {
+                  onClearShowValidationErrors?.();
+                  setShowFormData({ ...showFormData, day: e.target.value as any });
+                }}
                 className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 transition-all text-slate-800 h-10"
               >
                 {daysOfWeek.map(d => (
@@ -175,6 +228,7 @@ export function ShowEditorForm({
                     max="12"
                     value={((showFormData.startHour !== undefined ? showFormData.startHour : 9) % 12) || 12}
                     onChange={e => {
+                      onClearShowValidationErrors?.();
                       const h12 = Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 12));
                       const isPM = (showFormData.startHour !== undefined ? showFormData.startHour : 9) >= 12;
                       let h24 = h12 % 12;
@@ -191,12 +245,13 @@ export function ShowEditorForm({
                     min="0"
                     max="59"
                     value={showFormData.startMinute !== undefined ? showFormData.startMinute : 0}
-                    onChange={e =>
+                    onChange={e => {
+                      onClearShowValidationErrors?.();
                       setShowFormData({
                         ...showFormData,
                         startMinute: Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)),
-                      })
-                    }
+                      });
+                    }}
                     className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
                   />
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Min</span>
@@ -205,6 +260,7 @@ export function ShowEditorForm({
                   <select
                     value={(showFormData.startHour !== undefined ? showFormData.startHour : 9) >= 12 ? 'PM' : 'AM'}
                     onChange={e => {
+                      onClearShowValidationErrors?.();
                       const isPM = e.target.value === 'PM';
                       const curH = showFormData.startHour !== undefined ? showFormData.startHour : 9;
                       let h24 = curH % 12;
@@ -222,7 +278,7 @@ export function ShowEditorForm({
 
             <div className="space-y-1.5 flex-1 min-w-[180px]">
               <label className="text-xs font-black text-slate-700 uppercase tracking-wider block truncate">
-                Duration of Show
+                Duration of Show <span className="text-red-500">*</span>
               </label>
               <div className="flex items-center gap-1.5 h-10">
                 <div className="flex items-center gap-1">
@@ -231,13 +287,17 @@ export function ShowEditorForm({
                     min="0"
                     max="23"
                     value={showFormData.durationHours !== undefined ? showFormData.durationHours : 1}
-                    onChange={e =>
+                    onChange={e => {
+                      onClearShowValidationErrors?.();
                       setShowFormData({
                         ...showFormData,
                         durationHours: Math.max(0, parseInt(e.target.value, 10) || 0),
-                      })
-                    }
-                    className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
+                      });
+                    }}
+                    className={cn(
+                      'w-14 sm:w-16 px-1.5 py-2 bg-white border rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0',
+                      isDurationInvalid ? 'border-red-400 bg-red-50/30' : 'border-slate-300'
+                    )}
                   />
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Hours</span>
                 </div>
@@ -247,13 +307,17 @@ export function ShowEditorForm({
                     min="0"
                     max="59"
                     value={showFormData.durationMinutes !== undefined ? showFormData.durationMinutes : 0}
-                    onChange={e =>
+                    onChange={e => {
+                      onClearShowValidationErrors?.();
                       setShowFormData({
                         ...showFormData,
                         durationMinutes: Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0)),
-                      })
-                    }
-                    className="w-14 sm:w-16 px-1.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0"
+                      });
+                    }}
+                    className={cn(
+                      'w-14 sm:w-16 px-1.5 py-2 bg-white border rounded-lg text-sm font-sans font-bold tabular-nums text-center outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 h-10 shrink-0',
+                      isDurationInvalid ? 'border-red-400 bg-red-50/30' : 'border-slate-300'
+                    )}
                   />
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-tight shrink-0">Mins</span>
                 </div>
@@ -356,7 +420,10 @@ export function ShowEditorForm({
             <button
               type="button"
               disabled={isSavingShow}
-              onClick={() => setEditingShowId(null)}
+              onClick={() => {
+                onClearShowValidationErrors?.();
+                setEditingShowId(null);
+              }}
               className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancel

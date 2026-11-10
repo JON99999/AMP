@@ -61,6 +61,7 @@ export interface AnnouncementEditorViewProps {
   setIsDraggingClock: (val: boolean) => void;
   handleClockInteraction: (e: React.MouseEvent<SVGSVGElement> | React.TouchEvent<SVGSVGElement>) => void;
   handleAddMp3: () => void;
+  onReuseGate?: (gate: TimeGatedMp3) => void;
   logs: LogEntry[];
   pickerDurations: Record<string, string>;
   metadataCache: Record<string, { title?: string; artist?: string; album?: string }>;
@@ -95,6 +96,7 @@ export function AnnouncementEditorView({
   setIsDraggingClock,
   handleClockInteraction,
   handleAddMp3,
+  onReuseGate,
   logs,
   pickerDurations,
   metadataCache,
@@ -124,6 +126,60 @@ export function AnnouncementEditorView({
     gate: TimeGatedMp3;
     missedCount: number;
   } | null>(null);
+  const [gateDeleteConfirmState, setGateDeleteConfirmState] = React.useState<{
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  // Track gate IDs that were active when the editor opened (or added/reactivated during this edit session)
+  // so changing an active gate's End date into the past does not abruptly drop it into Past / Inactivated Gates mid-edit (#71).
+  const [sessionActiveGateIds, setSessionActiveGateIds] = React.useState<Set<string>>(() => {
+    const initialNow = getCurrentDatetimeLocal();
+    const initialList = formData.timeGatedMp3s || [];
+    return new Set(
+      initialList
+        .filter(g => !isGateExpiredOrInactivated(g, initialNow))
+        .map(g => g.id)
+    );
+  });
+  const knownGateIdsRef = React.useRef<Set<string>>(
+    new Set((formData.timeGatedMp3s || []).map(g => g.id))
+  );
+
+  React.useEffect(() => {
+    const initialNow = getCurrentDatetimeLocal();
+    const initialList = formData.timeGatedMp3s || [];
+    knownGateIdsRef.current = new Set(initialList.map(g => g.id));
+    setSessionActiveGateIds(
+      new Set(
+        initialList
+          .filter(g => !isGateExpiredOrInactivated(g, initialNow))
+          .map(g => g.id)
+      )
+    );
+  }, [editingId]);
+
+  React.useEffect(() => {
+    const currentList = formData.timeGatedMp3s || [];
+    const newlyAddedActiveIds: string[] = [];
+    for (const g of currentList) {
+      if (!knownGateIdsRef.current.has(g.id)) {
+        knownGateIdsRef.current.add(g.id);
+        if (!g.inactivated) {
+          newlyAddedActiveIds.push(g.id);
+        }
+      }
+    }
+    if (newlyAddedActiveIds.length > 0) {
+      setSessionActiveGateIds(prev => {
+        const next = new Set(prev);
+        newlyAddedActiveIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+  }, [formData.timeGatedMp3s]);
 
   return (
     <div
@@ -588,6 +644,11 @@ export function AnnouncementEditorView({
                         inactivatedAt: currentNowIso,
                       };
                     });
+                    setSessionActiveGateIds(prev => {
+                      const next = new Set(prev);
+                      next.delete(gate.id);
+                      return next;
+                    });
                     setFormData({
                       ...formData,
                       timeGatedMp3s: updated,
@@ -677,6 +738,11 @@ export function AnnouncementEditorView({
                       delete next.inactivatedAt;
                       return next;
                     });
+                    setSessionActiveGateIds(prev => {
+                      const next = new Set(prev);
+                      next.add(gate.id);
+                      return next;
+                    });
                     setFormData({
                       ...formData,
                       timeGatedMp3s: updated,
@@ -711,6 +777,13 @@ export function AnnouncementEditorView({
                       mediaItems: getGateMediaItems(gate).map(mi => ({ ...mi })),
                     };
 
+                    setSessionActiveGateIds(prev => {
+                      const next = new Set(prev);
+                      next.delete(gate.id);
+                      next.add(newActiveGate.id);
+                      return next;
+                    });
+
                     const nextSorted = sortMp3sByStartDate([...updatedExisting, newActiveGate]);
                     setFormData({
                       ...formData,
@@ -729,9 +802,13 @@ export function AnnouncementEditorView({
                   };
 
                   const handleReuseGate = (gate: TimeGatedMp3) => {
+                    if (onReuseGate) {
+                      onReuseGate(gate);
+                      return;
+                    }
                     const clonedGate: TimeGatedMp3 = {
                       id: `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-                      startDate: '',
+                      startDate: getCurrentDatetimeLocal(),
                       endDate: undefined,
                       mediaItems: getGateMediaItems(gate).map(mi => ({ ...mi })),
                     };
@@ -744,7 +821,11 @@ export function AnnouncementEditorView({
                   };
 
                   const indexedGates = currentMp3s.map((item, idx) => {
-                    const isItemExpired = isGateExpiredOrInactivated(item, nowIso);
+                    const rawExpired = isGateExpiredOrInactivated(item, nowIso);
+                    // Keep gates that were active in this editing session in Active Gates until saved or explicitly inactivated (#71)
+                    const isKeptInActiveDuringSession =
+                      !item.inactivated && sessionActiveGateIds.has(item.id);
+                    const isItemExpired = rawExpired && !isKeptInActiveDuringSession;
                     return { item, idx, isItemExpired };
                   });
 
@@ -763,16 +844,31 @@ export function AnnouncementEditorView({
                     const gateMediaItems = getGateMediaItems(item);
                     const gateAssessment = getGateAssessment(item);
                     const gatePlayCount = gateAssessment.gateScore.played;
-                    const hasGateStarted =
-                      !item.startDate || !item.startDate.trim() || formatToDatetimeLocal(item.startDate) <= nowIso;
                     const isManuallyInactivated = Boolean(item.inactivated);
                     const isDateExpired = Boolean(
                       item.endDate && item.endDate.trim() && formatToDatetimeLocal(item.endDate) < nowIso
                     );
+                    const isPendingArchiveOnSave = !isItemExpired && isDateExpired;
                     const canReactivateGate = isManuallyInactivated && !isDateExpired;
-                    const shouldInactivateInsteadOfDelete = !isItemExpired && hasGateStarted && gatePlayCount > 0;
+
+                    const promptDeleteGate = () => {
+                      setGateDeleteConfirmState({
+                        title: `Delete Gate #${idx + 1}`,
+                        message: `Are you sure you want to delete Gate #${idx + 1}? This unused gate has 0 logged plays and will be removed from this announcement.`,
+                        confirmLabel: 'Delete Gate',
+                        onConfirm: () => {
+                          const remaining = currentMp3s.filter(m => m.id !== item.id);
+                          setFormData({
+                            ...formData,
+                            timeGatedMp3s: remaining,
+                          });
+                          setGateDeleteConfirmState(null);
+                        },
+                      });
+                    };
 
                     const updateGateStartDate = (newVal: string) => {
+                      if (isItemExpired) return;
                       const prevGateStart = item.startDate;
                       const updated = currentMp3s.map(m => (m.id === item.id ? { ...m, startDate: newVal } : m));
                       let nextProfileStart = formData.startDate;
@@ -793,6 +889,7 @@ export function AnnouncementEditorView({
                     };
 
                     const updateGateEndDate = (newVal: string | undefined) => {
+                      if (isItemExpired) return;
                       const prevGateEnd = item.endDate;
                       const updated = currentMp3s.map(m => (m.id === item.id ? { ...m, endDate: newVal } : m));
                       let nextProfileEnd = formData.endDate;
@@ -854,8 +951,18 @@ export function AnnouncementEditorView({
                                 Inactivated
                               </span>
                             ) : isItemExpired ? (
-                              <span className="text-[10px] font-bold px-1.5 py-px rounded bg-slate-300/80 text-slate-700">
-                                Past
+                              <span
+                                className="text-[10px] font-bold px-1.5 py-px rounded bg-slate-300/80 text-slate-700"
+                                title="Archived past gate (Read-only — click Reuse to schedule again)"
+                              >
+                                Past (Locked)
+                              </span>
+                            ) : isPendingArchiveOnSave ? (
+                              <span
+                                className="text-[10px] font-bold px-1.5 py-px rounded bg-amber-200/90 text-amber-950 border border-amber-300"
+                                title="End date is in the past — this gate will move to Past / Inactivated Gates when saved"
+                              >
+                                Ends in Past
                               </span>
                             ) : null}
                           </div>
@@ -882,6 +989,7 @@ export function AnnouncementEditorView({
                                 <div className="flex items-center gap-px">
                                   <input
                                     type="date"
+                                    disabled={isItemExpired}
                                     value={getDatePart(item.startDate)}
                                     onChange={e => {
                                       const d = e.target.value;
@@ -890,20 +998,25 @@ export function AnnouncementEditorView({
                                       updateGateStartDate(newVal);
                                     }}
                                     className={cn(
-                                      'w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0',
-                                      hasStartOverlap
-                                        ? 'border-red-500 bg-red-50 text-red-900 font-bold'
-                                        : hasMissingStart
-                                          ? 'border-amber-500 bg-amber-50/50 text-amber-900 font-bold'
-                                          : hasStartGap
-                                            ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
-                                            : 'border-blue-300 bg-white text-slate-800'
+                                      'w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5',
+                                      isItemExpired
+                                        ? 'border-slate-300 bg-slate-100 text-slate-600 cursor-not-allowed [&::-webkit-calendar-picker-indicator]:hidden'
+                                        : '[&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0',
+                                      !isItemExpired &&
+                                        (hasStartOverlap
+                                          ? 'border-red-500 bg-red-50 text-red-900 font-bold'
+                                          : hasMissingStart
+                                            ? 'border-amber-500 bg-amber-50/50 text-amber-900 font-bold'
+                                            : hasStartGap
+                                              ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
+                                              : 'border-blue-300 bg-white text-slate-800')
                                     )}
                                   />
-                                  <div className="shrink-0">
+                                  <div className={cn('shrink-0', isItemExpired && 'pointer-events-none opacity-75')}>
                                     <MilitaryTimeInput
                                       value={getTimePart(item.startDate)}
                                       onChange={t => {
+                                        if (isItemExpired) return;
                                         let d = getDatePart(item.startDate);
                                         if (!d && t) {
                                           d = getCurrentDatetimeLocal().split('T')[0];
@@ -913,13 +1026,15 @@ export function AnnouncementEditorView({
                                       }}
                                       className={cn(
                                         'p-0.5 border-0 border-b rounded-none text-xs font-bold outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5',
-                                        hasStartOverlap
-                                          ? 'border-red-500 bg-red-50 text-red-900 font-bold'
-                                          : hasMissingStart
-                                            ? 'border-amber-500 bg-amber-50/50 text-amber-900 font-bold'
-                                            : hasStartGap
-                                              ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
-                                              : 'border-blue-300 bg-white text-slate-800'
+                                        isItemExpired
+                                          ? 'border-slate-300 bg-slate-100 text-slate-600 cursor-not-allowed'
+                                          : hasStartOverlap
+                                            ? 'border-red-500 bg-red-50 text-red-900 font-bold'
+                                            : hasMissingStart
+                                              ? 'border-amber-500 bg-amber-50/50 text-amber-900 font-bold'
+                                              : hasStartGap
+                                                ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
+                                                : 'border-blue-300 bg-white text-slate-800'
                                       )}
                                       placeholder="hh:mm AM"
                                     />
@@ -945,6 +1060,7 @@ export function AnnouncementEditorView({
                                 <div className="flex items-center gap-px">
                                   <input
                                     type="date"
+                                    disabled={isItemExpired}
                                     value={getDatePart(item.endDate)}
                                     onChange={e => {
                                       const d = e.target.value;
@@ -956,18 +1072,23 @@ export function AnnouncementEditorView({
                                       updateGateEndDate(`${d}T${t}`);
                                     }}
                                     className={cn(
-                                      'w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0',
-                                      hasEndOverlap
-                                        ? 'border-red-500 bg-red-50 text-red-900 font-bold'
-                                        : hasEndGap
-                                          ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
-                                          : 'border-blue-300 bg-white text-slate-800'
+                                      'w-[110px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5',
+                                      isItemExpired
+                                        ? 'border-slate-300 bg-slate-100 text-slate-600 cursor-not-allowed [&::-webkit-calendar-picker-indicator]:hidden'
+                                        : '[&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0',
+                                      !isItemExpired &&
+                                        (hasEndOverlap
+                                          ? 'border-red-500 bg-red-50 text-red-900 font-bold'
+                                          : hasEndGap
+                                            ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
+                                            : 'border-blue-300 bg-white text-slate-800')
                                     )}
                                   />
-                                  <div className="shrink-0">
+                                  <div className={cn('shrink-0', isItemExpired && 'pointer-events-none opacity-75')}>
                                     <MilitaryTimeInput
                                       value={getTimePart(item.endDate)}
                                       onChange={t => {
+                                        if (isItemExpired) return;
                                         let d = getDatePart(item.endDate);
                                         if (!d && t) {
                                           d = getDatePart(item.startDate) || getCurrentDatetimeLocal().split('T')[0];
@@ -977,11 +1098,13 @@ export function AnnouncementEditorView({
                                       }}
                                       className={cn(
                                         'p-0.5 border-0 border-b rounded-none text-xs font-bold outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5',
-                                        hasEndOverlap
-                                          ? 'border-red-500 bg-red-50 text-red-900 font-bold'
-                                          : hasEndGap
-                                            ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
-                                            : 'border-blue-300 bg-white text-slate-800'
+                                        isItemExpired
+                                          ? 'border-slate-300 bg-slate-100 text-slate-600 cursor-not-allowed'
+                                          : hasEndOverlap
+                                            ? 'border-red-500 bg-red-50 text-red-900 font-bold'
+                                            : hasEndGap
+                                              ? 'border-amber-400 bg-amber-50/40 text-amber-900 font-bold'
+                                              : 'border-blue-300 bg-white text-slate-800'
                                       )}
                                       placeholder="hh:mm AM"
                                     />
@@ -990,7 +1113,7 @@ export function AnnouncementEditorView({
                               </div>
                             </div>
 
-                             {/* Context-Aware Gate Lifecycle Actions */}
+                            {/* Context-Aware Gate Lifecycle Actions */}
                             <div className="flex items-center gap-1.5 shrink-0 self-end @[490px]:self-center">
                               {isItemExpired ? (
                                 <>
@@ -1019,7 +1142,7 @@ export function AnnouncementEditorView({
                                     type="button"
                                     onClick={() => handleReuseGate(item)}
                                     className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
-                                    title="Clone this gate's media items into a new gate with blank Start and End dates"
+                                    title="Clone this gate's media items into a new gate and choose its Start and End schedule"
                                   >
                                     <RefreshCw className="w-3 h-3" />
                                     Reuse
@@ -1027,13 +1150,7 @@ export function AnnouncementEditorView({
                                   {gatePlayCount === 0 && (
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        const remaining = currentMp3s.filter(m => m.id !== item.id);
-                                        setFormData({
-                                          ...formData,
-                                          timeGatedMp3s: remaining,
-                                        });
-                                      }}
+                                      onClick={promptDeleteGate}
                                       className="px-2 py-0.5 bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
                                       title="Delete this unused gate (0 logged plays)"
                                     >
@@ -1043,19 +1160,41 @@ export function AnnouncementEditorView({
                                   )}
                                 </>
                               ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => handleInactivateGate(item)}
-                                  className="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
-                                  title="Inactivate this gate without losing its original End date (moves to Past / Inactivated Gates)"
-                                >
-                                  <Archive className="w-3 h-3 text-amber-700" />
-                                  Inactivate
-                                </button>
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleInactivateGate(item)}
+                                    className="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
+                                    title="Inactivate this gate without losing its original End date (moves to Past / Inactivated Gates)"
+                                  >
+                                    <Archive className="w-3 h-3 text-amber-700" />
+                                    Inactivate
+                                  </button>
+                                  {gatePlayCount === 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={promptDeleteGate}
+                                      className="px-2 py-0.5 bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
+                                      title="Delete this unused gate (0 logged plays)"
+                                    >
+                                      <Trash2 className="w-3 h-3 text-red-500" />
+                                      Delete
+                                    </button>
+                                  )}
+                                </>
                               )}
                             </div>
                           </div>
                         </div>
+
+                        {isPendingArchiveOnSave && (
+                          <div className="px-2.5 py-1 bg-amber-50 border-b border-amber-200 flex items-center gap-1.5 text-[11px] font-bold text-amber-900">
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                            <span>
+                              End date ({formatDatetime12(formatToDatetimeLocal(item.endDate!))}) is in the past — this gate will move to Past / Inactivated Gates when saved.
+                            </span>
+                          </div>
+                        )}
 
                         <div
                           className={cn(
@@ -1064,6 +1203,11 @@ export function AnnouncementEditorView({
                           )}
                         >
                           <span>Media (Multiple files will be auto rotated)</span>
+                          {isItemExpired && (
+                            <span className="text-[10px] font-semibold text-slate-500 italic">
+                              Read-only — click Reuse to schedule a new gate with this media
+                            </span>
+                          )}
                         </div>
 
                         <div className="p-2 space-y-1.5">
@@ -1105,7 +1249,7 @@ export function AnnouncementEditorView({
                                 >
                                   <div className="@container flex items-center justify-between gap-1.5 flex-nowrap min-w-0">
                                     <div className="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
-                                      {totalInGate > 1 && (
+                                      {!isItemExpired && totalInGate > 1 && (
                                         <div className="flex items-center gap-0.5 shrink-0">
                                           <button
                                             type="button"
@@ -1221,9 +1365,11 @@ export function AnnouncementEditorView({
                                             <div className="flex items-center gap-0.5 shrink-0">
                                               <input
                                                 type="text"
+                                                disabled={isItemExpired}
                                                 placeholder="0m30s"
                                                 value={displayReadVal}
                                                 onChange={e => {
+                                                  if (isItemExpired) return;
                                                   const val = e.target.value;
                                                   const nextApprox = val
                                                     ? val.startsWith('~')
@@ -1248,6 +1394,7 @@ export function AnnouncementEditorView({
                                                   });
                                                 }}
                                                 onBlur={e => {
+                                                  if (isItemExpired) return;
                                                   const val = e.target.value.trim();
                                                   const normalized = val ? normalizeReadTimeDisplay(val) : '';
                                                   const nextApprox = normalized
@@ -1272,7 +1419,12 @@ export function AnnouncementEditorView({
                                                     timeGatedMp3s: updated,
                                                   });
                                                 }}
-                                                className="w-[64px] h-6 px-1.5 py-0.5 rounded border border-slate-300 bg-slate-100 text-xs font-sans font-bold tabular-nums text-slate-700 text-center outline-none focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shrink-0"
+                                                className={cn(
+                                                  'w-[64px] h-6 px-1.5 py-0.5 rounded border border-slate-300 bg-slate-100 text-xs font-sans font-bold tabular-nums text-slate-700 text-center outline-none shrink-0',
+                                                  isItemExpired
+                                                    ? 'cursor-not-allowed opacity-75'
+                                                    : 'focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500'
+                                                )}
                                                 title="Approximate Read Time (0m30s, 0:30, or 30s)"
                                               />
                                             </div>
@@ -1287,7 +1439,10 @@ export function AnnouncementEditorView({
                                               type="button"
                                               onClick={() => togglePreview(mItem.mp3Url)}
                                               className={cn(
-                                                'flex items-center justify-center gap-0.5 text-[11px] font-black uppercase px-1.5 py-px border shadow-xs transition-all cursor-pointer select-none h-6 rounded-l rounded-r-none border-r-0 min-w-[26px]',
+                                                'flex items-center justify-center gap-0.5 text-[11px] font-black uppercase px-1.5 py-px border shadow-xs transition-all cursor-pointer select-none h-6 min-w-[26px]',
+                                                isItemExpired
+                                                  ? 'rounded'
+                                                  : 'rounded-l rounded-r-none border-r-0',
                                                 previewUrl === mItem.mp3Url
                                                   ? 'bg-slate-900 text-white border-slate-900'
                                                   : 'bg-white text-blue-600 border-slate-300 hover:bg-slate-50'
@@ -1305,7 +1460,7 @@ export function AnnouncementEditorView({
                                             </button>
                                           ) : (
                                             <>
-                                              {/\.(txt|md)$/i.test(mItem.mp3Url) && (
+                                              {!isItemExpired && /\.(txt|md)$/i.test(mItem.mp3Url) && (
                                                 <button
                                                   type="button"
                                                   onClick={() => {
@@ -1342,10 +1497,12 @@ export function AnnouncementEditorView({
                                                   setPreviewScriptFile(mItem.mp3Url);
                                                 }}
                                                 className={cn(
-                                                  'flex items-center justify-center gap-0.5 text-[11px] font-black uppercase px-1.5 py-px border shadow-xs transition-all cursor-pointer select-none h-6 border-r-0 min-w-[26px] bg-white text-blue-600 border-slate-300 hover:bg-slate-50',
-                                                  /\.(txt|md)$/i.test(mItem.mp3Url)
-                                                    ? 'rounded-none'
-                                                    : 'rounded-l rounded-r-none'
+                                                  'flex items-center justify-center gap-0.5 text-[11px] font-black uppercase px-1.5 py-px border shadow-xs transition-all cursor-pointer select-none h-6 min-w-[26px] bg-white text-blue-600 border-slate-300 hover:bg-slate-50',
+                                                  isItemExpired
+                                                    ? 'rounded'
+                                                    : /\.(txt|md)$/i.test(mItem.mp3Url)
+                                                      ? 'rounded-none border-r-0'
+                                                      : 'rounded-l rounded-r-none border-r-0'
                                                 )}
                                                 title="Preview file"
                                               >
@@ -1355,7 +1512,7 @@ export function AnnouncementEditorView({
                                             </>
                                           ))}
 
-                                        {!mItem.mp3Url && (
+                                        {!isItemExpired && !mItem.mp3Url && (
                                           <button
                                             type="button"
                                             onClick={() => {
@@ -1379,89 +1536,112 @@ export function AnnouncementEditorView({
                                           </button>
                                         )}
 
-                                        {(() => {
-                                          const canDeleteThisRow =
-                                            totalInGate > 1
-                                              ? !isItemExpired && itemTrackAudit.totalPlays === 0
-                                              : !isItemExpired && !shouldInactivateInsteadOfDelete;
-                                          const showRowInactivate =
-                                            totalInGate === 1 && shouldInactivateInsteadOfDelete;
-                                          const hasTrailingActionButton = canDeleteThisRow || showRowInactivate;
+                                        {!isItemExpired &&
+                                          (() => {
+                                            const hasAttachedFile = Boolean(mItem.mp3Url && mItem.mp3Url.trim());
+                                            const canDeleteThisRow =
+                                              itemTrackAudit.totalPlays === 0 &&
+                                              (totalInGate > 1 || hasAttachedFile);
+                                            const showRowInactivate = itemTrackAudit.totalPlays > 0;
+                                            const hasTrailingActionButton = canDeleteThisRow || showRowInactivate;
 
-                                          return (
-                                            <>
-                                              <button
-                                                type="button"
-                                                onClick={() => {
-                                                  setPickerTarget('timeGated');
-                                                  setPickerMp3Id(item.id);
-                                                  setPickerItemIndex(mIdx);
-                                                  setIsPickerOpen(true);
-                                                }}
-                                                className={cn(
-                                                  'px-1.5 py-px text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none border min-w-[26px]',
-                                                  hasMissingItemFile
-                                                    ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700'
-                                                    : 'bg-slate-900 hover:bg-slate-800 text-white border-slate-900',
-                                                  hasTrailingActionButton
-                                                    ? hasMissingItemFile
-                                                      ? 'rounded-none border-r-amber-700'
-                                                      : 'rounded-none border-r-slate-700'
-                                                    : 'rounded-r rounded-l-none'
-                                                )}
-                                                title="Choose file"
-                                              >
-                                                <FolderOpen className="w-3.5 h-3.5" />
-                                                <span className="mp3-btn-text">Choose</span>
-                                              </button>
-
-                                              {showRowInactivate && (
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleInactivateGate(item)}
-                                                  className="px-1.5 py-px bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
-                                                  title="Inactivate this gate now and move it to Past / Archived Gates (preserves broadcast history)"
-                                                >
-                                                  <Archive className="w-3.5 h-3.5 text-amber-700" />
-                                                  <span className="mp3-btn-text">Inactivate</span>
-                                                </button>
-                                              )}
-
-                                              {canDeleteThisRow && (
+                                            return (
+                                              <>
                                                 <button
                                                   type="button"
                                                   onClick={() => {
-                                                    if (totalInGate > 1) {
-                                                      const nextItems = gateMediaItems.filter((_, iIdx) => iIdx !== mIdx);
-                                                      const updated = currentMp3s.map(m =>
-                                                        m.id === item.id ? { ...m, mediaItems: nextItems } : m
-                                                      );
-                                                      setFormData({
-                                                        ...formData,
-                                                        timeGatedMp3s: updated,
-                                                      });
-                                                    } else {
-                                                      const remaining = currentMp3s.filter(m => m.id !== item.id);
-                                                      setFormData({
-                                                        ...formData,
-                                                        timeGatedMp3s: remaining,
-                                                      });
-                                                    }
+                                                    setPickerTarget('timeGated');
+                                                    setPickerMp3Id(item.id);
+                                                    setPickerItemIndex(mIdx);
+                                                    setIsPickerOpen(true);
                                                   }}
-                                                  className="px-1.5 py-px bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
-                                                  title={
-                                                    totalInGate > 1
-                                                      ? 'Remove this unplayed file from rotation'
-                                                      : 'Delete this time gate'
-                                                  }
+                                                  className={cn(
+                                                    'px-1.5 py-px text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none border min-w-[26px]',
+                                                    hasMissingItemFile
+                                                      ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700'
+                                                      : 'bg-slate-900 hover:bg-slate-800 text-white border-slate-900',
+                                                    hasTrailingActionButton
+                                                      ? hasMissingItemFile
+                                                        ? 'rounded-none border-r-amber-700'
+                                                        : 'rounded-none border-r-slate-700'
+                                                      : 'rounded-r rounded-l-none'
+                                                  )}
+                                                  title="Choose file"
                                                 >
-                                                  <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                                                  <span className="mp3-btn-text">Delete</span>
+                                                  <FolderOpen className="w-3.5 h-3.5" />
+                                                  <span className="mp3-btn-text">Choose</span>
                                                 </button>
-                                              )}
-                                            </>
-                                          );
-                                        })()}
+
+                                                {showRowInactivate && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleInactivateGate(item)}
+                                                    className="px-1.5 py-px bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
+                                                    title="Inactivate this gate now and move it to Past / Inactivated Gates (preserves broadcast history)"
+                                                  >
+                                                    <Archive className="w-3.5 h-3.5 text-amber-700" />
+                                                    <span className="mp3-btn-text">Inactivate</span>
+                                                  </button>
+                                                )}
+
+                                                {canDeleteThisRow && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const fileNameLabel = mItem.mp3Url
+                                                        ? getFilenameFromUrlOrPath(mItem.mp3Url)
+                                                        : 'this empty media slot';
+                                                      setGateDeleteConfirmState({
+                                                        title:
+                                                          totalInGate > 1
+                                                            ? `Remove Media Row (${mIdx + 1}/${totalInGate})`
+                                                            : `Clear Media Slot in Gate #${idx + 1}`,
+                                                        message:
+                                                          totalInGate > 1
+                                                            ? `Are you sure you want to remove "${fileNameLabel}" from Gate #${idx + 1}'s rotation?`
+                                                            : `Are you sure you want to remove "${fileNameLabel}" from Gate #${idx + 1}? Gate #${idx + 1} will remain in the schedule with an empty media slot.`,
+                                                        confirmLabel: totalInGate > 1 ? 'Remove File' : 'Clear Media',
+                                                        onConfirm: () => {
+                                                          if (totalInGate > 1) {
+                                                            const nextItems = gateMediaItems.filter(
+                                                              (_, iIdx) => iIdx !== mIdx
+                                                            );
+                                                            const updated = currentMp3s.map(m =>
+                                                              m.id === item.id ? { ...m, mediaItems: nextItems } : m
+                                                            );
+                                                            setFormData({
+                                                              ...formData,
+                                                              timeGatedMp3s: updated,
+                                                            });
+                                                          } else {
+                                                            const updated = currentMp3s.map(m =>
+                                                              m.id === item.id
+                                                                ? { ...m, mediaItems: [{ mp3Url: '' }] }
+                                                                : m
+                                                            );
+                                                            setFormData({
+                                                              ...formData,
+                                                              timeGatedMp3s: updated,
+                                                            });
+                                                          }
+                                                          setGateDeleteConfirmState(null);
+                                                        },
+                                                      });
+                                                    }}
+                                                    className="px-1.5 py-px bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
+                                                    title={
+                                                      totalInGate > 1
+                                                        ? 'Remove this unplayed file from rotation'
+                                                        : 'Clear this unplayed file from the gate (keeps gate intact)'
+                                                    }
+                                                  >
+                                                    <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                                                    <span className="mp3-btn-text">Delete</span>
+                                                  </button>
+                                                )}
+                                              </>
+                                            );
+                                          })()}
                                       </div>
                                     </div>
                                   </div>
@@ -1541,7 +1721,10 @@ export function AnnouncementEditorView({
                                                 type="button"
                                                 onClick={() => togglePreview(mItem.backupMp3Url!)}
                                                 className={cn(
-                                                  'flex items-center justify-center gap-0.5 text-[11px] font-black uppercase px-1.5 py-px border shadow-xs transition-all cursor-pointer select-none h-6 rounded-l rounded-r-none border-r-0 min-w-[26px]',
+                                                  'flex items-center justify-center gap-0.5 text-[11px] font-black uppercase px-1.5 py-px border shadow-xs transition-all cursor-pointer select-none h-6 min-w-[26px]',
+                                                  isItemExpired
+                                                    ? 'rounded'
+                                                    : 'rounded-l rounded-r-none border-r-0',
                                                   previewUrl === mItem.backupMp3Url
                                                     ? 'bg-slate-900 text-white border-slate-900'
                                                     : 'bg-white text-blue-600 border-slate-300 hover:bg-slate-50'
@@ -1563,52 +1746,65 @@ export function AnnouncementEditorView({
                                               </button>
                                             )}
 
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                setPickerTarget('backup');
-                                                setPickerMp3Id(item.id);
-                                                setPickerItemIndex(mIdx);
-                                                setSearchQuery('');
-                                                setIsPickerOpen(true);
-                                              }}
-                                              className={cn(
-                                                'px-1.5 py-px bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none border border-slate-900 min-w-[26px]',
-                                                mItem.backupMp3Url
-                                                  ? 'rounded-none border-r-slate-700'
-                                                  : 'rounded-l rounded-r-none border-r-0'
-                                              )}
-                                              title="Choose backup audio file from disk"
-                                            >
-                                              <FolderOpen className="w-3.5 h-3.5" />
-                                              <span className="mp3-btn-text">Choose</span>
-                                            </button>
+                                            {!isItemExpired && (
+                                              <>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    setPickerTarget('backup');
+                                                    setPickerMp3Id(item.id);
+                                                    setPickerItemIndex(mIdx);
+                                                    setSearchQuery('');
+                                                    setIsPickerOpen(true);
+                                                  }}
+                                                  className={cn(
+                                                    'px-1.5 py-px bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none border border-slate-900 min-w-[26px]',
+                                                    mItem.backupMp3Url
+                                                      ? 'rounded-none border-r-slate-700'
+                                                      : 'rounded-r rounded-l'
+                                                  )}
+                                                  title="Choose backup audio file from disk"
+                                                >
+                                                  <FolderOpen className="w-3.5 h-3.5" />
+                                                  <span className="mp3-btn-text">Choose</span>
+                                                </button>
 
-                                            {mItem.backupMp3Url && (
-                                              <button
-                                                type="button"
-                                                onClick={() => {
-                                                  const updated = currentMp3s.map(m =>
-                                                    m.id === item.id
-                                                      ? {
-                                                          ...m,
-                                                          mediaItems: getGateMediaItems(m).map((mi, iIdx) =>
-                                                            iIdx === mIdx ? { ...mi, backupMp3Url: undefined } : mi
-                                                          ),
-                                                        }
-                                                      : m
-                                                  );
-                                                  setFormData({
-                                                    ...formData,
-                                                    timeGatedMp3s: updated,
-                                                  });
-                                                }}
-                                                className="px-1.5 py-px bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
-                                                title="Delete backup audio"
-                                              >
-                                                <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                                                <span className="mp3-btn-text">Delete</span>
-                                              </button>
+                                                {mItem.backupMp3Url && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const backupName = getFilenameFromUrlOrPath(mItem.backupMp3Url!);
+                                                      setGateDeleteConfirmState({
+                                                        title: `Remove Backup Audio`,
+                                                        message: `Are you sure you want to remove backup audio "${backupName}" from Gate #${idx + 1}?`,
+                                                        confirmLabel: 'Remove Backup',
+                                                        onConfirm: () => {
+                                                          const updated = currentMp3s.map(m =>
+                                                            m.id === item.id
+                                                              ? {
+                                                                  ...m,
+                                                                  mediaItems: getGateMediaItems(m).map((mi, iIdx) =>
+                                                                    iIdx === mIdx ? { ...mi, backupMp3Url: undefined } : mi
+                                                                  ),
+                                                                }
+                                                              : m
+                                                          );
+                                                          setFormData({
+                                                            ...formData,
+                                                            timeGatedMp3s: updated,
+                                                          });
+                                                          setGateDeleteConfirmState(null);
+                                                        },
+                                                      });
+                                                    }}
+                                                    className="px-1.5 py-px bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
+                                                    title="Delete backup audio"
+                                                  >
+                                                    <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                                                    <span className="mp3-btn-text">Delete</span>
+                                                  </button>
+                                                )}
+                                              </>
                                             )}
                                           </div>
                                         </div>
@@ -1724,6 +1920,57 @@ export function AnnouncementEditorView({
                               {archivedIndexedGates.map(({ item, idx }) => renderGateCard(item, idx, true))}
                             </div>
                           )}
+                        </div>
+                      )}
+
+                      {gateDeleteConfirmState && (
+                        <div
+                          className="fixed inset-0 z-[175] flex items-center justify-center p-4 bg-slate-950/60"
+                          onClick={() => setGateDeleteConfirmState(null)}
+                        >
+                          <div
+                            className="bg-white rounded-xl shadow-2xl w-full max-w-sm border border-slate-200 overflow-hidden"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <div className="p-3.5 px-4 bg-red-50 border-b border-red-200 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="bg-red-600 p-1.5 rounded text-white shrink-0">
+                                  <Trash2 className="w-4 h-4" />
+                                </div>
+                                <h4 className="text-xs font-black text-red-950 uppercase tracking-widest leading-none truncate">
+                                  {gateDeleteConfirmState.title}
+                                </h4>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setGateDeleteConfirmState(null)}
+                                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+                                title="Cancel"
+                              >
+                                <XCircle className="w-5 h-5" />
+                              </button>
+                            </div>
+                            <div className="p-4 text-xs font-bold text-slate-700 leading-relaxed">
+                              {gateDeleteConfirmState.message}
+                            </div>
+                            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setGateDeleteConfirmState(null)}
+                                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={gateDeleteConfirmState.onConfirm}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white border border-red-700 rounded text-xs font-black uppercase tracking-wider cursor-pointer flex items-center gap-1 shadow-xs"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                {gateDeleteConfirmState.confirmLabel || 'Delete'}
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       )}
 

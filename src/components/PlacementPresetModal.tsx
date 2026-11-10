@@ -20,6 +20,8 @@ interface PlacementPresetModalProps {
     startTime?: string;
     endDate?: string;
     endTime?: string;
+    previousGateEndDate?: string;
+    previousGateEndTime?: string;
   }) => void;
   onConfirm: () => void;
   onCancel: () => void;
@@ -32,6 +34,10 @@ export function PlacementPresetModal({
   onConfirm,
   onCancel,
 }: PlacementPresetModalProps) {
+  const activeTransitionPreset = placementModal.presets.find(
+    p => p.transitionMp3Id && p.transitionMp3Id === placementModal.transitionMp3Id
+  );
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
@@ -99,7 +105,7 @@ export function PlacementPresetModal({
                           {preset.label}
                         </span>
                       </div>
-                      {preset.startDate ? (
+                      {preset.displayStartDate || preset.startDate ? (
                         <div className="space-y-0.5 mt-0.5">
                           <div className="flex items-center gap-1.5 text-xs font-mono">
                             <span className="text-slate-500 font-bold uppercase text-[10px] w-9 shrink-0 select-none">
@@ -143,29 +149,18 @@ export function PlacementPresetModal({
                             ) : preset.transitionMp3Id ? (
                               <span className="text-amber-700 font-bold text-[11px]">
                                 {(() => {
-                                  const chosenStartDt = isSelected
-                                    ? placementModal.startDate ||
-                                      preset.suggestedStartDate ||
-                                      preset.startDate
-                                    : preset.suggestedStartDate ||
-                                      preset.startDate;
-                                  const chosenStartTm = isSelected
-                                    ? placementModal.startTime ||
-                                      preset.suggestedStartTime ||
-                                      preset.startTime ||
-                                      '00:00'
-                                    : preset.suggestedStartTime ||
-                                      preset.startTime ||
-                                      '00:00';
-                                  const startIso = chosenStartDt
-                                    ? `${chosenStartDt}T${chosenStartTm}`
-                                    : '';
-                                  const backfillEndIso =
-                                    computeBackfilledEndTime(startIso);
-                                  const bDate = getDatePart(backfillEndIso);
-                                  const bTime =
-                                    getTimePart(backfillEndIso) || '00:00';
-                                  return `* Will be set to (${bDate} @ ${formatTime12(bTime)})`;
+                                  if (isSelected && placementModal.previousGateEndDate) {
+                                    const pTime = placementModal.previousGateEndTime || '23:59';
+                                    return `* Will end on ${placementModal.previousGateEndDate} @ ${formatTime12(pTime)}`;
+                                  }
+                                  if (isSelected && placementModal.startDate) {
+                                    const startIso = `${placementModal.startDate}T${placementModal.startTime || '00:00'}`;
+                                    const backfillEndIso = computeBackfilledEndTime(startIso);
+                                    const bDate = getDatePart(backfillEndIso);
+                                    const bTime = getTimePart(backfillEndIso) || '00:00';
+                                    return `* Will end on ${bDate} @ ${formatTime12(bTime)}`;
+                                  }
+                                  return '* Open-ended — choose when this gate should end below';
                                 })()}
                               </span>
                             ) : (
@@ -183,11 +178,69 @@ export function PlacementPresetModal({
             </div>
           </div>
 
+          {/* Open-Ended Previous Gate End Prompt */}
+          {placementModal.transitionMp3Id && (
+            <div className="bg-amber-50/90 p-3 rounded-lg border border-amber-300 space-y-2">
+              <div className="flex items-center justify-between gap-2 border-b border-amber-200 pb-1">
+                <label className="text-[11px] font-black text-amber-900 uppercase tracking-wider block select-none">
+                  When should Gate #{placementModal.transitionMp3Index || 1}
+                  {placementModal.transitionMp3Title || activeTransitionPreset?.transitionMp3Title
+                    ? ` (${placementModal.transitionMp3Title || activeTransitionPreset?.transitionMp3Title})`
+                    : ''}{' '}
+                  end?
+                </label>
+                {activeTransitionPreset?.suggestedStartDate && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sugStartIso = `${activeTransitionPreset.suggestedStartDate}T${activeTransitionPreset.suggestedStartTime || '00:00'}`;
+                      const backfillIso = computeBackfilledEndTime(sugStartIso);
+                      onUpdateDates({
+                        previousGateEndDate: getDatePart(backfillIso),
+                        previousGateEndTime: getTimePart(backfillIso) || '23:59',
+                      });
+                    }}
+                    className="px-1.5 py-0.5 rounded bg-amber-200/80 hover:bg-amber-300/80 text-amber-950 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors shrink-0"
+                    title="Fill +1 week from previous gate start"
+                  >
+                    Suggest +1 Week
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] font-semibold text-amber-800 leading-snug">
+                Gate #{placementModal.transitionMp3Index || 1} is currently open-ended. Choose when it should end; the new gate will start 1 minute later.
+              </p>
+              <div className="flex items-center gap-px">
+                <label className="text-xs font-black text-amber-900 uppercase tracking-wider w-11 shrink-0 select-none">
+                  End:
+                </label>
+                <div className="flex items-center gap-px">
+                  <input
+                    type="date"
+                    value={placementModal.previousGateEndDate || ''}
+                    onChange={(e) =>
+                      onUpdateDates({ previousGateEndDate: e.target.value })
+                    }
+                    className="w-[110px] p-0.5 border-0 border-b border-amber-400 rounded-none text-xs font-bold font-mono outline-none bg-white text-slate-800 shadow-none focus:ring-0 focus:border-b-2 focus:border-amber-600 h-6.5 [&::-webkit-calendar-picker-indicator]:opacity-100 [&::-webkit-calendar-picker-indicator]:brightness-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:p-0"
+                  />
+                  <div className="shrink-0">
+                    <MilitaryTimeInput
+                      value={placementModal.previousGateEndTime || ''}
+                      onChange={(t) => onUpdateDates({ previousGateEndTime: t })}
+                      className="p-0.5 border-0 border-b border-amber-400 rounded-none text-xs font-bold outline-none bg-white text-slate-800 shadow-none focus:ring-0 focus:border-b-2 focus:border-amber-600 h-6.5"
+                      placeholder="hh:mm AM"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Data Entry / Range Editor with Editor window styling */}
           <div className="bg-slate-50/70 p-3 rounded-lg border border-slate-200 space-y-2">
             <div className="border-b border-slate-200 pb-1">
               <label className="text-[11px] font-black text-slate-700 uppercase tracking-wider block select-none">
-                Effective Schedule Range (Editable)
+                New Gate Schedule Range (Editable)
               </label>
             </div>
 

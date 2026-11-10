@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import {
   FileText,
   XCircle,
@@ -29,7 +29,8 @@ import {
   parseReadTimeToSeconds,
   normalizeReadTimeDisplay,
   markdownTxtToEditableHtml,
-  editableHtmlToMarkdownTxt
+  editableHtmlToMarkdownTxt,
+  sanitizeClipboardToEditableHtml
 } from '../lib/liveReadFormatting';
 import {
   uploadAnnouncementMediaFile,
@@ -146,6 +147,8 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   const [showMarkdown, setShowMarkdown] = useState(false);
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
   const [loadingContent, setLoadingContent] = useState(false);
+  const [loadedSessionKey, setLoadedSessionKey] = useState<string | null>(null);
+  const loadedInitialTextRef = useRef<string>('');
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [overwritePromptName, setOverwritePromptName] = useState<string | null>(null);
@@ -153,6 +156,11 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   const [manualReadTime, setManualReadTime] = useState('');
   const [nonTextPreviewUrl, setNonTextPreviewUrl] = useState('');
   const [adoptNewSplitFile, setAdoptNewSplitFile] = useState<boolean>(true);
+
+  const currentSessionKey = isOpen
+    ? `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseName || ''}`
+    : null;
+  const isSessionLoaded = isOpen && !loadingContent && loadedSessionKey === currentSessionKey;
 
   // Alternative / Backup Audio Dumb Pairing & Explicit Selection States
   const [pendingDuplicateSourceAudio, setPendingDuplicateSourceAudio] = useState<string | null>(null);
@@ -213,9 +221,10 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   }, []);
 
   const populateRichEditorDom = useCallback(
-    (rawMarkdownText: string, initReadTimeClean?: string) => {
+    (rawMarkdownText: string, initReadTimeClean?: string, sessionKeyToCommit?: string | null) => {
       const cleaned = stripHtmlComments(rawMarkdownText || '');
       const initialStats = calculateLiveReadWordStats(cleaned);
+      loadedInitialTextRef.current = cleaned;
       setBodyText(cleaned);
       setPlainWordStats(initialStats);
       if (initReadTimeClean !== undefined) {
@@ -228,14 +237,21 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           setManualReadTime(normalizedInit);
         }
       }
-      requestAnimationFrame(() => {
-        if (editorRef.current) {
-          editorRef.current.innerHTML = markdownTxtToEditableHtml(cleaned);
-        }
-      });
+      if (sessionKeyToCommit !== undefined) {
+        setLoadedSessionKey(sessionKeyToCommit);
+      }
+      if (editorRef.current) {
+        editorRef.current.innerHTML = markdownTxtToEditableHtml(cleaned);
+      }
     },
     []
   );
+
+  useLayoutEffect(() => {
+    if (isSessionLoaded && !isNonTextCopyMode && editorRef.current) {
+      editorRef.current.innerHTML = markdownTxtToEditableHtml(loadedInitialTextRef.current);
+    }
+  }, [isSessionLoaded, isNonTextCopyMode, loadedSessionKey]);
 
   const updateLightweightWordStats = useCallback(() => {
     if (!editorRef.current) return;
@@ -288,8 +304,12 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   useEffect(() => {
     if (!isOpen) {
       stopAudioPreview();
+      setLoadedSessionKey(null);
+      setLoadingContent(false);
+      loadedInitialTextRef.current = '';
       return;
     }
+    const activeSessionKey = `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseNameRef.current || ''}`;
     setErrorMsg(null);
     setOverwritePromptName(null);
     setNonTextPreviewUrl('');
@@ -339,7 +359,10 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         (async () => {
           try {
             const headers = await getStorageApiHeaders();
-            const r = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, { headers });
+            const r = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, {
+              headers,
+              cache: 'no-store'
+            });
             const data = r.ok ? await r.json() : null;
             if (cancelled) return;
             if (data && data.url) {
@@ -352,7 +375,10 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
               setNonTextPreviewUrl(getPlayableUrl(fileToLoad) || `/api/media/stream?path=${encodeURIComponent(fileToLoad)}`);
             }
           } finally {
-            if (!cancelled) setLoadingContent(false);
+            if (!cancelled) {
+              setLoadedSessionKey(activeSessionKey);
+              setLoadingContent(false);
+            }
           }
         })();
         return () => {
@@ -365,20 +391,25 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         setLoadingContent(true);
         try {
           const headers = await getStorageApiHeaders();
-          const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, { headers });
+          const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, {
+            headers,
+            cache: 'no-store'
+          });
           if (res.ok) {
             const data = await res.json();
             if (!cancelled && typeof data.content === 'string') {
-              populateRichEditorDom(data.content, cleanInitRead);
+              populateRichEditorDom(data.content, cleanInitRead, activeSessionKey);
               setLoadingContent(false);
               return;
             }
           }
           if (!cancelled) {
+            populateRichEditorDom('', cleanInitRead, activeSessionKey);
             setErrorMsg(`Could not load script "${fileToLoad}".`);
           }
         } catch (err: any) {
           if (!cancelled) {
+            populateRichEditorDom('', cleanInitRead, activeSessionKey);
             setErrorMsg(err.message || 'Failed to load script.');
           }
         } finally {
@@ -395,7 +426,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         ? normalizeStem(currentSuggested).replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim()
         : '';
       setFileNameStem(defaultStem);
-      populateRichEditorDom('', '');
+      populateRichEditorDom('', '', activeSessionKey);
       setManualReadTime('0m00s');
       setAutoApplyReadTime(true);
       setLoadingContent(false);
@@ -905,9 +936,11 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
   const handleEditorPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
     e.preventDefault();
+    const rawHtml = e.clipboardData.getData('text/html');
     const plain = e.clipboardData.getData('text/plain');
-    if (!plain) return;
-    const html = markdownTxtToEditableHtml(plain);
+    if (!rawHtml && !plain) return;
+    const html = sanitizeClipboardToEditableHtml(rawHtml, plain);
+    if (!html) return;
     document.execCommand('insertHTML', false, html);
     if (showMarkdown) {
       syncEditorToMarkdownState();
@@ -1256,6 +1289,15 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
         {/* Body */}
         <div className="p-4 space-y-3 overflow-y-auto flex-1 min-h-0 custom-scrollbar">
+          {!isSessionLoaded && !isNonTextCopyMode ? (
+            <div className="h-80 flex flex-col items-center justify-center border border-slate-200 rounded-lg bg-slate-50 gap-2.5">
+              <RefreshCw className="w-6 h-6 text-blue-600 animate-spin" />
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                Loading script content...
+              </span>
+            </div>
+          ) : (
+            <>
           {/* Shared-file notice if editing a script used by multiple slots */}
           {isEditingExisting && usedByDescriptions.length > 1 && (
             <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between gap-2 text-xs text-amber-900">
@@ -1336,13 +1378,25 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
             {!isNonTextCopyMode && (
               <div className="sm:col-span-5 space-y-1">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <label className="text-xs font-black text-slate-600 uppercase tracking-wider">
                     Approx. Read Time
                   </label>
-                  <span className="text-xs font-bold text-slate-400 whitespace-nowrap">
-                    {stats.wordCount} {stats.wordCount === 1 ? 'word' : 'words'}
-                  </span>
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 whitespace-nowrap">
+                    {(!autoApplyReadTime ||
+                      (manualReadTime.trim() &&
+                        normalizeReadTimeDisplay(manualReadTime.trim()) !== stats.formattedReadTime)) && (
+                      <span
+                        className="text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]"
+                        title="Calculated approximate read time at 150 words per minute"
+                      >
+                        Est: ~{stats.formattedReadTime}
+                      </span>
+                    )}
+                    <span>
+                      {stats.wordCount} {stats.wordCount === 1 ? 'word' : 'words'}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2.5">
                   <div className="flex-1 flex items-center gap-1.5 border border-slate-300 rounded-lg bg-white px-2.5 py-1.5 focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
@@ -1482,17 +1536,9 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                 </div>
               </div>
 
-              {loadingContent ? (
-                <div className="h-64 flex flex-col items-center justify-center border border-slate-200 rounded-lg bg-slate-50 gap-2">
-                  <RefreshCw className="w-6 h-6 text-blue-600 animate-spin" />
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    Loading script content...
-                  </span>
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  {/* Primary Editable Formatted Preview (Sized to match default Live Read Pop-up) */}
-                  <div className="flex flex-col border border-slate-300 rounded-lg bg-white overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
+              <div className="space-y-2.5">
+                {/* Primary Editable Formatted Preview (Sized to match default Live Read Pop-up) */}
+                <div className="flex flex-col border border-slate-300 rounded-lg bg-white overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
                     <div className="px-3 py-1.5 bg-blue-50/70 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap">
                       <span className="text-xs font-black uppercase tracking-wider text-blue-900 shrink-0">
                         Edit Text
@@ -1603,8 +1649,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                       </>
                     )}
                   </div>
-                </div>
-              )}
+              </div>
 
               {/* Bottom Segment: Alternative / Backup Audio File Pairing (Dumb Basename Match or Explicit Selection) */}
               <div className="p-3 bg-slate-50 border border-slate-300 rounded-lg space-y-2">
@@ -1971,6 +2016,8 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
               <span>{errorMsg}</span>
             </div>
           )}
+            </>
+          )}
         </div>
 
         {/* Footer */}
@@ -1996,7 +2043,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             </button>
             <button
               type="button"
-              disabled={isSaving || loadingContent || !finalFileName}
+              disabled={isSaving || loadingContent || (!isSessionLoaded && !isNonTextCopyMode) || !finalFileName}
               onClick={handlePrimarySave}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
             >

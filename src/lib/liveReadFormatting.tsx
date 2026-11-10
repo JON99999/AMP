@@ -315,20 +315,27 @@ function wrapSegmentWithMarkers(text: string, bold: boolean, italic: boolean, un
   return `${lead}${wrapped}${trail}`;
 }
 
-/**
- * Converts the DOM contents of the direct rich-text contentEditable editor back into clean Markdown-in-.txt body text.
- */
-export function editableHtmlToMarkdownTxt(root: HTMLElement): string {
+function walkDomToStyledSegments(
+  root: HTMLElement,
+  preserveRawTextNewlines: boolean
+): StyledSegment[] {
   const segments: StyledSegment[] = [];
 
   const pushLineBreak = () => {
     segments.push({ text: '\n', bold: false, italic: false, underline: false, isLineBreak: true });
   };
 
-  const walk = (node: Node, flags: StyleFlags) => {
+  const walk = (node: Node, flags: StyleFlags, inPre: boolean) => {
     if (node.nodeType === Node.TEXT_NODE) {
-      const val = (node.nodeValue || '').replace(/\u00A0/g, ' ');
+      let val = (node.nodeValue || '').replace(/\u00A0/g, ' ');
       if (!val) return;
+      if (!preserveRawTextNewlines && !inPre) {
+        // In external HTML clipboard fragments (Word/Docs/Web), raw newlines inside text nodes are source wrapping
+        val = val.replace(/\r?\n[ \t]*/g, ' ');
+        if (!val.trim() && segments.length > 0 && segments[segments.length - 1].isLineBreak) {
+          return;
+        }
+      }
       const parts = val.split('\n');
       parts.forEach((part, idx) => {
         if (idx > 0) pushLineBreak();
@@ -348,43 +355,79 @@ export function editableHtmlToMarkdownTxt(root: HTMLElement): string {
     const el = node as HTMLElement;
     const tag = el.tagName.toUpperCase();
 
+    if (
+      tag === 'SCRIPT' ||
+      tag === 'STYLE' ||
+      tag === 'META' ||
+      tag === 'LINK' ||
+      tag === 'TITLE' ||
+      tag === 'HEAD' ||
+      tag === 'SVG' ||
+      tag === 'NOSCRIPT'
+    ) {
+      return;
+    }
+
     if (tag === 'BR') {
       pushLineBreak();
       return;
     }
 
-    const isBlock = tag === 'DIV' || tag === 'P' || tag === 'LI' || tag === 'SECTION' || tag === 'ARTICLE';
+    const isBlock =
+      tag === 'DIV' ||
+      tag === 'P' ||
+      tag === 'LI' ||
+      tag === 'SECTION' ||
+      tag === 'ARTICLE' ||
+      tag === 'BLOCKQUOTE' ||
+      tag === 'PRE' ||
+      tag === 'TR' ||
+      /^H[1-6]$/.test(tag);
+
     if (isBlock && segments.length > 0 && !segments[segments.length - 1].isLineBreak) {
       pushLineBreak();
     }
 
     const styleAttr = (el.getAttribute('style') || '').toLowerCase();
+    const explicitNormalWeight = /font-weight\s*:\s*(normal|[1-4]00)\b/.test(styleAttr);
+    const explicitBoldWeight = /font-weight\s*:\s*(bold|bolder|[6-9]00)\b/.test(styleAttr);
+    const explicitNormalStyle = /font-style\s*:\s*normal\b/.test(styleAttr);
+    const explicitItalicStyle = /font-style\s*:\s*(italic|oblique)\b/.test(styleAttr);
+    const explicitNoUnderline = /text-decoration(-line)?\s*:\s*none\b/.test(styleAttr);
+    const explicitUnderline = /text-decoration[^;]*underline/.test(styleAttr);
+
+    const isBoldTag = tag === 'B' || tag === 'STRONG' || /^H[1-6]$/.test(tag);
+    const isItalicTag = tag === 'I' || tag === 'EM';
+    const isUnderlineTag = tag === 'U' || tag === 'INS';
+
     const nextFlags: StyleFlags = {
-      bold:
-        flags.bold ||
-        tag === 'B' ||
-        tag === 'STRONG' ||
-        /font-weight\s*:\s*(bold|[6-9]00)/.test(styleAttr),
-      italic:
-        flags.italic ||
-        tag === 'I' ||
-        tag === 'EM' ||
-        /font-style\s*:\s*italic/.test(styleAttr),
-      underline:
-        flags.underline ||
-        tag === 'U' ||
-        /text-decoration[^;]*underline/.test(styleAttr)
+      bold: explicitNormalWeight
+        ? false
+        : flags.bold || isBoldTag || explicitBoldWeight,
+      italic: explicitNormalStyle
+        ? false
+        : flags.italic || isItalicTag || explicitItalicStyle,
+      underline: explicitNoUnderline
+        ? false
+        : flags.underline || isUnderlineTag || explicitUnderline
     };
 
+    const nextInPre = inPre || tag === 'PRE';
     const children = el.childNodes;
     for (let i = 0; i < children.length; i++) {
-      walk(children[i], nextFlags);
+      walk(children[i], nextFlags, nextInPre);
+    }
+
+    if (isBlock && segments.length > 0 && !segments[segments.length - 1].isLineBreak) {
+      pushLineBreak();
     }
   };
 
-  walk(root, { bold: false, italic: false, underline: false });
+  walk(root, { bold: false, italic: false, underline: false }, false);
+  return segments;
+}
 
-  // Coalesce adjacent text segments that share identical style flags on the same line
+function serializeStyledSegmentsToMarkdown(segments: StyledSegment[]): string {
   const merged: StyledSegment[] = [];
   for (const seg of segments) {
     if (seg.isLineBreak) {
@@ -414,5 +457,123 @@ export function editableHtmlToMarkdownTxt(root: HTMLElement): string {
     }
   }
 
-  return out.replace(/\n{4,}/g, '\n\n\n').replace(/\n$/, '');
+  return out.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
 }
+
+/**
+ * Converts the DOM contents of the direct rich-text contentEditable editor back into clean Markdown-in-.txt body text.
+ */
+export function editableHtmlToMarkdownTxt(root: HTMLElement): string {
+  const segments = walkDomToStyledSegments(root, true);
+  return serializeStyledSegmentsToMarkdown(segments);
+}
+
+/**
+ * Sanitizes pasted clipboard content (both rich text/html from Word/Google Docs/Pages/Web and text/plain with or without markdown)
+ * into clean HTML constrained strictly to Bold, Italic, Underline, and line breaks for the contentEditable editor.
+ */
+export function sanitizeClipboardToEditableHtml(rawHtml: string, plainText: string): string {
+  if (rawHtml && rawHtml.trim() && typeof DOMParser !== 'undefined') {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(rawHtml, 'text/html');
+      if (doc && doc.body) {
+        const segments = walkDomToStyledSegments(doc.body, false);
+        const constrainedMd = serializeStyledSegmentsToMarkdown(segments);
+        if (constrainedMd.trim()) {
+          return markdownTxtToEditableHtml(constrainedMd);
+        }
+      }
+    } catch (_) {
+      // Fall back to plain text below
+    }
+  }
+  return markdownTxtToEditableHtml(plainText || '');
+}
+
+/**
+ * Converts a Markdown-in-.txt script string into clean inline HTML (<strong>, <em>, <u>, <br>)
+ * suitable for rich-text clipboard copying.
+ */
+export function markdownTxtToRichClipboardHtml(rawText: string): string {
+  return markdownTxtToEditableHtml(rawText);
+}
+
+function escapeRtfLiteralText(str: string): string {
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const code = str.charCodeAt(i);
+    if (ch === '\\' || ch === '{' || ch === '}') {
+      out += `\\${ch}`;
+    } else if (ch === '\n') {
+      out += '\\line\n';
+    } else if (ch === '\r') {
+      continue;
+    } else if (ch === '\t') {
+      out += '\\tab ';
+    } else if (code > 127) {
+      const signed = code > 32767 ? code - 65536 : code;
+      out += `\\u${signed}?`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parseInlineMarkdownToRtf(text: string): string {
+  if (!text) return '';
+  const tokenRegex = /(\*\*\*[^*\n]+\*\*\*|\*\*[^*\n]+\*\*|__[^_\n]+__|<u>[\s\S]+?<\/u>|\*[^*\n]+\*)/gi;
+  let result = '';
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      result += escapeRtfLiteralText(text.substring(lastIndex, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith('***') && token.endsWith('***') && token.length > 6) {
+      const inner = token.slice(3, -3);
+      result += `{\\b\\i ${parseInlineMarkdownToRtf(inner)}}`;
+    } else if (token.startsWith('**') && token.endsWith('**') && token.length > 4) {
+      const inner = token.slice(2, -2);
+      result += `{\\b ${parseInlineMarkdownToRtf(inner)}}`;
+    } else if (token.startsWith('__') && token.endsWith('__') && token.length > 4) {
+      const inner = token.slice(2, -2);
+      result += `{\\ul ${parseInlineMarkdownToRtf(inner)}}`;
+    } else if (/^<u>[\s\S]+<\/u>$/i.test(token)) {
+      const inner = token.slice(3, -4);
+      result += `{\\ul ${parseInlineMarkdownToRtf(inner)}}`;
+    } else if (token.startsWith('*') && token.endsWith('*') && token.length > 2) {
+      const inner = token.slice(1, -1);
+      result += `{\\i ${parseInlineMarkdownToRtf(inner)}}`;
+    } else {
+      result += escapeRtfLiteralText(token);
+    }
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    result += escapeRtfLiteralText(text.substring(lastIndex));
+  }
+  return result;
+}
+
+/**
+ * Converts a Markdown-in-.txt script string into a standalone Rich Text Format (.rtf) document
+ * with Bold (\b), Italic (\i), and Underline (\ul) styling for macOS TextEdit and Windows WordPad/Word.
+ */
+export function markdownTxtToRtf(rawText: string): string {
+  const cleaned = stripHtmlComments(rawText || '').replace(/\r\n/g, '\n');
+  const lines = cleaned.split('\n');
+  const rtfBody = lines.map(line => parseInlineMarkdownToRtf(line)).join('\\line\n');
+  return [
+    '{\\rtf1\\ansi\\ansicpg1252\\deff0\\nouicompat{\\fonttbl{\\f0\\fswiss\\fcharset0 Arial;}}',
+    '\\viewkind4\\uc1\\pard\\f0\\fs28 ',
+    rtfBody,
+    '\\par}'
+  ].join('\n');
+}
+

@@ -552,3 +552,86 @@ export function resolveLocalAnnouncementScriptText(mp3Url: string): string | nul
   } catch (_) {}
   return null;
 }
+
+export function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Stepped cloud-drive hydration catch-up reader for JSON schedule/log files (#62).
+ * Gives online-only or actively syncing files on Google Drive / OneDrive a chance
+ * to hydrate before falling back to the local backup file.
+ */
+export async function readJsonFileWithCloudCatchUp(
+  primaryPath: string | null,
+  backupPath?: string | null,
+  delaysMs: number[] = [250, 600, 1200]
+): Promise<{ parsed: any; recoveredFromBackup: boolean; fileExists: boolean }> {
+  if (!primaryPath) {
+    return { parsed: null, recoveredFromBackup: false, fileExists: false };
+  }
+
+  const primaryExists = fs.existsSync(primaryPath);
+  const backupExists = Boolean(backupPath && fs.existsSync(backupPath));
+
+  if (!primaryExists && !backupExists) {
+    return { parsed: null, recoveredFromBackup: false, fileExists: false };
+  }
+
+  let lastError: any = null;
+
+  if (primaryExists) {
+    for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+      try {
+        const raw = fs.readFileSync(primaryPath, 'utf-8');
+        if (!raw || !raw.trim()) {
+          throw new Error('File is momentarily empty during cloud hydration or write');
+        }
+        const parsed = JSON.parse(raw);
+        return { parsed, recoveredFromBackup: false, fileExists: true };
+      } catch (err: any) {
+        lastError = err;
+        if (attempt < delaysMs.length) {
+          await sleepMs(delaysMs[attempt]);
+        }
+      }
+    }
+  }
+
+  if (backupPath && fs.existsSync(backupPath)) {
+    try {
+      const backupRaw = fs.readFileSync(backupPath, 'utf-8');
+      if (backupRaw && backupRaw.trim()) {
+        const parsedBackup = JSON.parse(backupRaw);
+        console.warn(`[Cloud Catch-Up] Primary file ${path.basename(primaryPath)} busy/hydrating; recovered from ${path.basename(backupPath)}.`);
+        return { parsed: parsedBackup, recoveredFromBackup: true, fileExists: true };
+      }
+    } catch (backupErr) {
+      if (!lastError) lastError = backupErr;
+    }
+  }
+
+  throw lastError || new Error(`Unable to read ${primaryPath}`);
+}
+
+/**
+ * Stepped cloud-drive stat helper for media files (#62).
+ * Retries transient FileProvider hydration locks before marking a file as cloudSyncPending.
+ */
+export async function statFileWithCloudCatchUp(
+  filePath: string,
+  delaysMs: number[] = [200, 500]
+): Promise<{ stats: fs.Stats | null; cloudSyncPending: boolean }> {
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      const stats = fs.statSync(filePath);
+      return { stats, cloudSyncPending: false };
+    } catch (_) {
+      if (attempt < delaysMs.length) {
+        await sleepMs(delaysMs[attempt]);
+      }
+    }
+  }
+  return { stats: null, cloudSyncPending: true };
+}
+

@@ -1115,13 +1115,19 @@ export function validateTimeGatedMp3s(
     item => !isGateExpiredOrInactivated(item, currentNow)
   );
   const parentStart = parentProfileStartDate ? formatToDatetimeLocal(parentProfileStartDate) : '';
+  const isParentStartDateOnly = Boolean(parentProfileStartDate && !parentProfileStartDate.includes('T'));
   const effectiveLeadBaseline = parentStart && parentStart > currentNow ? parentStart : currentNow;
   const isBaselineNow = effectiveLeadBaseline === currentNow && (!parentStart || parentStart <= currentNow);
   if (activeSorted.length > 0 && activeSorted[0].startDate) {
     const firstStart = formatToDatetimeLocal(activeSorted[0].startDate);
+    const isSameDayAsDateOnlyParentStart =
+      isParentStartDateOnly &&
+      Boolean(firstStart) &&
+      getDatePart(parentStart) === getDatePart(firstStart);
     if (
       firstStart &&
       firstStart > effectiveLeadBaseline &&
+      !isSameDayAsDateOnlyParentStart &&
       !isContiguousMidnightTransition(effectiveLeadBaseline, firstStart)
     ) {
       warnings[activeSorted[0].id].push(

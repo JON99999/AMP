@@ -11,6 +11,7 @@ import {
   getGateMediaItems
 } from './utils';
 import { driveFileNameCache, availableFilesCache, mp3DurationCache, syncMediaCatalogFiles } from './audioCache';
+import { resolveAnnouncementsForDate } from './temporalReconciliation';
 
 export type ScheduleIssueType = 'missing_media' | 'overlap' | 'gap';
 export type ScheduleIssueSeverity = 'critical' | 'warning' | 'info';
@@ -299,8 +300,16 @@ export function evaluateScheduleDiagnostics({
     const startHour = (!includePastHours && isToday && !startDate) ? now.getHours() : 0;
 
     for (let hour = startHour; hour < 24; hour++) {
+      // Resolve announcements active at this date/hour (respecting historical revisions for past dates)
+      const resolvedForSlot = resolveAnnouncementsForDate(
+        currentDayDate,
+        activeAnnouncements,
+        [],
+        hour,
+        false
+      );
       // Find all announcements scheduled to broadcast in this specific realized calendar slot
-      const hourAnnouncements = activeAnnouncements.filter(s =>
+      const hourAnnouncements = resolvedForSlot.filter(s =>
         isAnnouncementActiveInHour(s, currentDayDate, hour, dayKey, dayOfWeek)
       ).sort((a, b) => (a.minute || 0) - (b.minute || 0));
 

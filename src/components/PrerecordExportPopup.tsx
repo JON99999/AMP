@@ -11,6 +11,11 @@ import {
 import { Announcement, Show, TimeGatedMp3 } from '../types';
 import { cn } from '../lib/utils';
 import { getStorageApiHeaders } from '../lib/driveService';
+import {
+  stripFormattingMarkers,
+  renderFormattedTxtContent,
+  markdownTxtToRichClipboardHtml,
+} from '../lib/liveReadFormatting';
 
 export interface PrerecordExportBreakItem {
   slot: Date;
@@ -127,7 +132,10 @@ export default function PrerecordExportPopup({
         const fetched: Record<string, string> = {};
         for (const fName of scriptFilesToLoad) {
           try {
-            const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fName)}`, { headers });
+            const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fName)}`, {
+              headers,
+              cache: 'no-store',
+            });
             if (res.ok) {
               const data = await res.json();
               if (typeof data?.content === 'string' && data.content.trim()) {
@@ -158,7 +166,14 @@ export default function PrerecordExportPopup({
           return `${item.paddedIdx}. [TRACK] ${item.announcementName} (${item.durationLabel || '3:00'})\n   Exported File: ${item.targetFileName}`;
         }
         const tag = item.isUpNextPromo ? 'PROMO' : item.assetType === 'script' ? 'READ' : 'MP3';
-        return `${item.paddedIdx}. ${item.slotTimeAmPm} [${tag}] ${item.announcementName} (${item.durationLabel || '0:30'})\n   Exported ${item.assetType === 'script' ? 'Script' : 'File'}: ${item.targetFileName}`;
+        const isTextScript =
+          item.isUpNextPromo ||
+          (item.assetType === 'script' && /\.(txt|md|rtf)$/i.test(item.targetFileName || item.fileName || ''));
+        const scriptBase = (item.targetFileName || '').replace(/\.(txt|md|rtf)$/i, '');
+        const exportedLabel = isTextScript && scriptBase
+          ? `${scriptBase}.txt (+ .rtf)`
+          : item.targetFileName;
+        return `${item.paddedIdx}. ${item.slotTimeAmPm} [${tag}] ${item.announcementName} (${item.durationLabel || '0:30'})\n   Exported ${item.assetType === 'script' ? 'Scripts' : 'File'}: ${exportedLabel}`;
       });
       return `${header}\n${lines.join('\n')}`;
     }
@@ -278,6 +293,14 @@ export default function PrerecordExportPopup({
   }, [m3uEntries]);
 
   const sequencedLiveReadItems = useMemo(() => {
+    const formatDualScriptLabel = (rawTarget: string) => {
+      if (/\.(txt|md|rtf)$/i.test(rawTarget)) {
+        const stem = rawTarget.replace(/\.(txt|md|rtf)$/i, '');
+        return `${stem}.txt (+ .rtf)`;
+      }
+      return rawTarget;
+    };
+
     if (exportItems && exportItems.length > 0) {
       return exportItems
         .filter((it) => it.assetType === 'script' || it.isUpNextPromo)
@@ -288,7 +311,7 @@ export default function PrerecordExportPopup({
             paddedIdx: it.paddedIdx,
             slotTimeAmPm: it.slotTimeAmPm,
             announcementName: it.announcementName,
-            targetFileName: it.targetFileName,
+            targetFileName: formatDualScriptLabel(it.targetFileName),
             sourceFileName: it.fileName,
             isUpNextPromo: Boolean(it.isUpNextPromo),
             scriptText: textBody,
@@ -309,7 +332,7 @@ export default function PrerecordExportPopup({
           paddedIdx,
           slotTimeAmPm: format(b.slot, 'h:mm a'),
           announcementName: b.announcement.name,
-          targetFileName: displayFile,
+          targetFileName: formatDualScriptLabel(displayFile),
           sourceFileName: displayFile,
           isUpNextPromo: Boolean(b.isUpNextPromo),
           scriptText: (b.scriptText || loadedScriptTexts[displayFile] || '').trim(),
@@ -323,11 +346,28 @@ export default function PrerecordExportPopup({
     }
     return sequencedLiveReadItems
       .map((item) => {
-        const body =
-          item.scriptText || `(Open ${item.targetFileName} to view script content)`;
-        return `#${item.paddedIdx} · ${item.slotTimeAmPm} · ${item.announcementName}\nExported Script: ${item.targetFileName}\n${body}`;
+        const cleanPlainBody = item.scriptText
+          ? stripFormattingMarkers(item.scriptText).trim()
+          : `(Open ${item.targetFileName} to view script content)`;
+        return `#${item.paddedIdx} · ${item.slotTimeAmPm} · ${item.announcementName}\nExported Scripts: ${item.targetFileName}\n${cleanPlainBody}`;
       })
       .join('\n\n---\n\n');
+  }, [sequencedLiveReadItems]);
+
+  const liveReadsCopyHtml = useMemo(() => {
+    if (sequencedLiveReadItems.length === 0) {
+      return '<p>No live read scripts scheduled in this timeframe.</p>';
+    }
+    const escapeHtml = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return sequencedLiveReadItems
+      .map((item) => {
+        const richBodyHtml = item.scriptText
+          ? markdownTxtToRichClipboardHtml(item.scriptText)
+          : `<em>(Open ${escapeHtml(item.targetFileName)} to view script content)</em>`;
+        return `<div><strong>#${escapeHtml(item.paddedIdx)} &middot; ${escapeHtml(item.slotTimeAmPm)} &middot; ${escapeHtml(item.announcementName)}</strong><br><span>Exported Scripts: ${escapeHtml(item.targetFileName)}</span><br><br>${richBodyHtml}</div>`;
+      })
+      .join('<hr>');
   }, [sequencedLiveReadItems]);
 
   if (!isOpen) return null;
@@ -340,13 +380,34 @@ export default function PrerecordExportPopup({
           ? m3uCopyText
           : liveReadsCopyText;
     try {
-      await navigator.clipboard.writeText(textToCopy);
+      if (
+        previewMode === 'live_reads' &&
+        typeof ClipboardItem !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.write === 'function'
+      ) {
+        const item = new ClipboardItem({
+          'text/plain': new Blob([liveReadsCopyText], { type: 'text/plain' }),
+          'text/html': new Blob([liveReadsCopyHtml], { type: 'text/html' }),
+        });
+        await navigator.clipboard.write([item]);
+      } else {
+        await navigator.clipboard.writeText(textToCopy);
+      }
       setCopiedMode(previewMode);
       setTimeout(() => {
         setCopiedMode((prev) => (prev === previewMode ? null : prev));
       }, 1800);
     } catch (err) {
-      console.error('Failed to copy preview text:', err);
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        setCopiedMode(previewMode);
+        setTimeout(() => {
+          setCopiedMode((prev) => (prev === previewMode ? null : prev));
+        }, 1800);
+      } catch (fallbackErr) {
+        console.error('Failed to copy preview text:', fallbackErr);
+      }
     }
   };
 
@@ -610,9 +671,11 @@ export default function PrerecordExportPopup({
                       <div className="text-[9px] font-mono text-slate-500 break-all">
                         {item.targetFileName}
                       </div>
-                      <p className="text-[11px] text-slate-600 leading-snug whitespace-pre-wrap break-words pt-0.5">
-                        {item.scriptText || `Script file: ${item.sourceFileName}`}
-                      </p>
+                      <div className="text-[11px] text-slate-700 leading-snug whitespace-pre-wrap break-words pt-0.5">
+                        {item.scriptText
+                          ? renderFormattedTxtContent(item.scriptText)
+                          : `Script file: ${item.sourceFileName}`}
+                      </div>
                     </div>
                   ))
                 )}

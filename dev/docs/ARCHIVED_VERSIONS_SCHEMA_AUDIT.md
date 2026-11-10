@@ -6,7 +6,14 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.3
+### Current Release: v0.20.4
+- **App Version**: `0.20.4`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.3**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Runtime Cache Purge, Anti-Cache Headers, Cloud Drive On-Demand Hydration Cascade, Atomic Backup Writes, & Admin Diagnostic Console (`#61`–`#64`)**: Application/runtime resilience and cloud-drive file hydration improvements with full schema v1 compatibility.
+
+### v0.20.3
 - **App Version**: `0.20.3`
 - **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
 - **Changes vs. v0.20.2**:

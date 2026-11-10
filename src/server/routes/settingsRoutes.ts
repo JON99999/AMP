@@ -348,6 +348,42 @@ export function registerSettingsRoutes(app: express.Express): void {
   app.post('/api/settings/reset', (req, res) => {
     try {
       const keepFolders = req.body?.keepFolders === true;
+
+      // Purge cached Chromium disk directories in userData (AMP-Admin, AMP-Live, AMP-Studio)
+      const cacheSubdirs = [
+        'Cache',
+        'Code Cache',
+        'GPUCache',
+        'Service Worker',
+        'DawnCache',
+        'Blob_storage',
+        'Network Persistent State',
+        ...(keepFolders ? [] : ['Session Storage']),
+      ];
+
+      const runtimeDirs = new Set<string>();
+      if (process.env.APP_USER_DATA_PATH) {
+        runtimeDirs.add(process.env.APP_USER_DATA_PATH);
+        if (!IS_PORTABLE) {
+          const parentAppData = path.dirname(process.env.APP_USER_DATA_PATH);
+          for (const modeName of ['AMP-Admin', 'AMP-Live', 'AMP-Studio']) {
+            runtimeDirs.add(path.join(parentAppData, modeName));
+          }
+        }
+      }
+
+      for (const runtimeDir of runtimeDirs) {
+        if (!runtimeDir || !fs.existsSync(runtimeDir)) continue;
+        for (const sub of cacheSubdirs) {
+          const target = path.join(runtimeDir, sub);
+          if (fs.existsSync(target)) {
+            try {
+              fs.rmSync(target, { recursive: true, force: true });
+            } catch (_) {}
+          }
+        }
+      }
+
       if (keepFolders) {
         // Retain only folder paths, subfolder paths, and operating mode
         const retained = setCurrentSettings({

@@ -999,23 +999,27 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
     playlistChildren.map(f => String(f.name || '').toLowerCase())
   );
 
+  const folderMime = 'application/vnd.google-apps.folder';
+  const activeShows = shows.filter(s => !s?.isDeleted);
+  const knownShortNamesLower = new Set<string>();
   const createdFolders: string[] = [];
   const createdEvergreenFolders: string[] = [];
   const createdPlaylistFolders: string[] = [];
   let checkedShowCount = 0;
 
-  for (const show of shows) {
+  for (const show of activeShows) {
     const shortName = String(show?.nameShort || '').trim();
     if (shortName) {
       checkedShowCount++;
       const lowerName = shortName.toLowerCase();
+      knownShortNamesLower.add(lowerName);
 
       if (!existingEvergreenLower.has(lowerName)) {
         await serverDriveCreateFileInFolder(
           req,
           shortName,
           evergreensId,
-          'application/vnd.google-apps.folder'
+          folderMime
         );
         existingEvergreenLower.add(lowerName);
         if (!createdEvergreenFolders.includes(shortName)) {
@@ -1031,7 +1035,7 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
           req,
           shortName,
           playlistsId,
-          'application/vnd.google-apps.folder'
+          folderMime
         );
         existingPlaylistLower.add(lowerName);
         if (!createdPlaylistFolders.includes(shortName)) {
@@ -1043,6 +1047,18 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
       }
     }
   }
+
+  const extraEvergreenFolders = evergreenChildren
+    .filter(f => f.mimeType === folderMime && f.name && !f.name.startsWith('.'))
+    .map(f => String(f.name))
+    .filter(name => !knownShortNamesLower.has(name.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+  const extraPlaylistFolders = playlistChildren
+    .filter(f => f.mimeType === folderMime && f.name && !f.name.startsWith('.'))
+    .map(f => String(f.name))
+    .filter(name => !knownShortNamesLower.has(name.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
 
   const isAmp = !!getRootDriveFolderId(req);
   return {
@@ -1064,7 +1080,9 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
     checkedShowCount,
     createdEvergreenFolders,
     createdPlaylistFolders,
-    createdFolders
+    createdFolders,
+    extraEvergreenFolders,
+    extraPlaylistFolders
   };
 }
 

@@ -321,6 +321,7 @@ export interface MediaAssetFile {
   assetType?: 'audio' | 'script';
   mtimeMs?: number;
   modifiedTime?: string;
+  cloudSyncPending?: boolean;
   id?: string;
   webContentLink?: string;
   mimeType?: string;
@@ -378,5 +379,9 @@ export interface ElectronAPI {
   selectFolder?: (defaultPath?: string) => Promise<ElectronFolderDialogResult>;
   browseFolder?: (defaultPath?: string) => Promise<ElectronFolderDialogResult>;
   openPath?: (targetPath: string) => Promise<{ success: boolean; error?: string }>;
+  clearAppCache?: (options?: { keepFolders?: boolean }) => Promise<{ success: boolean; error?: string }>;
+  openDevTools?: () => Promise<{ success: boolean; error?: string }>;
 }
+
+
 

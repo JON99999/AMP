@@ -181,7 +181,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
     const checkWidth = () => {
       const width = el.clientWidth || window.innerWidth;
-      setCollapseActionsToIcons(width < 760);
+      setCollapseActionsToIcons(width < 640);
     };
     checkWidth();
 
@@ -559,10 +559,17 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
               <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest leading-none">
                 Select Announcement
               </h3>
-              <span className="text-xs font-bold text-slate-400">
+              <span
+                className="text-xs font-bold text-slate-400 cursor-help"
+                title={
+                  lockAudioOnly
+                    ? 'Audio (6): .mp3, .wav, .flac, .ogg, .m4a, .aac'
+                    : 'Audio (6): .mp3, .wav, .flac, .ogg, .m4a, .aac\nScripts / Docs (3): .txt, .md, .pdf\nImages (4): .png, .jpg, .jpeg, .webp'
+                }
+              >
                 {lockAudioOnly
                   ? '(.mp3, .wav, .flac, .ogg, .m4a, .aac)'
-                  : '(.mp3, .txt, .pdf, .png, .jpg, .jpeg)'}
+                  : '(.mp3, .txt, .pdf, .png, .jpg, and more)'}
               </span>
             </div>
           </div>
@@ -777,17 +784,12 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
           {/* Windows Explorer "Details" / Spreadsheet Table View */}
           <div
             ref={tableContainerRef}
-            className="border border-slate-300 rounded bg-white flex-1 min-h-0 max-h-[460px] overflow-y-auto custom-scrollbar"
+            className="border border-slate-300 rounded bg-white flex-1 min-h-0 max-h-[460px] overflow-y-auto overflow-x-hidden custom-scrollbar"
           >
             <table className="w-full border-collapse text-left table-fixed">
               <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-300 text-xs font-black text-slate-650 uppercase tracking-wider select-none">
                 <tr>
-                  <th
-                    className={cn(
-                      "py-1.5 px-2.5 border-r border-slate-200",
-                      collapseActionsToIcons ? "w-[50%]" : "w-[44%]"
-                    )}
-                  >
+                  <th className="py-1.5 px-2.5 border-r border-slate-200 w-[48%]">
                     <button
                       type="button"
                       onClick={() => toggleSort('name')}
@@ -829,7 +831,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                       <SortArrow field="fileDate" />
                     </button>
                   </th>
-                  <th className="py-1.5 px-2 border-r border-slate-200 w-[13%]">
+                  <th className="py-1.5 px-2 border-r border-slate-200 w-[14%]">
                     <button
                       type="button"
                       onClick={() => toggleSort('lastUsed')}
@@ -843,12 +845,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                       <SortArrow field="lastUsed" />
                     </button>
                   </th>
-                  <th
-                    className={cn(
-                      "py-1.5 px-2.5 text-right",
-                      collapseActionsToIcons ? "w-[17%]" : "w-[23%]"
-                    )}
-                  >
+                  <th className="py-1.5 px-2 text-right w-[18%]">
                     <span>Actions</span>
                   </th>
                 </tr>
@@ -987,12 +984,12 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                           </button>
                         </td>
 
-                        {/* Column 5: Actions (Order: Select -> Preview -> Copy -> Edit; collapses to icons first) */}
+                        {/* Column 5: Actions (Order: Select -> Preview -> Copy -> Edit; secondary actions rendered as compact icons) */}
                         <td
-                          className="py-1 px-2 text-right whitespace-nowrap"
+                          className="py-1 px-1.5 text-right whitespace-nowrap overflow-hidden"
                           onClick={e => e.stopPropagation()}
                         >
-                          <div className="inline-flex items-center justify-end gap-1">
+                          <div className="inline-flex items-center justify-end gap-1 max-w-full">
                             {/* 1. Select */}
                             <button
                               type="button"
@@ -1001,8 +998,8 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                 onSelectFile(file);
                               }}
                               className={cn(
-                                "bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer inline-flex items-center justify-center gap-0.5 h-6",
-                                collapseActionsToIcons ? "px-1.5" : "px-2"
+                                "bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer inline-flex items-center justify-center gap-0.5 h-6 shrink-0",
+                                collapseActionsToIcons ? "w-6" : "px-2"
                               )}
                               title={`Select ${file.name}`}
                             >
@@ -1021,14 +1018,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                   e.stopPropagation();
                                   onPreviewScript(file.name);
                                 }}
-                                className={cn(
-                                  "rounded text-xs font-bold uppercase border border-blue-300 text-blue-600 bg-white hover:bg-blue-50 cursor-pointer inline-flex items-center justify-center gap-1 h-6",
-                                  collapseActionsToIcons ? "px-1.5" : "px-2"
-                                )}
+                                className="rounded text-xs font-bold uppercase border border-blue-300 text-blue-600 bg-white hover:bg-blue-50 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
                                 title="Preview file"
                               >
                                 <FileText className="w-3 h-3 shrink-0" />
-                                {!collapseActionsToIcons && <span>Preview</span>}
                               </button>
                             ) : (
                               <button
@@ -1038,8 +1031,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                   onTogglePreview(file.name);
                                 }}
                                 className={cn(
-                                  "rounded text-xs font-bold uppercase border cursor-pointer inline-flex items-center justify-center gap-1 h-6",
-                                  collapseActionsToIcons ? "px-1.5" : "px-2",
+                                  "rounded text-xs font-bold uppercase border cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0",
                                   previewUrl === file.name
                                     ? "bg-slate-900 text-white border-slate-900"
                                     : "bg-white text-blue-600 border-blue-300 hover:bg-blue-50"
@@ -1047,15 +1039,9 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                 title={previewUrl === file.name ? 'Stop audio preview' : 'Preview audio'}
                               >
                                 {previewUrl === file.name ? (
-                                  <>
-                                    <Square className="w-2.5 h-2.5 fill-current shrink-0" />
-                                    {!collapseActionsToIcons && <span>Stop</span>}
-                                  </>
+                                  <Square className="w-2.5 h-2.5 fill-current shrink-0" />
                                 ) : (
-                                  <>
-                                    <Play className="w-2.5 h-2.5 fill-current shrink-0" />
-                                    {!collapseActionsToIcons && <span>Preview</span>}
-                                  </>
+                                  <Play className="w-2.5 h-2.5 fill-current shrink-0" />
                                 )}
                               </button>
                             )}
@@ -1071,7 +1057,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                   openDuplicateFilePrompt(file);
                                 }
                               }}
-                              className="rounded text-xs font-bold uppercase border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center gap-0.5 h-6 px-1.5"
+                              className="rounded text-xs font-bold uppercase border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
                               title={
                                 isEditableTxt
                                   ? 'Duplicate live read and open in editor'
@@ -1079,7 +1065,6 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                               }
                             >
                               <Copy className="w-3 h-3 shrink-0" />
-                              {!collapseActionsToIcons && <span>Copy</span>}
                             </button>
 
                             {/* 4. Edit (Editable text scripts) */}
@@ -1090,11 +1075,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                   e.stopPropagation();
                                   onEditScript(file.name);
                                 }}
-                                className="rounded text-xs font-bold uppercase border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center gap-0.5 h-6 px-1.5"
+                                className="rounded text-xs font-bold uppercase border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
                                 title="Edit .txt live read"
                               >
                                 <Edit3 className="w-3 h-3 shrink-0" />
-                                {!collapseActionsToIcons && <span>Edit</span>}
                               </button>
                             )}
                           </div>
@@ -1142,7 +1126,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                         file{selectedFiles.length === 1 ? '' : 's'} checked for rotation
                       </>
                     ) : (
-                      'Check multiple files to seed a rotating gate, or click Select on one file.'
+                      'Check multiple files for rotation, or click Select on one.'
                     )}
                   </span>
                 )}

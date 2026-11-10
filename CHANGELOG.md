@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.4] - 2026-11-06
+
+### Fixed & Changed
+- **Help Window Runtime Cache Reset & Chromium Cache Purge (`1.a.` / `1.b.`)**: Updated `clear-app-cache` IPC in `electron-main.cjs`, `POST /api/settings/reset` (`src/server/routes/settingsRoutes.ts`), and `LocalHelpModal.tsx` so both **Keep Folders & Reset Settings** and **Full Factory Reset** purge Electron/Chromium HTTP, code, GPU, and storage caches across `AMP-Admin`, `AMP-Live`, and `AMP-Studio` in addition to settings files.
+- **Anti-Cache API Headers, `500` Error Status, & Auto-Heal Cache Trap (`#61`)**:
+  - Added `Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate` middleware for `/api/*` routes in `server.ts`, passed `{ cache: "no-store" }` on local schedule fetches in `src/App.tsx`, and changed `GET /api/announcements` error responses from cacheable HTTP `300` to `500` (`src/server/routes/scheduleRoutes.ts`).
+  - Added an automatic one-time Chromium cache purge + retry in `fetchDataForMode` (`src/App.tsx`) when local folders are verified on disk (`isStartupReady && !localPathsUnavailable`) but initial endpoint fetches fail, and replaced the contradictory `"Storage Folders Required: AMP Station Location and 5-folder structure verified successfully."` state with **Schedule Sync Recovery Required** and a 1-click **Reset Cache & Reload (Keep Folders)** button.
+- **Cloud Drive On-Demand Hydration Catch-Up Cascade & Syncing-File Banner (`#62`)**:
+  - Added `readJsonFileWithCloudCatchUp` (`[250, 600, 1200]`ms stepped retry cascade + latest backup JSON fallback) and `statFileWithCloudCatchUp` (`[200, 500]`ms stepped retry + `cloudSyncPending: true` fallback) in `src/server/state.ts`, `src/server/routes/scheduleRoutes.ts`, and `src/server/routes/mediaRoutes.ts` so online-only cloud-synced files (Google Drive for Desktop / OneDrive without *"Available Offline"*) have time to hydrate without throwing `500`.
+  - Preserved previously cached file metadata (`size`, `duration`, `mtimeMs`, `modifiedTime`) from `mediaCatalogStore` in `src/App.tsx` while files finish syncing and added a non-blocking **Cloud Drive Syncing Files** banner with a **Recheck Sync** button.
+- **`Save & Close` Validation State, Focus-Refresh De-Duplication, & Atomic Local Backups (`#63`)**:
+  - Updated `handleSaveLocations` and `handleSelectMode` (`src/hooks/useLocationsController.ts`) to set `setIsDriveValidated(exists)` immediately upon local folder verification, force `fetchDataForMode(nextSettings, { force: true })` to wait if a background focus refresh is mid-flight, and skip the duplicate `modal-closed` focus refresh immediately after saving.
+  - Replaced raw `fs.writeFileSync` calls in `POST /api/logs` and `POST /api/trigger-backup` (`src/server/routes/scheduleRoutes.ts`) with `atomicWriteFileSync` (`temp -> rename` with retry) and made local session backup failures non-fatal in `src/App.tsx`.
+- **Buried Admin Diagnostic Console Button & Terminal Error Forwarding (`#64`)**: Added a discrete **Open Diagnostic Console** button at the bottom of Section 6 (**System Maintenance & Reset**) in `LocalHelpModal.tsx` (Admin mode only) via `open-dev-tools` IPC and forwarded renderer console warnings/errors (`level >= 2`) to Terminal stdout in `electron-main.cjs`.
+
 ## [0.20.3] - 2026-11-05
 
 ### Fixed
@@ -19,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Kept actively playing playlist tracks visible in the `Next` column with a purple `Playing` state until playback finishes instead of disappearing during playback.
   - Recorded wall-clock execution timestamps (`executedAt` / `logTimeStamp`) on Live Read playlist entries and sorted `Played/Read` items by actual execution time so played tracks and played/read announcements interleave in exact chronological order played/read.
   - Scoped announcement completion keys in `playedPlaylistTracks` to `${slotISO}-${announcementId}` (`slotIsoKey`) instead of bare `announcementId` or shared `fileName` so duplicate occurrences of the same announcement later in the same show remain unplayed in `Next`.
+- **`Select Announcement` File Row Horizontal Scroll Prevention (`#59`)**: Rebalanced the 5-column table widths, raised the responsive action-button icon-collapse threshold, tightened action button padding, and added `overflow-x-hidden` to `MediaPickerModal.tsx` so file rows fit cleanly without horizontal left/right scrolling.
+- **Auto-Close `Export Show` Popup When Selecting a New Prerecord Show (`#60`)**: Reset `isPrerecordExportOpen` in `src/App.tsx` and called `onCloseExportPopup` on show/mode/date transitions in `src/components/PlayerTab.tsx` so the `Export Show` popup automatically closes whenever choosing or loading a new show.
 
 ## [0.20.2] - 2026-11-04
 

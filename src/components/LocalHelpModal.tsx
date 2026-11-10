@@ -36,6 +36,7 @@ import {
   formatLookaroundHhMm,
   parseLookaroundHhMm,
 } from '../lib/compatibility';
+import { clearAudioCache } from '../lib/driveService';
 
 interface LocalHelpModalProps {
   isOpen: boolean;
@@ -115,19 +116,13 @@ export default function LocalHelpModal({
     setIsProcessing(true);
     setStatusMessage(
       keepFolders
-        ? 'Resetting preferences (preserving folder links)...'
-        : 'Performing full factory reset...'
+        ? 'Resetting preferences and clearing runtime cache (preserving folder links)...'
+        : 'Performing full factory reset and clearing runtime caches...'
     );
 
     try {
-      await fetch('/api/settings/reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keepFolders }),
-      });
-
+      let preservedFolders: Record<string, any> | null = null;
       if (keepFolders) {
-        let preservedFolders: Record<string, any> | null = null;
         try {
           const raw = localStorage.getItem('amp_location_settings');
           if (raw) {
@@ -152,22 +147,35 @@ export default function LocalHelpModal({
             };
           }
         } catch (_) {}
-
-        localStorage.clear();
-        sessionStorage.clear();
-
-        if (preservedFolders) {
-          localStorage.setItem('amp_location_settings', JSON.stringify(preservedFolders));
-        }
-
-        document.documentElement.classList.remove('dark', 'theme-dark-test');
-        document.documentElement.classList.add('theme-light');
-      } else {
-        localStorage.clear();
-        sessionStorage.clear();
-        document.documentElement.classList.remove('dark', 'theme-dark-test');
-        document.documentElement.classList.add('theme-light');
       }
+
+      await fetch('/api/settings/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keepFolders }),
+      });
+
+      if (typeof window !== 'undefined' && window.electronAPI?.clearAppCache) {
+        try {
+          await window.electronAPI.clearAppCache({ keepFolders });
+        } catch (ipcErr) {
+          console.warn('Electron clearAppCache warning:', ipcErr);
+        }
+      }
+
+      try {
+        clearAudioCache();
+      } catch (_) {}
+
+      localStorage.clear();
+      sessionStorage.clear();
+
+      if (keepFolders && preservedFolders) {
+        localStorage.setItem('amp_location_settings', JSON.stringify(preservedFolders));
+      }
+
+      document.documentElement.classList.remove('dark', 'theme-dark-test');
+      document.documentElement.classList.add('theme-light');
 
       setStatusMessage('Reset complete. Reloading...');
       setTimeout(() => {
@@ -1173,6 +1181,22 @@ export default function LocalHelpModal({
                     <span>Full Factory Reset</span>
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Buried Admin Diagnostic Console (#64) */}
+            {isAdmin && typeof window !== 'undefined' && !!window.electronAPI?.openDevTools && (
+              <div className="pt-2 border-t border-slate-200/70 flex items-center justify-between text-xs text-slate-400">
+                <span>Advanced Admin Diagnostics</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.electronAPI?.openDevTools?.();
+                  }}
+                  className="px-2 py-1 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded border border-transparent hover:border-slate-300 transition-colors cursor-pointer"
+                >
+                  Open Diagnostic Console
+                </button>
               </div>
             )}
           </div>

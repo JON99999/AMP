@@ -7,7 +7,8 @@ import {
   getAmpMediaEvergreensDir,
   getAmpMediaShowsDir,
   getCalendarFilePath,
-  findAnnouncementSourceFile
+  findAnnouncementSourceFile,
+  statFileWithCloudCatchUp
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -890,25 +891,35 @@ export function registerMediaRoutes(app: express.Express): void {
       }
       const files = fs.readdirSync(targetDir);
       const allowedExtensions = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.txt', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.md'];
-      const mp3List = files
-        .filter(f => {
-          const ext = path.extname(f).toLowerCase();
-          return allowedExtensions.includes(ext);
-        })
-        .map(f => {
+      const filteredFiles = files.filter(f => {
+        const ext = path.extname(f).toLowerCase();
+        return allowedExtensions.includes(ext);
+      });
+      const mp3List = await Promise.all(
+        filteredFiles.map(async (f) => {
           const fullPath = path.join(targetDir, f);
-          const stats = fs.statSync(fullPath);
           const ext = path.extname(f).toLowerCase();
           const isScript = ['.txt', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.md'].includes(ext);
+          const { stats, cloudSyncPending } = await statFileWithCloudCatchUp(fullPath);
+          if (!stats || cloudSyncPending) {
+            return {
+              name: f,
+              duration: isScript ? '—' : '',
+              path: `/api/media/stream?path=${encodeURIComponent(f)}`,
+              cloudSyncPending: true
+            };
+          }
           return {
             name: f,
             size: `${(stats.size / (1024 * 1024)).toFixed(1)} MB`,
             duration: isScript ? '—' : '0:15',
             path: `/api/media/stream?path=${encodeURIComponent(f)}`,
             mtimeMs: stats.mtimeMs,
-            modifiedTime: stats.mtime.toISOString()
+            modifiedTime: stats.mtime.toISOString(),
+            cloudSyncPending: false
           };
-        });
+        })
+      );
       res.json(mp3List);
     } catch (e: any) {
       console.error('Failed to read announcements directory:', e);
@@ -1014,6 +1025,7 @@ export function registerMediaRoutes(app: express.Express): void {
   // API - Get live-read script/image content
   app.get('/api/live-read/content', async (req, res) => {
     try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       const file = req.query.file as string;
       if (!file) return res.status(400).json({ error: 'Filename required' });
 
@@ -1060,24 +1072,33 @@ export function registerMediaRoutes(app: express.Express): void {
         return res.json(responseData);
       }
 
-      // Production Local Filesystem Provider
+      // Production Local Filesystem Provider (with short cloud-hydration catch-up retry)
       const announcementsDir = getAmpMediaAnnouncementsDir(currentSettings);
+      const resolveLocalFilePath = (): string | null => {
+        if (fs.existsSync(file)) return file;
+        if (!announcementsDir || !fs.existsSync(announcementsDir)) return null;
+        const directCandidate = path.join(announcementsDir, path.basename(file));
+        if (fs.existsSync(directCandidate)) return directCandidate;
+        const resolved = findAnnouncementSourceFile(announcementsDir, file);
+        if (resolved && fs.existsSync(resolved)) return resolved;
+        return null;
+      };
 
-      let targetFilePath = file;
-      if (!fs.existsSync(targetFilePath)) {
+      let targetFilePath = resolveLocalFilePath();
+      const hydrationDelays = [150, 350, 700];
+      for (const delayMs of hydrationDelays) {
+        if (targetFilePath) break;
         if (!announcementsDir || !fs.existsSync(announcementsDir)) {
           return res.status(404).json({ error: 'Media Announcements folder not defined or offline' });
         }
-        targetFilePath = path.join(announcementsDir, path.basename(file));
-        if (!fs.existsSync(targetFilePath)) {
-          const resolved = findAnnouncementSourceFile(announcementsDir, file);
-          if (resolved && fs.existsSync(resolved)) {
-            targetFilePath = resolved;
-          }
-        }
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        targetFilePath = resolveLocalFilePath();
       }
 
-      if (!fs.existsSync(targetFilePath)) {
+      if (!targetFilePath) {
+        if (!announcementsDir || !fs.existsSync(announcementsDir)) {
+          return res.status(404).json({ error: 'Media Announcements folder not defined or offline' });
+        }
         return res.status(404).json({ error: 'File not found in Media Announcements directory' });
       }
 
@@ -1093,7 +1114,28 @@ export function registerMediaRoutes(app: express.Express): void {
       };
 
       if (isText) {
-        const textContent = fs.readFileSync(targetFilePath, 'utf8');
+        let textContent = '';
+        let lastReadErr: any = null;
+        for (let attempt = 0; attempt <= hydrationDelays.length; attempt++) {
+          try {
+            textContent = fs.readFileSync(targetFilePath, 'utf8');
+            lastReadErr = null;
+            if (textContent.length > 0) break;
+            // If file reports 0 bytes on disk while cloud sync is hydrating, wait briefly once
+            const stat = fs.statSync(targetFilePath);
+            if (stat.size === 0 && attempt < hydrationDelays.length) {
+              await new Promise(resolve => setTimeout(resolve, hydrationDelays[attempt]));
+              continue;
+            }
+            break;
+          } catch (readErr: any) {
+            lastReadErr = readErr;
+            if (attempt < hydrationDelays.length) {
+              await new Promise(resolve => setTimeout(resolve, hydrationDelays[attempt]));
+            }
+          }
+        }
+        if (lastReadErr) throw lastReadErr;
         responseData.content = textContent;
       }
 

@@ -69,6 +69,8 @@ import {
 } from "./lib/driveService";
 import {
   syncMediaCatalogFiles,
+  mediaCatalogStore,
+  clearAudioCache,
 } from "./lib/audioCache";
 import { useStartupGate } from "./hooks/useStartupGate";
 import { useAppClock } from "./hooks/useAppClock";
@@ -242,15 +244,17 @@ export default function App() {
       hasBackedUpThisSessionRef.current = true;
     } catch (err: any) {
       console.error("Archiving sequence failed: ", err);
-      setIsDriveValidated(false);
       if (mode === "Local") {
-        setLocalPathsUnavailable(true);
-      } else {
-        setDriveValidationError(
-          err.message ||
-            "Archiving failed: Google Drive connection is inaccessible or blocked.",
-        );
+        // In Local mode (especially on cloud-synced folders), archiving failure is non-fatal
+        // and should not invalidate verified storage folders or kick the user back to the modal.
+        console.warn("Local session backup skipped due to transient file lock or sync:", err.message);
+        return;
       }
+      setIsDriveValidated(false);
+      setDriveValidationError(
+        err.message ||
+          "Archiving failed: Google Drive connection is inaccessible or blocked.",
+      );
       setShowLocationsModal(true);
     }
   };
@@ -454,9 +458,11 @@ export default function App() {
   );
   const [isPollingExternal, setIsPollingExternal] = useState(false);
   const [driveMP3s, setDriveMP3s] = useState<MediaAssetFile[]>([]);
+  const [cloudSyncPendingFiles, setCloudSyncPendingFiles] = useState<string[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const fetchInProgressRef = useRef(false);
   const hasBackedUpThisSessionRef = useRef(false);
+  const hasAttemptedAutoCacheHealRef = useRef(false);
   const [showLocalHelp, setShowLocalHelp] = useState(false);
   const openLocationsModalRef = useRef<() => void>(() => {});
 
@@ -577,7 +583,7 @@ export default function App() {
     token,
     shows,
     verifyStartup,
-    fetchDataForMode: (s) => fetchDataForMode(s),
+    fetchDataForMode: (s, opts) => fetchDataForMode(s, opts),
     setIsDriveActive,
     setIsDriveValidated,
     setIsValidatingDrive,
@@ -737,7 +743,12 @@ export default function App() {
       saveRecoveryModal !== null;
 
     if (prevAnyModalOpenRef.current && !isAnyModalOpen) {
-      triggerFocusRefresh("modal-closed");
+      const lastLocationsSaveAt = Number((window as any).__ampLastLocationsSaveAt || 0);
+      if (Date.now() - lastLocationsSaveAt < 3000) {
+        console.log("Skipping modal-closed focus refresh immediately after explicit Save & Close.");
+      } else {
+        triggerFocusRefresh("modal-closed");
+      }
     }
     prevAnyModalOpenRef.current = isAnyModalOpen;
   }, [
@@ -962,12 +973,41 @@ export default function App() {
     }
   }, []);
 
-  const fetchDataForMode = async (settings = getSavedSettings()) => {
+  const handleHealRuntimeCacheAndReload = async () => {
+    try {
+      await fetch("/api/settings/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keepFolders: true }),
+      }).catch(() => {});
+      if (window.electronAPI?.clearAppCache) {
+        await window.electronAPI.clearAppCache({ keepFolders: true });
+      }
+      clearAudioCache();
+    } catch (err) {
+      console.error("Failed to reset runtime cache:", err);
+    }
+    window.location.reload();
+  };
+
+  const fetchDataForMode = async (
+    settings = getSavedSettings(),
+    options?: { force?: boolean },
+  ) => {
     if (fetchInProgressRef.current) {
-      console.log(
-        "fetchDataForMode already inside concurrent cycle. De-duplicating sequence.",
-      );
-      return;
+      if (options?.force) {
+        let waitedMs = 0;
+        while (fetchInProgressRef.current && waitedMs < 3000) {
+          await new Promise((r) => setTimeout(r, 100));
+          waitedMs += 100;
+        }
+      }
+      if (fetchInProgressRef.current) {
+        console.log(
+          "fetchDataForMode already inside concurrent cycle. De-duplicating sequence.",
+        );
+        return;
+      }
     }
     const hasValidLocalConfig = resolveEffectiveLocalPaths(settings).hasValidLocalConfig;
     if (settings.mode === "Local" && !hasValidLocalConfig) {
@@ -979,34 +1019,72 @@ export default function App() {
     setIsSyncing(true);
     try {
       if (settings.mode === "Local") {
-        try {
-          const [localAnnouncements, localLogs, localMP3s] = await Promise.all([
-            fetch("/api/announcements").then((r) => {
-              if (!r.ok) throw new Error("Local announcements failed");
+        const fetchLocalDataEndpoints = async () => {
+          return Promise.all([
+            fetch("/api/announcements", { cache: "no-store" }).then((r) => {
+              if (!r.ok) throw new Error(`Local announcements failed (${r.status})`);
               return r.json();
             }),
-            fetch("/api/logs").then((r) => {
-              if (!r.ok) throw new Error("Local logs failed");
+            fetch("/api/logs", { cache: "no-store" }).then((r) => {
+              if (!r.ok) throw new Error(`Local logs failed (${r.status})`);
               return r.json();
             }),
-            fetch("/api/local-mp3s").then((r) => {
-              if (!r.ok) throw new Error("Local MP3s failed");
+            fetch("/api/local-mp3s", { cache: "no-store" }).then((r) => {
+              if (!r.ok) throw new Error(`Local MP3s failed (${r.status})`);
               return r.json();
             }),
           ]);
+        };
+
+        try {
+          let localAnnouncements: any;
+          let localLogs: any;
+          let localMP3s: any;
+          try {
+            [localAnnouncements, localLogs, localMP3s] = await fetchLocalDataEndpoints();
+          } catch (firstErr) {
+            if (!hasAttemptedAutoCacheHealRef.current && window.electronAPI?.clearAppCache) {
+              hasAttemptedAutoCacheHealRef.current = true;
+              console.warn(
+                "Local fetch failed despite configured paths; clearing Chromium runtime cache and retrying once...",
+                firstErr,
+              );
+              await window.electronAPI.clearAppCache({ keepFolders: true });
+              [localAnnouncements, localLogs, localMP3s] = await fetchLocalDataEndpoints();
+            } else {
+              throw firstErr;
+            }
+          }
+
           setAnnouncements(normalizeAnnouncements(localAnnouncements || []));
           setLogs(localLogs || []);
 
-          const mappedMP3s: MediaAssetFile[] = (localMP3s || []).map((file: MediaAssetFile) => ({
-            name: file.name,
-            size: file.size,
-            duration: file.duration || "",
-            path: file.path,
-            approximateReadTime: file.approximateReadTime,
-            assetType: file.assetType,
-            mtimeMs: file.mtimeMs,
-            modifiedTime: file.modifiedTime,
-          }));
+          const pendingSyncNames: string[] = [];
+          const mappedMP3s: MediaAssetFile[] = (localMP3s || []).map((file: MediaAssetFile) => {
+            const prevCached = file.cloudSyncPending
+              ? mediaCatalogStore.getFile(file.name)
+              : undefined;
+            if (file.cloudSyncPending) {
+              pendingSyncNames.push(file.name);
+            }
+            return {
+              name: file.name,
+              size:
+                file.cloudSyncPending && prevCached?.size
+                  ? String(prevCached.size)
+                  : file.size,
+              duration:
+                file.duration ||
+                (file.cloudSyncPending && prevCached?.duration ? prevCached.duration : ""),
+              path: file.path || prevCached?.path,
+              approximateReadTime: file.approximateReadTime,
+              assetType: file.assetType,
+              mtimeMs: file.mtimeMs ?? prevCached?.mtimeMs,
+              modifiedTime: file.modifiedTime ?? prevCached?.modifiedTime,
+              cloudSyncPending: file.cloudSyncPending,
+            };
+          });
+          setCloudSyncPendingFiles(pendingSyncNames);
           syncMediaCatalogFiles(mappedMP3s, { clearExisting: true });
           setDriveMP3s(mappedMP3s);
           setSyncTime(new Date());
@@ -1015,18 +1093,7 @@ export default function App() {
           setIsDriveValidated(true);
           setConnectionError(null);
 
-          fetch("/api/shows/verify-evergreens", { method: "POST" })
-            .then((r) => r.json())
-            .then((resData) => {
-              if (resData && resData.announcementsReadonlyError) {
-                setAnnouncementsReadOnlyError(resData.announcementsReadonlyMessage);
-              } else {
-                setAnnouncementsReadOnlyError(null);
-              }
-            })
-            .catch((e) => console.error("Verify folders check failed:", e));
-
-          fetch("/api/compatibility/inspect")
+          fetch("/api/compatibility/inspect", { cache: "no-store" })
             .then((r) => r.json())
             .then((resData) => {
               if (resData && resData.success && resData.meta) {
@@ -1309,6 +1376,7 @@ export default function App() {
   };
 
   const handleToggleMode = () => {
+    setIsPrerecordExportOpen(false);
     if (playMode === "Live") {
       setSelectedPrerecordShowId("");
       setShowFilterText("");
@@ -1329,6 +1397,7 @@ export default function App() {
   const initialStudioPromptRef = useRef(false);
 
   const handleOpenTimeframeModal = (target: "Prerecord" = "Prerecord", showList: Show[] = shows) => {
+    setIsPrerecordExportOpen(false);
     setPrerecordModalTarget(target);
     setSelectedPrerecordShowId("");
     setShowFilterText("");
@@ -1458,6 +1527,7 @@ export default function App() {
   };
 
   const handleOpenPlaylistModal = async () => {
+    setIsPrerecordExportOpen(false);
     setShowPlaylistModal(true);
     setPlaylistModalNow(new Date());
     await updatePlaylistModalData(true);
@@ -1476,6 +1546,7 @@ export default function App() {
   }, [showPlaylistModal, shows]);
 
   const handleConfirmPlaylistShow = () => {
+    setIsPrerecordExportOpen(false);
     let targetShow: Show | null = null;
     if (playlistShowOptions) {
       if (chosenPlaylistShowId === playlistShowOptions.currentShow?.id) {
@@ -1504,6 +1575,7 @@ export default function App() {
   };
 
   const handleSelectAndConfirmShow = (targetShow: Show) => {
+    setIsPrerecordExportOpen(false);
     setSelectedPlaylistShow(targetShow);
     prepareShowContext({
       showId: targetShow.id,
@@ -1623,6 +1695,7 @@ export default function App() {
         }
       }
 
+      setIsPrerecordExportOpen(false);
       setPlayMode(prerecordModalTarget);
       setShowPrerecordConfirmStep(false);
       setShowPrerecordModal(false);
@@ -1641,6 +1714,7 @@ export default function App() {
 
   const handleFinalConfirmPrerecord = async () => {
     if (prerecordConfirmDetails) {
+      setIsPrerecordExportOpen(false);
       const show = selectedPrerecordShowId ? shows.find(s => s.id === selectedPrerecordShowId) : null;
       const targetMode = prerecordModalTarget;
 
@@ -2454,9 +2528,11 @@ export default function App() {
                 Connection Warning
               </div>
               <p className="text-xs font-bold leading-relaxed text-red-100">
-                Can't access folders. Please retry.
+                {locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                  ? "Folders are verified on disk, but schedule data could not be loaded. Click Reset Cache & Reload (keeps your folders) or Retry Sync."
+                  : "Can't access folders. Please retry."}
               </p>
-              <div className="mt-1 flex gap-2">
+              <div className="mt-1 flex flex-wrap gap-2">
                 <button
                   onClick={() => setShowLocationsModal(true)}
                   className="flex items-center gap-1.5 py-1 px-2.5 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded border border-red-500 transition cursor-pointer active:translate-y-px"
@@ -2470,6 +2546,53 @@ export default function App() {
                 >
                   <RefreshCw className="w-3 h-3 shrink-0 text-slate-100" />
                   <span>Retry Sync</span>
+                </button>
+                {locationMode === "Local" && (
+                  <button
+                    onClick={handleHealRuntimeCacheAndReload}
+                    className="flex items-center gap-1.5 py-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded border border-amber-400 transition cursor-pointer active:translate-y-px shadow-sm"
+                  >
+                    <RotateCcw className="w-3 h-3 shrink-0" />
+                    <span>Reset Cache & Reload</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Cloud Drive On-Demand Syncing Files Banner */}
+        {locationMode === "Local" && cloudSyncPendingFiles.length > 0 && !connectionError && (
+          <div
+            className={cn(
+              "mx-auto px-4 mt-3 transition-all shrink-0",
+              activeTab === "player"
+                ? "max-w-[400px]"
+                : "max-w-full md:px-6 lg:px-8",
+            )}
+          >
+            <div className="bg-sky-950/60 border border-sky-500/40 text-sky-200 rounded-xl p-3 flex flex-col gap-1.5 shadow-sm">
+              <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-sky-400">
+                <RefreshCw className="w-3.5 h-3.5 shrink-0 text-sky-400" />
+                Cloud Drive Syncing Files ({cloudSyncPendingFiles.length})
+              </div>
+              <p className="text-xs font-bold leading-relaxed text-sky-100">
+                Waiting for cloud drive to finish downloading:{" "}
+                <span className="font-mono">
+                  {cloudSyncPendingFiles.slice(0, 3).join(", ")}
+                  {cloudSyncPendingFiles.length > 3
+                    ? ` +${cloudSyncPendingFiles.length - 3} more`
+                    : ""}
+                </span>
+                . Previously cached file details remain active.
+              </p>
+              <div className="mt-1 flex gap-2">
+                <button
+                  onClick={handleRefresh}
+                  className="flex items-center gap-1.5 py-1 px-2.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-xs uppercase tracking-wider rounded border border-sky-400 transition cursor-pointer active:translate-y-px"
+                >
+                  <RefreshCw className="w-3 h-3 shrink-0" />
+                  <span>Recheck Sync</span>
                 </button>
               </div>
             </div>
@@ -2572,10 +2695,14 @@ export default function App() {
             <div className="max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl flex flex-col items-center gap-3">
               <Folder className="w-10 h-10 text-amber-400" />
               <h2 className="text-sm font-black uppercase tracking-wider text-slate-200">
-                Storage Folders Required
+                {locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                  ? "Schedule Sync Recovery Required"
+                  : "Storage Folders Required"}
               </h2>
               <p className="text-xs text-slate-400 font-sans leading-relaxed">
-                {startupMessage || "Please define and verify your storage folders before loading schedule data or player views."}
+                {locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                  ? "Your AMP Station Location and 5-folder structure are verified on disk, but the player could not load schedule data. Reset the runtime cache (keeps your folders) or retry sync."
+                  : startupMessage || "Please define and verify your storage folders before loading schedule data or player views."}
               </p>
               {missingDefinitions.length > 0 && (
                 <div className="text-left w-full bg-slate-950/60 rounded-lg p-3 border border-slate-800 text-[11px] text-amber-300/90 flex flex-col gap-1">
@@ -2593,14 +2720,31 @@ export default function App() {
                   ))}
                 </div>
               )}
-              <button
-                type="button"
-                onClick={() => setShowLocationsModal(true)}
-                className="mt-2 flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs uppercase tracking-wider rounded-lg border border-amber-400 transition cursor-pointer"
-              >
-                <Folder className="w-4 h-4" />
-                <span>Configure Storage Folders</span>
-              </button>
+              <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+                {locationMode === "Local" && isStartupReady && !localPathsUnavailable && (
+                  <button
+                    type="button"
+                    onClick={handleHealRuntimeCacheAndReload}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs uppercase tracking-wider rounded-lg border border-amber-400 transition cursor-pointer"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Reset Cache & Reload (Keep Folders)</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowLocationsModal(true)}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 font-black text-xs uppercase tracking-wider rounded-lg border transition cursor-pointer",
+                    locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                      ? "bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700"
+                      : "bg-amber-500 hover:bg-amber-600 text-slate-950 border-amber-400",
+                  )}
+                >
+                  <Folder className="w-4 h-4" />
+                  <span>Configure Storage Folders</span>
+                </button>
+              </div>
             </div>
           </div>
         ) : (

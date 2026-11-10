@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import NodeID3 from 'node-id3';
 import { DiscoveredFolderItem } from '../../types';
+import { stripFormattingMarkers, markdownTxtToRtf } from '../../lib/liveReadFormatting';
 import {
   currentSettings,
   PreparedShowTrack,
@@ -371,22 +372,46 @@ export function registerShowsRoutes(app: express.Express): void {
         return res.status(400).json({ error: 'Media directories are not defined or offline. Please configure AMP Station Location or Media paths in Settings.' });
       }
 
-      if (!fs.existsSync(evergreensPath) || !fs.existsSync(playlistsPath) || !fs.existsSync(announcementsPath)) {
+      let evergreensFolderCreated = false;
+      let playlistsFolderCreated = false;
+      let announcementsFolderCreated = false;
+      const announcementsReadonlyError = false;
+      const announcementsReadonlyMessage = '';
+
+      const ensureBaseDir = (dirPath: string): { exists: boolean; created: boolean } => {
+        if (fs.existsSync(dirPath)) {
+          return { exists: true, created: false };
+        }
+        const parentDir = path.dirname(dirPath);
+        if (parentDir && fs.existsSync(parentDir)) {
+          try {
+            fs.mkdirSync(dirPath, { recursive: true });
+            return { exists: true, created: true };
+          } catch (_) {
+            return { exists: false, created: false };
+          }
+        }
+        return { exists: false, created: false };
+      };
+
+      const evBase = ensureBaseDir(evergreensPath);
+      const plBase = ensureBaseDir(playlistsPath);
+      const anBase = ensureBaseDir(announcementsPath);
+
+      evergreensFolderCreated = evBase.created;
+      playlistsFolderCreated = plBase.created;
+      announcementsFolderCreated = anBase.created;
+
+      if (!evBase.exists || !plBase.exists || !anBase.exists) {
         return res.status(400).json({
           error: 'Configured media directories do not exist on the local filesystem. Please select valid folders in Storage Folders.',
           missingDirs: {
-            evergreens: !fs.existsSync(evergreensPath),
-            playlists: !fs.existsSync(playlistsPath),
-            announcements: !fs.existsSync(announcementsPath)
+            evergreens: !evBase.exists,
+            playlists: !plBase.exists,
+            announcements: !anBase.exists
           }
         });
       }
-
-      const evergreensFolderCreated = false;
-      const playlistsFolderCreated = false;
-      const announcementsFolderCreated = false;
-      const announcementsReadonlyError = false;
-      const announcementsReadonlyMessage = '';
 
       const showsFilePath = getShowsFilePath();
       let shows: any[] = [];
@@ -406,15 +431,18 @@ export function registerShowsRoutes(app: express.Express): void {
         }
       }
 
+      const activeShows = shows.filter(s => !s?.isDeleted);
+      const knownShortNamesLower = new Set<string>();
       const createdFolders: string[] = [];
       const createdEvergreenFolders: string[] = [];
       const createdPlaylistFolders: string[] = [];
       let checkedShowCount = 0;
 
-      for (const show of shows) {
+      for (const show of activeShows) {
         const shortName = String(show?.nameShort || '').trim();
         if (shortName) {
           checkedShowCount++;
+          knownShortNamesLower.add(shortName.toLowerCase());
           const showFolderPath = path.join(evergreensPath, shortName);
           if (!fs.existsSync(showFolderPath)) {
             fs.mkdirSync(showFolderPath, { recursive: true });
@@ -439,6 +467,22 @@ export function registerShowsRoutes(app: express.Express): void {
         }
       }
 
+      const findExtraSubfolders = (baseDirPath: string): string[] => {
+        try {
+          const entries = fs.readdirSync(baseDirPath, { withFileTypes: true });
+          return entries
+            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+            .map(e => e.name)
+            .filter(name => !knownShortNamesLower.has(name.toLowerCase()))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+        } catch (_) {
+          return [];
+        }
+      };
+
+      const extraEvergreenFolders = findExtraSubfolders(evergreensPath);
+      const extraPlaylistFolders = findExtraSubfolders(playlistsPath);
+
       res.json({
         success: true,
         evergreensFolderCreated,
@@ -452,7 +496,9 @@ export function registerShowsRoutes(app: express.Express): void {
         checkedShowCount,
         createdEvergreenFolders,
         createdPlaylistFolders,
-        createdFolders
+        createdFolders,
+        extraEvergreenFolders,
+        extraPlaylistFolders
       });
     } catch (err: any) {
       console.error('Error in /api/shows/verify-evergreens:', err);
@@ -1380,12 +1426,23 @@ export function registerShowsRoutes(app: express.Express): void {
         const safeName = rawName.replace(/[\/\\?%*:|"<>]/g, ' ').trim();
 
         const sourceFileName = item.fileName || '';
-        const ext = path.extname(sourceFileName) || (isScript ? '.txt' : '.mp3');
+        const rawExt = path.extname(sourceFileName) || (isScript ? '.txt' : '.mp3');
+        const isUpNextPromoItem =
+          Boolean(item.isUpNextPromo) ||
+          sourceFileName.startsWith('__up_next_promo__:') ||
+          (typeof item.rawMp3Url === 'string' && item.rawMp3Url.startsWith('__up_next_promo__:'));
+        const isTextScript =
+          isUpNextPromoItem ||
+          (isScript && (rawExt.toLowerCase() === '.txt' || rawExt.toLowerCase() === '.md'));
+        const ext = isTextScript ? '.txt' : rawExt;
 
         const paddedIdx = String(itemIdx).padStart(2, '0');
         const typePrefix = item.isEvergreen ? 'Track' : 'Break';
         const fallbackShowPrefix = (item.showNameShort || item.showName || folderPrefix || textPrefix || playlistPrefix || 'Show').trim();
-        const targetFileName = item.targetFileName || `${fallbackShowPrefix} ${paddedIdx} ${typePrefix} at ${safeSlotTime} - ${safeName}${ext}`;
+        const rawTargetFileName = item.targetFileName || `${fallbackShowPrefix} ${paddedIdx} ${typePrefix} at ${safeSlotTime} - ${safeName}${ext}`;
+        const targetBaseWithoutExt = rawTargetFileName.replace(/\.(txt|md|rtf)$/i, '');
+        const targetFileName = isTextScript ? `${targetBaseWithoutExt}.txt` : rawTargetFileName;
+        const targetRtfFileName = isTextScript ? `${targetBaseWithoutExt}.rtf` : '';
 
         let sourceFilePath: string | null = null;
         if (item.isEvergreen) {
@@ -1405,16 +1462,13 @@ export function registerShowsRoutes(app: express.Express): void {
         }
 
         const destFilePath = path.join(exportFolderPath, targetFileName);
+        const destRtfFilePath = targetRtfFileName ? path.join(exportFolderPath, targetRtfFileName) : '';
 
         let itemArtist = (item.artist && typeof item.artist === 'string' && item.artist.trim()) || '';
         let itemAlbumArtist = (item.albumArtist && typeof item.albumArtist === 'string' && item.albumArtist.trim()) || '';
         let itemAlbum = (item.album && typeof item.album === 'string' && item.album.trim()) || '';
 
         let status = 'Missing';
-        const isUpNextPromoItem =
-          Boolean(item.isUpNextPromo) ||
-          sourceFileName.startsWith('__up_next_promo__:') ||
-          (typeof item.rawMp3Url === 'string' && item.rawMp3Url.startsWith('__up_next_promo__:'));
         if (isUpNextPromoItem) {
           try {
             let decodedText = '';
@@ -1431,11 +1485,41 @@ export function registerShowsRoutes(app: express.Express): void {
                 decodedText = decodeURIComponent(rawEncoded);
               } catch (_) {}
             }
-            fs.writeFileSync(destFilePath, decodedText, 'utf-8');
+            const cleanPlainTxt = stripFormattingMarkers(decodedText);
+            const rtfContent = markdownTxtToRtf(decodedText);
+            fs.writeFileSync(destFilePath, cleanPlainTxt, 'utf-8');
+            if (destRtfFilePath) {
+              fs.writeFileSync(destRtfFilePath, rtfContent, 'utf-8');
+            }
             copiedCount++;
             status = 'Found & Copied';
           } catch (writeErr: any) {
             status = `Copy Error: ${writeErr?.message || 'Failed to write promo script'}`;
+            missingCount++;
+          }
+        } else if (isTextScript && sourceFilePath && fs.existsSync(sourceFilePath)) {
+          try {
+            const rawScriptText = await withTimeout(
+              fs.promises.readFile(sourceFilePath, 'utf-8'),
+              10000,
+              null as string | null
+            );
+            if (rawScriptText !== null) {
+              const cleanPlainTxt = stripFormattingMarkers(rawScriptText);
+              const rtfContent = markdownTxtToRtf(rawScriptText);
+              fs.writeFileSync(destFilePath, cleanPlainTxt, 'utf-8');
+              if (destRtfFilePath) {
+                fs.writeFileSync(destRtfFilePath, rtfContent, 'utf-8');
+              }
+              copiedCount++;
+              status = 'Found & Copied';
+            } else {
+              status = 'Copy Error: Timeout (File locked or syncing in cloud)';
+              missingCount++;
+            }
+          } catch (readWriteErr: any) {
+            console.error(`Error exporting text script ${sourceFileName}:`, readWriteErr);
+            status = `Copy Error: ${readWriteErr?.message || 'Failed to export script'}`;
             missingCount++;
           }
         } else if (sourceFilePath && fs.existsSync(sourceFilePath)) {
@@ -1555,9 +1639,12 @@ export function registerShowsRoutes(app: express.Express): void {
         }
 
         const itemTypeHeader = item.isEvergreen ? 'EVERGREEN TRACK' : (isScript ? 'LIVE READ BREAK' : 'BREAK');
+        const exportedDisplayLabel = isTextScript && targetRtfFileName
+          ? `${targetFileName} (+ ${targetRtfFileName})`
+          : targetFileName;
         if (status === 'Found & Copied') {
           txtLines.push(`${itemIdx}. [${itemTypeHeader}] Slot: ${itemSlotTime}`);
-          txtLines.push(`   Exported ${isScript ? 'Script' : 'File'}: ${targetFileName}`);
+          txtLines.push(`   Exported ${isScript ? 'Scripts' : 'File'}: ${exportedDisplayLabel}`);
           txtLines.push(`   Title: ${rawName}`);
           if (itemArtist) {
             txtLines.push(`   Artist: ${itemArtist}`);
@@ -1572,7 +1659,7 @@ export function registerShowsRoutes(app: express.Express): void {
         } else {
           txtLines.push(`${itemIdx}. [${itemTypeHeader}] MISSING FILE - THIS FILE COULD NOT BE FOUND.`);
           txtLines.push(`   Slot: ${itemSlotTime}`);
-          txtLines.push(`   Exported ${isScript ? 'Script' : 'File'}: ${targetFileName}`);
+          txtLines.push(`   Exported ${isScript ? 'Scripts' : 'File'}: ${exportedDisplayLabel}`);
           txtLines.push(`   Title: ${rawName}`);
           if (itemArtist) {
             txtLines.push(`   Artist: ${itemArtist}`);

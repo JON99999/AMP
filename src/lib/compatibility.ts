@@ -4,7 +4,7 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.3";
+export const CURRENT_APP_VERSION = "0.20.4";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 

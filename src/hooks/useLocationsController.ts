@@ -12,7 +12,7 @@ export interface UseLocationsControllerOptions {
   token: string | null;
   shows: Show[];
   verifyStartup: (settings?: any) => Promise<{ ready: boolean }>;
-  fetchDataForMode: (settings?: any) => Promise<void>;
+  fetchDataForMode: (settings?: any, options?: { force?: boolean }) => Promise<void>;
   setIsDriveActive: React.Dispatch<React.SetStateAction<boolean>>;
   setIsDriveValidated: React.Dispatch<React.SetStateAction<boolean>>;
   setIsValidatingDrive: React.Dispatch<React.SetStateAction<boolean>>;
@@ -577,8 +577,13 @@ export function useLocationsController({
           createMissing,
         );
 
+        setIsDriveActive(false);
+        setIsDriveValidated(exists);
         setLocalPathsUnavailable(!exists);
-        await fetchDataForMode(updatedSettings);
+        await fetchDataForMode(updatedSettings, { force: true });
+        if (typeof window !== "undefined") {
+          (window as any).__ampLastLocationsSaveAt = Date.now();
+        }
         setLocationsSuccess("Local storage configurations updated.");
       } else if (locationMode === "Drive") {
         setIsValidatingDrive(true);
@@ -624,7 +629,10 @@ export function useLocationsController({
           if (validationResult.valid) {
             setIsDriveValidated(true);
             setDriveValidationError(null);
-            await fetchDataForMode(updatedSettings);
+            await fetchDataForMode(updatedSettings, { force: true });
+            if (typeof window !== "undefined") {
+              (window as any).__ampLastLocationsSaveAt = Date.now();
+            }
             setLocationsSuccess(
               "Google Drive directory IDs updated and validated.",
             );
@@ -641,7 +649,10 @@ export function useLocationsController({
       } else if (locationMode === "Demo") {
         setIsDriveValidated(true);
         setDriveValidationError(null);
-        await fetchDataForMode(updatedSettings);
+        await fetchDataForMode(updatedSettings, { force: true });
+        if (typeof window !== "undefined") {
+          (window as any).__ampLastLocationsSaveAt = Date.now();
+        }
         setLocationsSuccess("Workspace mode switched to Demo.");
       }
 
@@ -686,9 +697,9 @@ export function useLocationsController({
         );
 
         setIsDriveActive(false);
-        setIsDriveValidated(true);
+        setIsDriveValidated(exists);
         setLocalPathsUnavailable(!exists);
-        await fetchDataForMode(updatedSettings);
+        await fetchDataForMode(updatedSettings, { force: true });
 
         // Open location selector for Local Mode
         setShowLocationsModal(true);
@@ -696,7 +707,7 @@ export function useLocationsController({
         setIsDriveActive(true);
         setIsDriveValidated(true);
         setDriveValidationError(null);
-        await fetchDataForMode(updatedSettings);
+        await fetchDataForMode(updatedSettings, { force: true });
 
         // Open location selector for Drive Mode
         setShowLocationsModal(true);
@@ -704,7 +715,7 @@ export function useLocationsController({
         setIsDriveActive(true);
         setIsDriveValidated(true);
         setDriveValidationError(null);
-        await fetchDataForMode(updatedSettings);
+        await fetchDataForMode(updatedSettings, { force: true });
       }
     } catch (err) {
       console.error("Failed to select mode:", err);
