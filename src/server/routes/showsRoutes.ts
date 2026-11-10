@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import NodeID3 from 'node-id3';
 import { DiscoveredFolderItem } from '../../types';
-import { stripFormattingMarkers, markdownTxtToRtf } from '../../lib/liveReadFormatting';
+import { stripFormattingMarkers, markdownTxtToRtf } from '../../lib/liveReadTextUtils';
 import {
   currentSettings,
   PreparedShowTrack,

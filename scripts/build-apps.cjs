@@ -248,6 +248,33 @@ async function syncRemoteIcons() {
         stdio: 'inherit'
       });
 
+      // Verify dist/server.cjs does not require any devDependencies (such as react/jsx-runtime)
+      // that electron-builder strips from packaged production app.asar builds.
+      const serverBundlePath = path.join(rootDir, 'dist', 'server.cjs');
+      const serverBundleCode = fs.readFileSync(serverBundlePath, 'utf8');
+      const pkgManifest = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+      const allowedProdDeps = new Set(Object.keys(pkgManifest.dependencies || {}));
+      const devDepNames = new Set(Object.keys(pkgManifest.devDependencies || {}));
+      const disallowedRequires = new Set();
+      const requireRegex = /\brequire\(\s*["']([^"']+)["']\s*\)/g;
+      let reqMatch;
+      while ((reqMatch = requireRegex.exec(serverBundleCode)) !== null) {
+        const modSpec = reqMatch[1];
+        if (modSpec.startsWith('.') || modSpec.startsWith('/') || modSpec.startsWith('node:')) continue;
+        const basePkg = modSpec.startsWith('@')
+          ? modSpec.split('/').slice(0, 2).join('/')
+          : modSpec.split('/')[0];
+        if (devDepNames.has(basePkg) && !allowedProdDeps.has(basePkg) && basePkg !== 'electron') {
+          disallowedRequires.add(modSpec);
+        }
+      }
+      if (disallowedRequires.size > 0) {
+        throw new Error(
+          `[Server Bundle Check Failed] dist/server.cjs contains runtime require() calls to devDependencies that are excluded from packaged builds: ${Array.from(disallowedRequires).join(', ')}`
+        );
+      }
+      console.log(`Verified dist/server.cjs has zero devDependency runtime imports.`);
+
       // Write app config
       const configPath = path.join(rootDir, 'dist', 'app-config.json');
       fs.writeFileSync(configPath, JSON.stringify({ mode }, null, 2));

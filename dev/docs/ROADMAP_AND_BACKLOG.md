@@ -28,8 +28,8 @@
   * **Dual-Value Sibling Bridge (`#5`)**: Bidirectional seeding and dual-write of `logs.json` (`scheduledFor`/`executedAt` <-> `announcementTime`/`timestamp`/`logTimeStamp`), `announcements.json` (`validFrom`, `validTo`, `isDeleted`, `revisions`, `timeGatedMp3s`), and `shows.json` (`active` + temporal fields), plus automatic `_meta` healing on shared folders (`dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md`).
   * **Legacy Script WPM Approximate Read-Time Backfill (`#28`)**: `migrateAnnouncementsPayload` (`src/lib/compatibility.ts`), `normalizeAnnouncement` (`src/lib/utils.ts`), and `resolveLocalAnnouncementScriptText` (`server.ts`) automatically compute and backfill the ~150 WPM duration (`0mXXs`, rounded up to the nearest 5s) across active `timeGatedMp3s` and historical `revisions` whenever a legacy script card (`assetType === 'script'` or `.txt`/`.md`) has `null` or missing `approximateReadTime` and readable text is available on disk or inline, while preserving any existing explicit duration (`scripts/test-schema-upgrade.ts` Stage 5).
   * **What `#5b` Is Still Tracking (Pending / Dependent)**:
-    * **Delta Verification on `v0.20.4+` macOS Universal (`-Mac.dmg`)**:
-      * Verify `#61`–`#64` (cache reset, cloud-drive hydration catch-up, `Save and Close` validation, buried diagnostic console), `#60` (auto-closing `Export Show` popup on `Choose Show`), and the newly implemented `#42`, `#53`, `#66`, `#67`, `#68`, `#69`, `#70`, `#71`, `#72`, `#73`, and `#74` fixes (`dev/docs/TESTING_PLAN_v0.20.4.md`).
+    * **Delta Verification on `v0.20.4+` macOS Universal (`-Mac.dmg`) & Windows (`-Win.exe`)**:
+      * Verify `#61`–`#64` (cache reset, cloud-drive hydration catch-up, `Save and Close` validation, buried diagnostic console), `#60` (auto-closing `Export Show` popup on `Choose Show`), and the newly implemented `#42`, `#53`, `#66`, `#67`, `#68`, `#69`, `#70`, `#71`, `#72`, `#73`, `#74`, and `#75` fixes (`dev/docs/TESTING_PLAN_v0.20.4.md`).
     * **Future Sunset (`schemaVersion: 2`)**:
       * Once all station machines have permanently retired `v0.15.4/5`, remove the duplicate legacy sibling fields per `dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md`.
 
@@ -85,8 +85,3 @@
 * **User Note**:
   * *"On 5, this is logical, but overkill.  Move that to a new roadmap item to consider if actual rotating media track is necessary/feasible/implementable.  Right now, rely on the fact that calendars are regenerated on the fly, and rely on the fact that logs and audits don't check for which media track was played to make this only a hypothetical need.  It seems like tracking of past gate history to recreate rotating media placement is just difficult with huge overhead."*
 
-### 75. [ ] Make `"150 WPM"` Live Read Calculation Speed an Editable Station Setting in `_meta` & Help Settings
-* **User Note**:
-  * *"Additionally, save a low priority improvement to the roadmap to make the \"150 wpm\" value an editable setting that goes into the settings architecture along with the gating windows and time zone and admin contact blurb, etc.  If this is a trivial update, then make it along with 1-4."*
-* **Scope Note**:
-  * Held as a dedicated low-priority item because `"150 WPM"` touches shared `_meta` schema persistence (`shows.json` / `announcements.json`), `/api/settings`, `LocalHelpModal.tsx` station settings UI, `CopyEditorModal.tsx`, `LiveReadPopout.tsx`, and `compatibility.ts` upgrade backfill.

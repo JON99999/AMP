@@ -35,6 +35,7 @@ import {
   getShowLookaroundMinutes,
   formatLookaroundHhMm,
   parseLookaroundHhMm,
+  getLiveReadWpm,
 } from '../lib/compatibility';
 import { clearAudioCache } from '../lib/driveService';
 
@@ -103,6 +104,13 @@ export default function LocalHelpModal({
   const [isSavingWindow, setIsSavingWindow] = useState(false);
   const [windowStatusMessage, setWindowStatusMessage] = useState<string | null>(null);
 
+  const [wpmEditStage, setWpmEditStage] = useState<'locked' | 'editing'>('locked');
+  const [draftLiveReadWpm, setDraftLiveReadWpm] = useState<number>(() =>
+    getLiveReadWpm(scheduleWindowConfig || getScheduleWindowConfig())
+  );
+  const [isSavingWpm, setIsSavingWpm] = useState(false);
+  const [wpmStatusMessage, setWpmStatusMessage] = useState<string | null>(null);
+
   if (!isOpen) return null;
 
   const activeTz = stationTimezone || getStationTimezone();
@@ -111,6 +119,7 @@ export default function LocalHelpModal({
   const activeAdminContact = adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo();
   const activeUpNext = upNextPromoConfig || getUpNextPromoConfig();
   const activeScheduleWindow = scheduleWindowConfig || getScheduleWindowConfig();
+  const activeLiveReadWpm = getLiveReadWpm(activeScheduleWindow);
 
   const handleExecuteReset = async (keepFolders: boolean) => {
     setIsProcessing(true);
@@ -1031,6 +1040,121 @@ export default function LocalHelpModal({
                         </>
                       ) : (
                         <span>Save Schedule Window</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Live Read Calculation Speed (WPM) */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-left">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span className="text-xs font-black uppercase tracking-wider text-slate-900">
+                    Live Read Calculation Speed (WPM)
+                  </span>
+                </div>
+                <span className="px-2 py-0.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800">
+                  {activeLiveReadWpm} WPM
+                </span>
+              </div>
+
+              {wpmStatusMessage && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{wpmStatusMessage}</span>
+                </div>
+              )}
+
+              {!isAdmin ? (
+                <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center gap-2 text-xs text-slate-600">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>
+                    Live Read Calculation Speed is read-only in Live / Non-Admin mode (currently{' '}
+                    <strong className="text-slate-900">{activeLiveReadWpm} words per minute</strong>). Switch to{' '}
+                    <strong className="text-slate-800">Admin Mode</strong> to edit WPM speed.
+                  </span>
+                </div>
+              ) : wpmEditStage === 'locked' ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-lg">
+                  <span className="text-xs text-slate-600 leading-relaxed">
+                    Used to calculate automatic <strong className="text-slate-900">Approx. Read Time</strong> estimates (<code className="font-mono font-bold">0mXXs</code>, rounded up to the nearest 5 seconds) in the Live Read Editor and legacy script upgrades (default <code className="font-mono font-bold">150</code> WPM).
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftLiveReadWpm(activeLiveReadWpm);
+                      setWpmStatusMessage(null);
+                      setWpmEditStage('editing');
+                    }}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+                  >
+                    Edit Live Read WPM...
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-white border border-purple-200 rounded-lg space-y-3">
+                  <div className="space-y-1">
+                    <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                      Words Per Minute (50–300 WPM)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={50}
+                        max={300}
+                        value={draftLiveReadWpm}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setDraftLiveReadWpm(isNaN(val) ? 150 : Math.max(50, Math.min(300, val)));
+                        }}
+                        className="w-28 px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      <span className="text-xs text-slate-600">
+                        words per minute (default <code className="font-mono font-bold">150</code> WPM &mdash; 2.5 words/sec)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isSavingWpm}
+                      onClick={() => setWpmEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingWpm}
+                      onClick={async () => {
+                        setIsSavingWpm(true);
+                        try {
+                          const clampedWpm = Math.max(50, Math.min(300, Math.round(draftLiveReadWpm || 150)));
+                          const updated = setScheduleWindowConfig({
+                            liveReadWpm: clampedWpm,
+                          });
+                          if (onSaveScheduleWindowConfig) {
+                            await onSaveScheduleWindowConfig(updated);
+                          }
+                          setWpmEditStage('locked');
+                          setWpmStatusMessage(`Live Read calculation speed saved (${updated.liveReadWpm} WPM).`);
+                        } finally {
+                          setIsSavingWpm(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isSavingWpm ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <span>Save Live Read WPM</span>
                       )}
                     </button>
                   </div>

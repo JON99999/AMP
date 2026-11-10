@@ -6,7 +6,15 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.4
+### Current Release: v0.20.5
+- **App Version**: `0.20.5`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.4**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Optional `_meta.scheduleWindow.liveReadWpm` Field (`#75`)**: Added optional `liveReadWpm?: number` (default `150`, clamped `50–300` WPM) inside `ScheduleWindowConfig` (`_meta.scheduleWindow` and `station_settings.json`), backward- and forward-compatible with all Schema v1 stores.
+  - **Packaged Server Bundle Fix (`src/lib/liveReadTextUtils.ts`), Startup Crash Diagnostic Window (`electron-main.cjs`), & `#42`, `#53`, `#66`–`#75` Fixes**: Application, export, and editor improvements with full Schema v1 compatibility.
+
+### v0.20.4
 - **App Version**: `0.20.4`
 - **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
 - **Changes vs. v0.20.3**:

@@ -4,7 +4,7 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.4";
+export const CURRENT_APP_VERSION = "0.20.5";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 
@@ -184,7 +184,8 @@ export const DEFAULT_SCHEDULE_WINDOW_CONFIG: ScheduleWindowConfig = {
   windowBeforeMinutes: 5,
   windowAfterMinutes: 5,
   showLookaroundHours: 1,
-  showLookaroundMinutes: 60
+  showLookaroundMinutes: 60,
+  liveReadWpm: 150
 };
 
 export function getShowLookaroundMinutes(cfg?: Partial<ScheduleWindowConfig> | null): number {
@@ -250,7 +251,11 @@ let _activeScheduleWindowConfig: ScheduleWindowConfig = (() => {
                 ? Math.max(1, Math.min(60, Math.round(parsed.windowAfterMinutes)))
                 : 5,
             showLookaroundHours: Number((lookaroundMins / 60).toFixed(4)),
-            showLookaroundMinutes: lookaroundMins
+            showLookaroundMinutes: lookaroundMins,
+            liveReadWpm:
+              typeof parsed.liveReadWpm === 'number' && !isNaN(parsed.liveReadWpm)
+                ? Math.max(50, Math.min(300, Math.round(parsed.liveReadWpm)))
+                : 150
           };
         }
       }
@@ -258,6 +263,17 @@ let _activeScheduleWindowConfig: ScheduleWindowConfig = (() => {
   } catch (_) {}
   return { ...DEFAULT_SCHEDULE_WINDOW_CONFIG };
 })();
+
+export function getLiveReadWpm(cfg?: Partial<ScheduleWindowConfig> | null): number {
+  const raw =
+    cfg && typeof cfg === 'object' && typeof cfg.liveReadWpm === 'number' && !isNaN(cfg.liveReadWpm)
+      ? cfg.liveReadWpm
+      : typeof _activeScheduleWindowConfig?.liveReadWpm === 'number' &&
+          !isNaN(_activeScheduleWindowConfig.liveReadWpm)
+        ? _activeScheduleWindowConfig.liveReadWpm
+        : 150;
+  return Math.max(50, Math.min(300, Math.round(raw)));
+}
 
 export function getScheduleWindowConfig(): ScheduleWindowConfig {
   return { ..._activeScheduleWindowConfig };
@@ -269,6 +285,10 @@ export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | nu
       cfg.showLookaroundMinutes !== undefined || cfg.showLookaroundHours !== undefined
         ? getShowLookaroundMinutes(cfg)
         : getShowLookaroundMinutes(_activeScheduleWindowConfig);
+    const resolvedLiveReadWpm =
+      typeof cfg.liveReadWpm === 'number' && !isNaN(cfg.liveReadWpm)
+        ? Math.max(50, Math.min(300, Math.round(cfg.liveReadWpm)))
+        : getLiveReadWpm(_activeScheduleWindowConfig);
     _activeScheduleWindowConfig = {
       windowBeforeMinutes:
         typeof cfg.windowBeforeMinutes === 'number' && !isNaN(cfg.windowBeforeMinutes)
@@ -279,7 +299,8 @@ export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | nu
           ? Math.max(1, Math.min(60, Math.round(cfg.windowAfterMinutes)))
           : _activeScheduleWindowConfig.windowAfterMinutes,
       showLookaroundHours: Number((resolvedLookaroundMins / 60).toFixed(4)),
-      showLookaroundMinutes: resolvedLookaroundMins
+      showLookaroundMinutes: resolvedLookaroundMins,
+      liveReadWpm: resolvedLiveReadWpm
     };
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
@@ -512,6 +533,7 @@ export interface ScheduleWindowConfig {
   windowAfterMinutes: number;  // +y: default 5 minutes
   showLookaroundHours: number; // default 1 hour (supports fractional hours from hh:mm)
   showLookaroundMinutes?: number; // default 60 minutes (01:00)
+  liveReadWpm?: number; // default 150 words per minute (50–300)
 }
 
 export interface DataMetaHeader {
@@ -564,6 +586,7 @@ export function compareSemver(v1: string, v2: string): number {
  * Creates a standard metadata envelope header for saved JSON stores
  */
 export function createDataMetaHeader(customWindow?: ScheduleWindowConfig, stationTimezone?: string): DataMetaHeader {
+  const lookaroundMins = getShowLookaroundMinutes(customWindow ?? _activeScheduleWindowConfig);
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     minAppVersion: CURRENT_MIN_APP_VERSION,
@@ -573,7 +596,9 @@ export function createDataMetaHeader(customWindow?: ScheduleWindowConfig, statio
     scheduleWindow: {
       windowBeforeMinutes: customWindow?.windowBeforeMinutes ?? 5,
       windowAfterMinutes: customWindow?.windowAfterMinutes ?? 5,
-      showLookaroundHours: customWindow?.showLookaroundHours ?? 1
+      showLookaroundHours: customWindow?.showLookaroundHours ?? Number((lookaroundMins / 60).toFixed(4)),
+      showLookaroundMinutes: lookaroundMins,
+      liveReadWpm: getLiveReadWpm(customWindow)
     }
   };
 }
@@ -699,10 +724,13 @@ export type ScriptTextResolver =
   | Record<string, string>;
 
 /**
- * Computes ~150 WPM (2.5 words/sec) approximate read time ("0m30s", rounded up to nearest 5s, min 5s)
+ * Computes WPM approximate read time ("0m30s", rounded up to nearest 5s, min 5s)
  * from raw script text after stripping HTML comments and inline Markdown formatting markers.
  */
-export function estimateWpmReadTimeFromText(rawText?: string | null): string {
+export function estimateWpmReadTimeFromText(
+  rawText?: string | null,
+  wpm: number = getLiveReadWpm()
+): string {
   if (!rawText || typeof rawText !== 'string') return '';
   const withoutComments = rawText
     .replace(/^\uFEFF/, '')
@@ -717,7 +745,9 @@ export function estimateWpmReadTimeFromText(rawText?: string | null): string {
   if (!plain) return '';
   const words = plain.split(/\s+/).filter(Boolean);
   if (words.length === 0) return '';
-  const rawSeconds = Math.ceil(words.length / 2.5);
+  const safeWpm = Math.max(50, Math.min(300, typeof wpm === 'number' && !isNaN(wpm) ? wpm : 150));
+  const wordsPerSecond = safeWpm / 60;
+  const rawSeconds = Math.ceil(words.length / wordsPerSecond);
   const estimatedSeconds = Math.max(5, Math.ceil(rawSeconds / 5) * 5);
   const mins = Math.floor(estimatedSeconds / 60);
   const secs = estimatedSeconds % 60;

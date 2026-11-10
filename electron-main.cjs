@@ -1,8 +1,12 @@
 const { app, BrowserWindow, screen, Menu, session, dialog, ipcMain, shell, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const net = require('net');
 const http = require('http');
+
+const APP_VERSION = '0.20.5';
+const AMP_GITHUB_REPO_URL = 'https://github.com/JON99999/AMP';
 
 // ==========================================================================================
 // INTEL MAC PERFORMANCE OPTIMIZATIONS (1-3) FOR MOUSE-MOVEMENT CPU LAG
@@ -14,6 +18,7 @@ const isMac = process.platform === 'darwin';
 const isIntelMac = isMac && process.arch === 'x64';
 
 let appMode = 'Admin';
+let startupServerError = null;
 
 try {
   const configPath = path.join(__dirname, 'dist', 'app-config.json');
@@ -175,10 +180,454 @@ async function startServer() {
   try {
     const serverPath = path.join(__dirname, 'dist', 'server.cjs');
     require(serverPath);
+    startupServerError = null;
     console.log(`Backend server started successfully on port ${serverPort}.`);
   } catch (err) {
+    startupServerError = err;
     console.error('Failed to start backend server:', err);
   }
+}
+
+function resolveLocalAdminContactAndStationInfo() {
+  const info = {
+    stationPath: '',
+    adminContact: ''
+  };
+  try {
+    const candidateSettingsDirs = [];
+    if (sharedSettingsDirPath) candidateSettingsDirs.push(sharedSettingsDirPath);
+    try {
+      candidateSettingsDirs.push(app.getPath('userData'));
+    } catch (_) {}
+
+    let parsedAppSettings = null;
+    for (const dir of candidateSettingsDirs) {
+      if (!dir) continue;
+      const settingsFile = path.join(dir, 'amp_settings.json');
+      if (fs.existsSync(settingsFile)) {
+        try {
+          parsedAppSettings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+          if (parsedAppSettings && typeof parsedAppSettings === 'object') break;
+        } catch (_) {}
+      }
+    }
+
+    if (parsedAppSettings) {
+      const rootAmp =
+        (parsedAppSettings.localPathAmp && String(parsedAppSettings.localPathAmp).trim()) ||
+        (parsedAppSettings.paths && parsedAppSettings.paths.settings
+          ? path.dirname(String(parsedAppSettings.paths.settings).trim())
+          : '');
+      if (rootAmp) info.stationPath = rootAmp;
+
+      const stationSettingsDir =
+        (parsedAppSettings.paths && parsedAppSettings.paths.settings && String(parsedAppSettings.paths.settings).trim()) ||
+        (rootAmp ? path.join(rootAmp, 'settings') : '');
+
+      if (stationSettingsDir && fs.existsSync(stationSettingsDir)) {
+        const candidateJsonFiles = [
+          path.join(stationSettingsDir, 'station_settings.json'),
+          path.join(stationSettingsDir, 'shows_schedule.json'),
+          path.join(stationSettingsDir, 'shows.json'),
+          path.join(stationSettingsDir, 'announcements.json')
+        ];
+        for (const jsonPath of candidateJsonFiles) {
+          if (!fs.existsSync(jsonPath)) continue;
+          try {
+            const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+            const contact =
+              (raw && typeof raw.adminContactInfo === 'string' && raw.adminContactInfo.trim()) ||
+              (raw && raw._meta && typeof raw._meta.adminContactInfo === 'string' && raw._meta.adminContactInfo.trim()) ||
+              (raw &&
+                Array.isArray(raw.data) &&
+                raw.data[0] &&
+                raw.data[0]._stationMeta &&
+                typeof raw.data[0]._stationMeta.adminContactInfo === 'string' &&
+                raw.data[0]._stationMeta.adminContactInfo.trim()) ||
+              '';
+            if (contact) {
+              info.adminContact = contact;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+  return info;
+}
+
+function renderStartupCrashWindow(win, errObj, port) {
+  if (!win || win.isDestroyed()) return;
+
+  try {
+    if (appMode !== 'Admin') {
+      win.setMinimumSize(360, 480);
+      win.setMaximumSize(1400, 1400);
+      win.setSize(680, 660);
+      win.center();
+    }
+  } catch (_) {}
+
+  const { stationPath, adminContact } = resolveLocalAdminContactAndStationInfo();
+  const osPlatformLabel =
+    process.platform === 'darwin'
+      ? 'macOS'
+      : process.platform === 'win32'
+        ? 'Windows'
+        : process.platform;
+  const osSummary = `${osPlatformLabel} (${os.type()} ${os.release()} / ${process.arch})`;
+  const appSummary = `AMP ${appMode} v${APP_VERSION}`;
+  const errorText =
+    errObj && (errObj.stack || errObj.message)
+      ? String(errObj.stack || errObj.message)
+      : String(errObj || 'Unknown startup error');
+  const errorHeadline =
+    errObj && errObj.message
+      ? String(errObj.message)
+      : 'Local Express backend server failed to respond on startup.';
+  const adminContactDisplay =
+    adminContact || 'Not configured on disk — contact your station administrator or report on GitHub below';
+  const nowIso = new Date().toISOString();
+  let userDataDir = '';
+  try {
+    userDataDir = app.getPath('userData');
+  } catch (_) {}
+
+  const crashLogLines = [
+    '============================================================',
+    'AMP (Announcement Media Player) — Startup Crash Log',
+    '============================================================',
+    `Timestamp (UTC):      ${nowIso}`,
+    `Application:          ${appSummary}`,
+    `Operating System:     ${osSummary}`,
+    `Runtime Versions:     Electron ${process.versions.electron || 'N/A'} | Node ${process.versions.node || 'N/A'} | Chromium ${process.versions.chrome || 'N/A'}`,
+    `Local Server Port:    ${port}`,
+    `Portable Mode:        ${isPortableMode ? 'Yes' : 'No'}`,
+    `Shared Settings Dir:  ${sharedSettingsDirPath || 'N/A'}`,
+    `Isolated UserData:    ${userDataDir || 'N/A'}`,
+    `Station Folder Path:  ${stationPath || 'Not configured'}`,
+    `Admin Contact Info:   ${adminContact || 'Not configured'}`,
+    `GitHub Repository:    ${AMP_GITHUB_REPO_URL}`,
+    '------------------------------------------------------------',
+    'ERROR DETAILS & STACK TRACE:',
+    errorText,
+    '============================================================'
+  ].join('\n');
+
+  const issueTitle = `[Bug] Startup Error on ${appSummary} (${osPlatformLabel} ${process.arch}): ${errorHeadline.slice(0, 80)}`;
+  const issueBody = [
+    '### Description',
+    'AMP encountered a startup error before the main interface could load.',
+    '',
+    '### Crash Log',
+    '```text',
+    crashLogLines,
+    '```'
+  ].join('\n');
+  const githubNewIssueUrl = `${AMP_GITHUB_REPO_URL}/issues/new?title=${encodeURIComponent(issueTitle)}&body=${encodeURIComponent(issueBody)}`;
+
+  const escapeHtml = (str) =>
+    String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${escapeHtml(appSummary)} — Startup Diagnostic Report</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      line-height: 1.45;
+    }
+    .card {
+      max-width: 760px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+    }
+    .header {
+      background: #fff1f2;
+      border-bottom: 1px solid #fecdd3;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .header-title {
+      font-size: 14px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #9f1239;
+    }
+    .badge {
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: #ffffff;
+      border: 1px solid #fda4af;
+      color: #881337;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .body {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .summary {
+      font-size: 13px;
+      color: #334155;
+      margin: 0;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+    }
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .meta-label {
+      font-weight: 800;
+      color: #475569;
+      min-width: 150px;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+    .meta-value {
+      font-weight: 700;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .contact-highlight {
+      color: #6d28d9;
+    }
+    .log-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .log-label {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #475569;
+    }
+    .log-box {
+      width: 100%;
+      height: 230px;
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11.5px;
+      line-height: 1.45;
+      color: #0f172a;
+      background: #f8fafc;
+      border: 1px solid #94a3b8;
+      border-radius: 8px;
+      resize: vertical;
+      white-space: pre;
+      overflow: auto;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 4px;
+    }
+    .btn-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button {
+      cursor: pointer;
+      border-radius: 7px;
+      padding: 8px 13px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      border: 1px solid transparent;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+    .btn-github {
+      background: #0f172a;
+      color: #ffffff;
+    }
+    .btn-github:hover {
+      background: #1e293b;
+    }
+    .btn-secondary {
+      background: #f1f5f9;
+      color: #1e293b;
+      border-color: #cbd5e1;
+    }
+    .btn-secondary:hover {
+      background: #e2e8f0;
+    }
+    a.link {
+      color: #2563eb;
+      text-decoration: underline;
+      cursor: pointer;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="header-title">AMP Startup Error — Local Server Failed to Start</div>
+      <div class="badge">${escapeHtml(appSummary)}</div>
+    </div>
+    <div class="body">
+      <p class="summary">
+        AMP could not start or connect to its internal background server on port <strong>${escapeHtml(String(port))}</strong>.
+        Copy the crash log below to send to your <strong>Station Admin Contact</strong>, or click <strong>Report Issue on GitHub</strong> to open a pre-filled issue in your browser.
+      </p>
+
+      <div class="meta-grid">
+        <div class="meta-row">
+          <span class="meta-label">Application Version:</span>
+          <span class="meta-value">${escapeHtml(appSummary)}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Operating System:</span>
+          <span class="meta-value">${escapeHtml(osSummary)}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Admin Contact:</span>
+          <span class="meta-value contact-highlight">${escapeHtml(adminContactDisplay)}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">AMP GitHub:</span>
+          <span class="meta-value">
+            <a class="link" id="repo-link" href="${escapeHtml(AMP_GITHUB_REPO_URL)}">${escapeHtml(AMP_GITHUB_REPO_URL)}</a>
+          </span>
+        </div>
+      </div>
+
+      <div class="log-label-row">
+        <span class="log-label">Diagnostic Crash Log (Scrollable — Copy &amp; Send to Admin Contact)</span>
+        <span id="copy-status" style="font-size: 11px; font-weight: 700; color: #059669;"></span>
+      </div>
+
+      <textarea id="crash-log-box" class="log-box" readonly>${escapeHtml(crashLogLines)}</textarea>
+
+      <div class="actions">
+        <div class="btn-group">
+          <button type="button" class="btn-primary" id="copy-btn">Copy Crash Log</button>
+          <button type="button" class="btn-github" id="github-issue-btn">Report Issue on GitHub</button>
+          <button type="button" class="btn-secondary" id="github-repo-btn">Open AMP GitHub</button>
+        </div>
+        <button type="button" class="btn-secondary" id="retry-btn">Retry Startup</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const logBox = document.getElementById('crash-log-box');
+      const copyBtn = document.getElementById('copy-btn');
+      const copyStatus = document.getElementById('copy-status');
+      const issueBtn = document.getElementById('github-issue-btn');
+      const repoBtn = document.getElementById('github-repo-btn');
+      const repoLink = document.getElementById('repo-link');
+      const retryBtn = document.getElementById('retry-btn');
+
+      const issueUrl = ${JSON.stringify(githubNewIssueUrl)};
+      const repoUrl = ${JSON.stringify(AMP_GITHUB_REPO_URL)};
+      const targetAppUrl = ${JSON.stringify(`http://127.0.0.1:${port}`)};
+
+      function openExternal(url) {
+        if (window.electronAPI && typeof window.electronAPI.openExternalUrl === 'function') {
+          window.electronAPI.openExternalUrl(url);
+        } else {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
+      }
+
+      copyBtn.addEventListener('click', function() {
+        const text = logBox.value;
+        const onCopied = function() {
+          copyStatus.textContent = '✓ Copied crash log to clipboard';
+          copyBtn.textContent = 'Copied Crash Log';
+          setTimeout(function() {
+            copyBtn.textContent = 'Copy Crash Log';
+          }, 2500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(onCopied).catch(function() {
+            logBox.focus();
+            logBox.select();
+            document.execCommand('copy');
+            onCopied();
+          });
+        } else {
+          logBox.focus();
+          logBox.select();
+          document.execCommand('copy');
+          onCopied();
+        }
+      });
+
+      issueBtn.addEventListener('click', function() {
+        openExternal(issueUrl);
+      });
+
+      repoBtn.addEventListener('click', function() {
+        openExternal(repoUrl);
+      });
+
+      repoLink.addEventListener('click', function(e) {
+        e.preventDefault();
+        openExternal(repoUrl);
+      });
+
+      retryBtn.addEventListener('click', function() {
+        window.location.href = targetAppUrl;
+      });
+    })();
+  </script>
+</body>
+</html>`;
+
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  win.loadURL(dataUrl);
 }
 
 let isLiveReadMenuLocked = false;
@@ -388,7 +837,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: `Version 0.20.4\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
+              detail: `Version 0.20.5\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
             });
           }
         }
@@ -537,6 +986,13 @@ function createWindow() {
   mainWindow = new BrowserWindow(windowOptions);
   attachEditContextMenu(mainWindow);
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
   mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
     if (level >= 2) {
       const prefix = level >= 3 ? '[Renderer Error]' : '[Renderer Warn]';
@@ -546,9 +1002,19 @@ function createWindow() {
 
   // Active polling inter-process status loop to load as soon as port is listening
   function loadAppWhenReady(port, url, win, attempts = 0) {
+    if (!win || win.isDestroyed()) return;
+    if (startupServerError) {
+      console.error('Backend server threw startup exception; rendering diagnostic crash report.');
+      renderStartupCrashWindow(win, startupServerError, port);
+      return;
+    }
     if (attempts > 100) { // 100 * 100ms = 10s max timeout
-      console.log('Timeout waiting for backend server. Loading URL anyway.');
-      win.loadURL(url);
+      console.error('Timeout waiting for backend server; rendering diagnostic crash report.');
+      renderStartupCrashWindow(
+        win,
+        new Error(`Timed out after 10 seconds waiting for local backend server at http://127.0.0.1:${port}/api/settings`),
+        port
+      );
       return;
     }
     const req = http.get(`http://127.0.0.1:${port}/api/settings`, (res) => {
@@ -935,6 +1401,20 @@ ipcMain.handle('open-dev-tools', async () => {
     return { success: false, error: err.message || 'Failed to open developer tools' };
   }
 });
+
+ipcMain.handle('open-external-url', async (event, targetUrl) => {
+  try {
+    if (!targetUrl || typeof targetUrl !== 'string' || !/^https?:\/\//i.test(targetUrl.trim())) {
+      return { success: false, error: 'A valid http/https URL is required.' };
+    }
+    await shell.openExternal(targetUrl.trim());
+    return { success: true };
+  } catch (err) {
+    console.error('Failed to open external URL:', err);
+    return { success: false, error: err.message || 'Failed to open external URL' };
+  }
+});
+
 
 
 

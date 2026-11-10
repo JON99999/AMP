@@ -28,7 +28,9 @@ import {
   checkServerDriveMissingItems
 } from '../storage/driveProvider';
 
-const require = createRequire(typeof __filename !== 'undefined' ? __filename : import.meta.url);
+const require = createRequire(
+  typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'package.json')
+);
 
 export function registerSettingsRoutes(app: express.Express): void {
   // API - Custom OAuth Loopback Handlers (Method B)

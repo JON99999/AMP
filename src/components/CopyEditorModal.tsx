@@ -32,6 +32,7 @@ import {
   editableHtmlToMarkdownTxt,
   sanitizeClipboardToEditableHtml
 } from '../lib/liveReadFormatting';
+import { getLiveReadWpm } from '../lib/compatibility';
 import {
   uploadAnnouncementMediaFile,
   renameOrCopyAnnouncementMediaFile,
@@ -1388,7 +1389,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                         normalizeReadTimeDisplay(manualReadTime.trim()) !== stats.formattedReadTime)) && (
                       <span
                         className="text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]"
-                        title="Calculated approximate read time at 150 words per minute"
+                        title={`Calculated approximate read time at ${getLiveReadWpm()} words per minute`}
                       >
                         Est: ~{stats.formattedReadTime}
                       </span>
@@ -1423,7 +1424,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                   </div>
                   <label
                     className="flex items-center gap-1.5 text-xs font-bold text-blue-600 cursor-pointer select-none shrink-0"
-                    title="150 wpm"
+                    title={`${getLiveReadWpm()} wpm`}
                   >
                     <input
                       type="checkbox"
@@ -1434,7 +1435,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                         setManualReadTime(stats.formattedReadTime);
                       }}
                       className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                      title="150 wpm"
+                      title={`${getLiveReadWpm()} wpm`}
                     />
                     <span>Auto</span>
                   </label>

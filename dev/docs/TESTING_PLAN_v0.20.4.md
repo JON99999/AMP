@@ -1,26 +1,38 @@
-# AMP `v0.20.4` Remaining Delta Verification Plan (Purged of Passed `v0.20.1`–`v0.20.3` Items)
+# AMP `v0.20.5` Remaining Delta Verification Plan (Round 1: macOS on Intel -> Round 2: Windows)
 
 > **Status**:
 > - All prior Windows (`v0.20.1`–`v0.20.3`) and macOS Intel (`v0.20.3`) test phases (`Phases 1–4`, including `#2`, `#5a`, `#5b` coexistence/WPM backfill, `#7`, `#9`, `#12`, `#13`, `#15`, `#17`, `#21`, `#24`, `#25`, `#28`, `#29`, `#31`, `#36`, `#44`, `#46`–`#52`, `#54`–`#58`, and `#65`) have **passed** and been purged from this plan.
-> - Only the **untested `v0.20.4` delta items (`#60`, `#61`–`#64`)** and **open roadmap exceptions (`#66`–`#74`, `#42`, `#53`)** remain below.
+> - All remaining `v0.20.4` / `v0.20.5` delta items (`#60`, `#61`–`#64`, server startup bundle fix) and completed roadmap items (`#42`, `#53`, `#66`–`#75`) are organized below into a two-round path:
+>   - **Round 1: macOS on Intel (`AMP Admin / Studio / Live-0.20.5-Mac.dmg`)** — Complete all 15 delta tests on macOS Intel first.
+>   - **Round 2: Windows (`AMP Admin / Studio / Live-0.20.5-Windows-Installer.exe`)** — Complete the cross-platform follow-up verification on Windows afterward.
 
 ---
 
-## 1. Ready to Verify in `v0.20.4` (`AMP Admin / Live / Studio-0.20.4-Mac.dmg`)
+## Round 1: macOS on Intel (`AMP Admin / Studio / Live-0.20.5-Mac.dmg`) — Primary Verification Pass
 
-- **1. `#61`–`#63` — `Folders -> Save and Close` Validation, Cache-Poisoning Prevention, & Cloud Drive Hydration Catch-Up**
-  - `a.` Launch `AMP Admin-0.20.4-Mac.dmg` (or `Live` / `Studio`), open **Folders**, point to `Test_Station_Root/` (whether set to *"Available Offline"* or streamed on demand from Google Drive for Desktop), and click **Save and Close**.
+### A. Startup, Storage Folders, Cache & Admin Settings (`#61`–`#64`, `#75`)
+
+- **1. `#61`–`#63` — Clean Launch, `Folders -> Save and Close` Validation, Cache-Poisoning Prevention, & Cloud Drive Hydration Catch-Up**
+  - `a.` Launch `AMP Admin-Mac.dmg` (and `Studio` / `Live`), confirm the embedded Express server binds cleanly without a white screen, open **Folders**, point to `Test_Station_Root/` (whether set to *"Available Offline"* or streamed on demand from Google Drive for Desktop), and click **Save and Close**.
   - `b.` Confirm `Save and Close` immediately loads the schedule into the player with **no** false `"Connection Warning"` or contradictory `"Storage Folders Required: AMP Station Location and 5-Folder structure verified successfully."` error (`#61`, `#63`).
   - `c.` If any Google Drive files are hydrating on demand, confirm the non-blocking **Cloud Drive Syncing Files** banner (`Recheck Sync`) appears while preserving existing metadata instead of falling back to blank/default metadata (`#62`).
-  - `d.` Open **Folders -> Help -> Section 6 (`System Maintenance & Reset`)**, click **Reset App Settings... -> Keep Folders & Reset Settings**, and confirm the app purges its Chromium runtime cache and reloads cleanly with `Test_Station_Root/` still connected (`#61`).
+  - `d.` Open **Folders -> Help -> Section 6 (`System Maintenance & Reset`)**, click **Reset (Keep Folders)**, and confirm the app purges its Chromium runtime cache and reloads cleanly with `Test_Station_Root/` still connected (`#61`).
 
-- **2. `#64` — Buried Diagnostic Console Button (`AMP Admin` Only vs. Locked in `Live` & `Studio`)**
-  - `a.` In `AMP Admin-0.20.4-Mac.dmg`, open **Folders -> Help -> Section 6 (`System Maintenance & Reset`)**: confirm the discrete **Open Diagnostic Console** button is present at the bottom of Section 6 and opens the Chromium Developer Tools window when clicked.
-  - `b.` In `AMP Studio-0.20.4-Mac.dmg` and `AMP Live-0.20.4-Mac.dmg`, open **Folders -> Help -> Section 6**: confirm the **Open Diagnostic Console** button is hidden (`Admin Only`).
+- **2. `#64` — Buried Diagnostic Console Button (`AMP Admin` Only vs. Hidden in `Live` & `Studio`)**
+  - `a.` In `AMP Admin-Mac.dmg`, open **Folders -> Help -> Section 6 (`System Maintenance & Reset`)**: confirm the discrete **Open Diagnostic Console** button is present at the bottom of Section 6 and opens the Chromium Developer Tools window when clicked.
+  - `b.` In `AMP Studio-Mac.dmg` and `AMP Live-Mac.dmg`, open **Folders -> Help -> Section 6**: confirm the **Open Diagnostic Console** button is hidden (`Admin Only`).
 
-- **3. `#60` (`Note L`) — Auto-Close `Export Show` Popup When Selecting a New Show in `Prerecord` Mode**
-  - `a.` In `AMP Studio-0.20.4-Mac.dmg` (or `AMP Admin-0.20.4-Mac.dmg`), switch **Mode:** to **Prerecord**, load a show, and click **Export** to open the `Export Show` popup.
-  - `b.` Leave the `Export Show` popup open, then click **Choose Show** in the Prerecord header (or select a new show) — confirm the `Export Show` popup automatically closes as soon as you open the show selector or switch shows (`#60`).
+- **3. `#75` — Editable `Live Read Calculation Speed (WPM)` Station Setting in `_meta` & `Folders -> Help -> Section 6`**
+  - `a.` In `AMP Live-Mac.dmg` or `AMP Studio-Mac.dmg`, open **Folders -> Help -> Section 6 (`System Maintenance & Reset`)**: confirm the **Live Read Calculation Speed (WPM)** card displays `150 WPM` and is locked (`Read-Only in Live / Non-Admin mode`).
+  - `b.` In `AMP Admin-Mac.dmg`, open **Folders -> Help -> Section 6**, click **Edit Live Read WPM...**, change the value from `150` to `120` WPM (2 words/sec), and click **Save Live Read WPM**.
+  - `c.` Open `CopyEditorModal` (`Create / Edit Live Read`) on a `.txt` script (for example, a 60-word script):
+    - Confirm the automatic **Approx. Read Time** now calculates at `120 WPM` (`0m30s` at 120 WPM vs. `0m25s` at 150 WPM).
+    - Hover over the **Auto** checkbox and the `Est: ~0mXXs` badge (when `Auto` is unchecked) and confirm the tooltip reads `120 wpm` / `Calculated approximate read time at 120 words per minute`.
+  - `d.` Return to **Folders -> Help -> Section 6**, restore **Live Read Calculation Speed (WPM)** back to `150` WPM, and click **Save Live Read WPM** (`#75`).
+
+---
+
+### B. `Calendar -> Announcements` & Gate Editor Fixes (`#42`, `#53`, `#68`, `#71`)
 
 - **4. `#42` — Preserving Prior Scheduled Calendar History When Removing Days in Weekly Announcement Grid**
   - `a.` In `Calendar -> Weekly Calendar`, locate an active announcement that has scheduled slots on a past day (earlier today or earlier this week/last week).
@@ -44,6 +56,10 @@
   - `c.` On a media row that has `> 0 plays`, confirm the media row shows **Inactivate** instead of **Delete**.
   - `d.` Click the gate-level **Delete** button on a `0 plays` gate: confirm an *"Are you sure you want to delete Gate #N?"* confirmation dialog appears before the gate is removed (`#53`).
 
+---
+
+### C. `Calendar -> Shows` Validation & Folder Verification (`#66`, `#67`)
+
 - **8. `#66` (`Notes B & D`) — Shows Manager (`Calendar -> Shows`) Required-Field Validation on `Save Changes` & In-App `Delete Show?` Modal**
   - `a.` In `Calendar -> Shows`, click **+ Add Show** (or **Edit** an existing show), clear **Show Name**, **Short Name**, or **Show Host** (or set **Duration of Show** to `0 Hours 0 Mins`), and click **Save Changes**: confirm the red inline **Missing or Invalid Show Information** banner appears at the top of the form and highlights the invalid fields instead of saving or showing a browser alert.
   - `b.` Edit any affected field (or click **Reset**): confirm the inline validation banner clears automatically, and supplying valid values allows **Save Changes** to succeed.
@@ -55,12 +71,16 @@
     - `[Fixed] Created missing Evergreen folder: <ShortName>` (or `Show Playlist folder`), confirming background focus refresh did not silently recreate it before you clicked **Check Folders**.
     - `[Notice] Extra folder found in media_evergreens (not matched to any show Short Name): <Show_1_ExtraTest>`, alerting you to the unmatched extra folder (`#67`).
 
+---
+
+### D. `Select Announcement` (`MediaPickerModal`) & `CopyEditorModal` Fixes (`#69`, `#70`, `#72`, `#73`)
+
 - **10. `#69` (`Note F`) — Wait-For-Script-Load Gate & Synchronous Editor Seeding on `Edit` / `Copy` in `CopyEditorModal`**
   - `a.` Repeatedly click **Edit** and **Copy** on `.txt` Live Reads in both Announcement Gates (`Calendar -> Announcements -> Edit`) and `Select Announcement` (`10+` times in a row).
   - `b.` Confirm `CopyEditorModal` waits until the script text is retrieved before displaying the editor fields and populates the formatted script text `100%` of the time with zero blank loads (`#69`).
 
-- **11. `#70` (`Note G`) — Persistent Calculated `~150 WPM` Estimated Read-Time Reference Indicator**
-  - `a.` In `CopyEditorModal`, uncheck **Auto** (or type a custom value in **Approx. Read Time** that differs from the calculated `150 WPM` time).
+- **11. `#70` (`Note G`) — Persistent Calculated WPM Estimated Read-Time Reference Indicator**
+  - `a.` In `CopyEditorModal`, uncheck **Auto** (or type a custom value in **Approx. Read Time** that differs from the calculated WPM time).
   - `b.` Confirm the blue `Est: ~0mXXs` reference indicator appears next to the word count above the **Approx. Read Time** field so the calculated estimate remains visible (`#70`).
 
 - **12. `#73` (`Note J`) — `Select Announcement` (`MediaPickerModal`) `Copy` Live Read Returns to Picker List**
@@ -72,7 +92,15 @@
   - `b.` Confirm the `Actions` column renders the labeled **Select** button alongside compact `24x24` icon buttons for **Preview/Stop**, **Copy**, and **Edit** (with hover tooltips), and confirm shrinking the window below `640px` also collapses **Select** to a checkmark icon.
   - `c.` Confirm the header displays `(.mp3, .txt, .pdf, .png, .jpg, and more)` and hovering over it shows the 3-line tooltip (`Audio (6)` / `Scripts / Docs (3)` / `Images (4)`) (`#72`).
 
-- **14. `#74` (`Note K`) — `Export Show -> Live Reads` Stylized Preview, Dual Rich/Plain Clipboard Copy, `.txt` + `.rtf` Export, & Clean Stylized Paste in Editor**
+---
+
+### E. `Prerecord` & `Export Show` Fixes (`#60`, `#74`)
+
+- **14. `#60` (`Note L`) — Auto-Close `Export Show` Popup When Selecting a New Show in `Prerecord` Mode**
+  - `a.` In `AMP Studio-Mac.dmg` (or `AMP Admin-Mac.dmg`), switch **Mode:** to **Prerecord**, load a show, and click **Export** to open the `Export Show` popup.
+  - `b.` Leave the `Export Show` popup open, then click **Choose Show** in the Prerecord header (or select a new show) — confirm the `Export Show` popup automatically closes as soon as you open the show selector or switch shows (`#60`).
+
+- **15. `#74` (`Note K`) — `Export Show -> Live Reads` Stylized Preview, Dual Rich/Plain Clipboard Copy, `.txt` + `.rtf` Export, & Clean Stylized Paste in Editor**
   - `a.` In **Prerecord -> Export -> Live Reads**, confirm scripts with markdown formatting render with visual **Bold**, *Italic*, and <u>Underline</u> styling and no `<!-- ... -->` comment header or raw `**`/`*`/`__` symbols.
   - `b.` Click **Copy** on the `Live Reads` tab:
     - Paste into a rich-text editor (TextEdit Rich Text, Word, Google Docs, or AMP's `CopyEditorModal`) and confirm it pastes with **Bold**, *Italic*, and <u>Underline</u> styling preserved.
@@ -82,6 +110,16 @@
 
 ---
 
-## 2. Open Exceptions & Bug Fixes Queued on Roadmap
+## Round 2: Windows (`AMP Admin / Studio / Live-Win.exe`) — Secondary Cross-Platform Pass
 
-*(None — all `#60`–`#74`, `#42`, and `#53` exception items are implemented and ready to verify above.)*
+Once Round 1 passes on macOS Intel, run this focused Windows pass to confirm OS-specific parity:
+
+- **16. Windows Startup, Firewall Approval & Storage Connection (`#61`–`#64`)**
+  - `a.` Launch `AMP Admin-Win.exe` (and `Studio` / `Live`), click **Allow access** on the Windows Defender Firewall prompt if shown, and confirm the UI loads immediately into the window (no white screen) and connects to `Test_Station_Root\`.
+  - `b.` Open **Folders -> Help -> Section 6** and confirm **Open Diagnostic Console** appears in `AMP Admin-Win.exe` and is hidden in `AMP Studio-Win.exe` and `AMP Live-Win.exe`.
+
+- **17. Windows File Explorer & Native Clipboard / RTF Parity (`#67`, `#69`, `#72`, `#74`, `#75`)**
+  - `a.` **Folder Check (`#67`)**: In Windows File Explorer, rename a show subfolder in `media_evergreens` or `media_shows`, click **Check Folders** in `Calendar -> Shows`, and confirm both `[Fixed] Created missing ...` and `[Notice] Extra folder found ...` are reported.
+  - `b.` **`Select Announcement` Fit & `CopyEditorModal` Load (`#69`, `#72`, `#73`)**: Open `Select Announcement`, confirm all 5 columns (`48%/7%/13%/14%/18%`) and compact icon buttons fit with no horizontal scrollbar, and verify `Edit` / `Copy` on `.txt` Live Reads loads `100%` of the time and `Copy -> Save` returns to the picker list.
+  - `c.` **Windows Clipboard & `.txt` + `.rtf` Export (`#74`)**: In **Prerecord -> Export -> Live Reads**, test **Copy** into WordPad/Word (rich text) vs. Notepad (plain text), click **Export Files...** to verify both `.txt` and `.rtf` files open cleanly on Windows, and test pasting stylized rich text into `CopyEditorModal`.
+  - `d.` **Shared Station WPM Persistence (`#75`)**: Confirm the `Live Read Calculation Speed (WPM)` value saved in `_meta.scheduleWindow` on macOS is automatically read on Windows in **Folders -> Help -> Section 6** and `CopyEditorModal`.

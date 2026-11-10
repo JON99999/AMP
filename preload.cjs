@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (targetPath) => ipcRenderer.invoke('open-path', targetPath),
   clearAppCache: (options) => ipcRenderer.invoke('clear-app-cache', options),
   openDevTools: () => ipcRenderer.invoke('open-dev-tools'),
+  openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
 });
 
 
