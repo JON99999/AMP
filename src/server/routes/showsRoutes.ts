@@ -22,6 +22,7 @@ import {
   verifyServerDriveEvergreens,
   checkServerDriveEvergreenFolder,
   applyServerDriveEvergreenChange,
+  mergeServerDriveStrandedFolder,
   discoverServerDriveShowFolders,
   loadServerDrivePlaylistTracks,
   checkServerDrivePlaylistShowFiles,
@@ -345,6 +346,58 @@ function cleanExportFolder(folderPath: string): { deletedFiles: string[]; skippe
   return { deletedFiles, skippedFiles };
 }
 
+function mergeLocalDirectoryContents(
+  sourceDir: string,
+  targetDir: string
+): { movedCount: number; skippedCount: number; removedSourceFolder: boolean } {
+  if (!fs.existsSync(sourceDir)) {
+    return { movedCount: 0, skippedCount: 0, removedSourceFolder: false };
+  }
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  const osJunkNames = new Set(['.ds_store', 'thumbs.db', 'desktop.ini']);
+  const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+  let movedCount = 0;
+  let skippedCount = 0;
+
+  for (const entry of entries) {
+    if (osJunkNames.has(entry.name.toLowerCase())) {
+      continue;
+    }
+    const srcPath = path.join(sourceDir, entry.name);
+    const destPath = path.join(targetDir, entry.name);
+    if (fs.existsSync(destPath)) {
+      skippedCount++;
+      continue;
+    }
+    try {
+      fs.renameSync(srcPath, destPath);
+      movedCount++;
+    } catch (_) {
+      skippedCount++;
+    }
+  }
+
+  let removedSourceFolder = false;
+  try {
+    const remaining = fs.readdirSync(sourceDir);
+    const nonJunk = remaining.filter(name => !osJunkNames.has(name.toLowerCase()));
+    if (nonJunk.length === 0) {
+      for (const junk of remaining) {
+        try {
+          fs.unlinkSync(path.join(sourceDir, junk));
+        } catch (_) {}
+      }
+      fs.rmdirSync(sourceDir);
+      removedSourceFolder = true;
+    }
+  } catch (_) {}
+
+  return { movedCount, skippedCount, removedSourceFolder };
+}
+
 export function registerShowsRoutes(app: express.Express): void {
   // API - Verify Evergreen, Show Playlist, and Announcement folders (Unified Local + Google Drive)
   app.post('/api/shows/verify-evergreens', async (req, res) => {
@@ -577,6 +630,9 @@ export function registerShowsRoutes(app: express.Express): void {
           if (!fs.existsSync(newEvergreenFolderPath)) {
             fs.renameSync(oldFolderPath, newEvergreenFolderPath);
             folderRenamed = true;
+          } else {
+            mergeLocalDirectoryContents(oldFolderPath, newEvergreenFolderPath);
+            folderRenamed = true;
           }
         } else if (!fs.existsSync(newEvergreenFolderPath)) {
           fs.mkdirSync(newEvergreenFolderPath, { recursive: true });
@@ -595,6 +651,9 @@ export function registerShowsRoutes(app: express.Express): void {
           if (!fs.existsSync(newPlaylistFolderPath)) {
             fs.renameSync(oldPlaylistFolderPath, newPlaylistFolderPath);
             folderRenamed = true;
+          } else {
+            mergeLocalDirectoryContents(oldPlaylistFolderPath, newPlaylistFolderPath);
+            folderRenamed = true;
           }
         } else if (!fs.existsSync(newPlaylistFolderPath)) {
           fs.mkdirSync(newPlaylistFolderPath, { recursive: true });
@@ -609,6 +668,78 @@ export function registerShowsRoutes(app: express.Express): void {
     } catch (err: any) {
       console.error('Error in /api/shows/evergreen/apply-change:', err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API - Merge a stranded/extra subfolder in media_evergreens or media_shows into an active show's folder (#85)
+  app.post('/api/shows/merge-stranded-folder', async (req, res) => {
+    try {
+      const folderCategory = String(req.body?.folderCategory || '');
+      const sourceFolderName = String(req.body?.sourceFolderName || '').trim();
+      const targetShowShortName = String(req.body?.targetShowShortName || '').trim();
+
+      if (folderCategory !== 'media_evergreens' && folderCategory !== 'media_shows') {
+        return res.status(400).json({ error: 'Invalid folderCategory. Must be media_evergreens or media_shows.' });
+      }
+      if (
+        !sourceFolderName ||
+        !targetShowShortName ||
+        sourceFolderName.includes('..') ||
+        targetShowShortName.includes('..') ||
+        sourceFolderName.includes('/') ||
+        sourceFolderName.includes('\\') ||
+        targetShowShortName.includes('/') ||
+        targetShowShortName.includes('\\')
+      ) {
+        return res.status(400).json({ error: 'Valid sourceFolderName and targetShowShortName are required.' });
+      }
+      if (sourceFolderName.toLowerCase() === targetShowShortName.toLowerCase()) {
+        return res.status(400).json({ error: 'Source folder and target show folder cannot be the same.' });
+      }
+
+      if (isServerDriveStorageRequest(req)) {
+        const result = await mergeServerDriveStrandedFolder(req, {
+          folderCategory,
+          sourceFolderName,
+          targetShowShortName
+        });
+        return res.json(result);
+      }
+
+      let baseDirPath =
+        folderCategory === 'media_evergreens'
+          ? getAmpMediaEvergreensDir(currentSettings)
+          : getAmpMediaShowsDir(currentSettings);
+
+      if (!baseDirPath && currentSettings.localPathAmp) {
+        baseDirPath = path.join(currentSettings.localPathAmp, folderCategory);
+      }
+
+      if (!baseDirPath || !fs.existsSync(baseDirPath)) {
+        return res.status(400).json({ error: `Base directory for ${folderCategory} is not configured or accessible.` });
+      }
+
+      const sourceDir = path.join(baseDirPath, sourceFolderName);
+      const targetDir = path.join(baseDirPath, targetShowShortName);
+
+      if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+        return res.status(404).json({ error: `Stranded folder "${sourceFolderName}" was not found in ${folderCategory}.` });
+      }
+
+      const { movedCount, skippedCount, removedSourceFolder } = mergeLocalDirectoryContents(sourceDir, targetDir);
+
+      res.json({
+        success: true,
+        folderCategory,
+        sourceFolderName,
+        targetShowShortName,
+        movedCount,
+        skippedCount,
+        removedSourceFolder
+      });
+    } catch (err: any) {
+      console.error('Error in /api/shows/merge-stranded-folder:', err);
+      res.status(500).json({ error: err.message || 'Failed to merge stranded folder.' });
     }
   });
 

@@ -108,6 +108,9 @@ export default function LocalHelpModal({
   const [draftLiveReadWpm, setDraftLiveReadWpm] = useState<number>(() =>
     getLiveReadWpm(scheduleWindowConfig || getScheduleWindowConfig())
   );
+  const [draftLiveReadWpmText, setDraftLiveReadWpmText] = useState<string>(() =>
+    String(getLiveReadWpm(scheduleWindowConfig || getScheduleWindowConfig()))
+  );
   const [isSavingWpm, setIsSavingWpm] = useState(false);
   const [wpmStatusMessage, setWpmStatusMessage] = useState<string | null>(null);
 
@@ -1086,6 +1089,7 @@ export default function LocalHelpModal({
                     type="button"
                     onClick={() => {
                       setDraftLiveReadWpm(activeLiveReadWpm);
+                      setDraftLiveReadWpmText(String(activeLiveReadWpm));
                       setWpmStatusMessage(null);
                       setWpmEditStage('editing');
                     }}
@@ -1105,10 +1109,22 @@ export default function LocalHelpModal({
                         type="number"
                         min={50}
                         max={300}
-                        value={draftLiveReadWpm}
+                        value={draftLiveReadWpmText}
                         onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          setDraftLiveReadWpm(isNaN(val) ? 150 : Math.max(50, Math.min(300, val)));
+                          const raw = e.target.value;
+                          setDraftLiveReadWpmText(raw);
+                          const val = parseInt(raw, 10);
+                          if (!isNaN(val)) {
+                            setDraftLiveReadWpm(val);
+                          }
+                        }}
+                        onBlur={() => {
+                          const parsed = parseInt(draftLiveReadWpmText, 10);
+                          const clamped = isNaN(parsed)
+                            ? 150
+                            : Math.max(50, Math.min(300, Math.round(parsed)));
+                          setDraftLiveReadWpm(clamped);
+                          setDraftLiveReadWpmText(String(clamped));
                         }}
                         className="w-28 px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500"
                       />
@@ -1133,7 +1149,12 @@ export default function LocalHelpModal({
                       onClick={async () => {
                         setIsSavingWpm(true);
                         try {
-                          const clampedWpm = Math.max(50, Math.min(300, Math.round(draftLiveReadWpm || 150)));
+                          const parsed = parseInt(draftLiveReadWpmText, 10);
+                          const clampedWpm = isNaN(parsed)
+                            ? Math.max(50, Math.min(300, Math.round(draftLiveReadWpm || 150)))
+                            : Math.max(50, Math.min(300, Math.round(parsed)));
+                          setDraftLiveReadWpm(clampedWpm);
+                          setDraftLiveReadWpmText(String(clampedWpm));
                           const updated = setScheduleWindowConfig({
                             liveReadWpm: clampedWpm,
                           });

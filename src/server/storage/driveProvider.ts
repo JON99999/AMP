@@ -562,7 +562,7 @@ export async function readDriveShows(
 export async function writeDriveShows(
   req: express.Request,
   rawPayload: any
-): Promise<{ success: boolean; _meta: any }> {
+): Promise<{ success: boolean; _meta: any; announcements?: Announcement[] }> {
   const settingsFolder = await resolveServerDriveSettingsFolderId(req);
   const found = await serverDriveFindFileCaseInsensitive(req, 'shows.json', settingsFolder);
   let fileId = found?.id || '';
@@ -629,7 +629,65 @@ export async function writeDriveShows(
   );
 
   await serverDriveUploadFileContent(req, fileId, JSON.stringify(migrated.envelope, null, 2));
-  return { success: true, _meta: migrated.envelope._meta };
+
+  let updatedAnnouncements: Announcement[] | undefined = undefined;
+  try {
+    const calFile = await serverDriveFindFileCaseInsensitive(req, 'announcements.json', settingsFolder);
+    if (calFile) {
+      const calRes = await serverDriveFetch(req, `drive/v3/files/${calFile.id}?alt=media`);
+      const calParsed = JSON.parse((await calRes.text()) || '{}');
+      if (calParsed && typeof calParsed === 'object' && !Array.isArray(calParsed) && Array.isArray(calParsed.data)) {
+        const scriptTextMap: Record<string, string> = {};
+        if (explicitScheduleWindow?.liveReadWpm !== undefined) {
+          try {
+            const annFolder = await resolveServerDriveAnnouncementsFolderId(req);
+            const folderFiles = await serverDriveListFolderFiles(req, annFolder);
+            const scriptFiles = folderFiles.filter(f => /\.(txt|md)$/i.test(String(f.name || '')));
+            await Promise.all(
+              scriptFiles.map(async sf => {
+                try {
+                  const sRes = await serverDriveFetch(req, `drive/v3/files/${sf.id}?alt=media`);
+                  const sText = await sRes.text();
+                  if (sText) {
+                    scriptTextMap[sf.name] = sText;
+                  }
+                } catch (_) {}
+              })
+            );
+          } catch (_) {}
+        }
+        const calCounter =
+          typeof calParsed.AnnouncementsBackupCounter === 'number'
+            ? Math.max(0, calParsed.AnnouncementsBackupCounter - 1)
+            : 0;
+        const migratedCal = migrateAnnouncementsPayload(
+          calParsed,
+          calParsed._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+          calCounter,
+          undefined,
+          Object.keys(scriptTextMap).length > 0 ? scriptTextMap : undefined,
+          migrated.envelope.scheduleWindow
+        );
+        if (migratedCal.envelope.data.length > 0 && migratedCal.envelope.data[0] && typeof migratedCal.envelope.data[0] === 'object') {
+          migratedCal.envelope.data[0]._stationMeta = {
+            ...(migratedCal.envelope.data[0]._stationMeta || {}),
+            stationTimezone: migrated.envelope.stationTimezone,
+            adminContactInfo: migrated.envelope.adminContactInfo ?? '',
+            upNextPromo: migrated.envelope.upNextPromo,
+            scheduleWindow: migrated.envelope.scheduleWindow
+          };
+        }
+        await serverDriveUploadFileContent(req, calFile.id, JSON.stringify(migratedCal.envelope, null, 2));
+        updatedAnnouncements = migratedCal.data;
+      }
+    }
+  } catch (_) {}
+
+  return {
+    success: true,
+    _meta: migrated.envelope._meta,
+    ...(updatedAnnouncements ? { announcements: updatedAnnouncements } : {})
+  };
 }
 
 export async function readDriveLogs(req: express.Request): Promise<LogEntry[]> {
@@ -1145,6 +1203,35 @@ export async function applyServerDriveEvergreenChange(
             body: JSON.stringify({ name: nameShort })
           });
           folderRenamed = true;
+        } else {
+          // Both oldFolder and newFolder exist: merge non-colliding children into newFolder
+          const [oldChildren, newChildren] = await Promise.all([
+            serverDriveListFolderFiles(req, oldFolder.id),
+            serverDriveListFolderFiles(req, newFolder.id)
+          ]);
+          const existingTargetLower = new Set(
+            newChildren.map(f => String(f.name || '').toLowerCase())
+          );
+          let skipped = 0;
+          for (const child of oldChildren) {
+            if (!child.id || !child.name) continue;
+            if (existingTargetLower.has(child.name.toLowerCase())) {
+              skipped++;
+              continue;
+            }
+            await serverDriveFetch(
+              req,
+              `drive/v3/files/${child.id}?addParents=${encodeURIComponent(newFolder.id)}&removeParents=${encodeURIComponent(oldFolder.id)}`,
+              { method: 'PATCH', body: JSON.stringify({}) }
+            );
+          }
+          if (skipped === 0) {
+            await serverDriveFetch(req, `drive/v3/files/${oldFolder.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ trashed: true })
+            }).catch(() => {});
+          }
+          folderRenamed = true;
         }
       } else if (!newFolder) {
         await serverDriveCreateFileInFolder(
@@ -1170,6 +1257,94 @@ export async function applyServerDriveEvergreenChange(
   await syncFolder(playlistsId);
 
   return { success: true, folderCreated, folderRenamed };
+}
+
+export async function mergeServerDriveStrandedFolder(
+  req: express.Request,
+  params: {
+    folderCategory: 'media_evergreens' | 'media_shows';
+    sourceFolderName: string;
+    targetShowShortName: string;
+  }
+): Promise<{
+  success: boolean;
+  folderCategory: string;
+  sourceFolderName: string;
+  targetShowShortName: string;
+  movedCount: number;
+  skippedCount: number;
+  removedSourceFolder: boolean;
+}> {
+  const parentId =
+    params.folderCategory === 'media_evergreens'
+      ? await resolveServerDriveEvergreensFolderId(req)
+      : await resolveServerDriveShowsFolderId(req);
+
+  const sourceFolder = await serverDriveFindFileCaseInsensitive(req, params.sourceFolderName, parentId);
+  if (!sourceFolder) {
+    throw new Error(`Stranded folder "${params.sourceFolderName}" was not found in ${params.folderCategory}.`);
+  }
+
+  let targetFolder = await serverDriveFindFileCaseInsensitive(req, params.targetShowShortName, parentId);
+  if (!targetFolder) {
+    const createdId = await serverDriveCreateFileInFolder(
+      req,
+      params.targetShowShortName,
+      parentId,
+      'application/vnd.google-apps.folder'
+    );
+    targetFolder = {
+      id: createdId,
+      name: params.targetShowShortName,
+      mimeType: 'application/vnd.google-apps.folder'
+    };
+  }
+
+  if (sourceFolder.id === targetFolder.id) {
+    throw new Error('Source and target folders are identical.');
+  }
+
+  const [sourceChildren, targetChildren] = await Promise.all([
+    serverDriveListFolderFiles(req, sourceFolder.id),
+    serverDriveListFolderFiles(req, targetFolder.id)
+  ]);
+
+  const targetNamesLower = new Set(targetChildren.map(f => String(f.name || '').toLowerCase()));
+  let movedCount = 0;
+  let skippedCount = 0;
+
+  for (const child of sourceChildren) {
+    if (!child.id || !child.name) continue;
+    if (targetNamesLower.has(child.name.toLowerCase())) {
+      skippedCount++;
+      continue;
+    }
+    await serverDriveFetch(
+      req,
+      `drive/v3/files/${child.id}?addParents=${encodeURIComponent(targetFolder.id)}&removeParents=${encodeURIComponent(sourceFolder.id)}`,
+      { method: 'PATCH', body: JSON.stringify({}) }
+    );
+    movedCount++;
+  }
+
+  let removedSourceFolder = false;
+  if (skippedCount === 0) {
+    await serverDriveFetch(req, `drive/v3/files/${sourceFolder.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ trashed: true })
+    });
+    removedSourceFolder = true;
+  }
+
+  return {
+    success: true,
+    folderCategory: params.folderCategory,
+    sourceFolderName: params.sourceFolderName,
+    targetShowShortName: params.targetShowShortName,
+    movedCount,
+    skippedCount,
+    removedSourceFolder
+  };
 }
 
 const APPROVED_AUDIO_EXTS = ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'];

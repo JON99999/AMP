@@ -3,9 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { Calendar, XCircle, Plus } from 'lucide-react';
-import { cn, computeBackfilledEndTime, getDatePart, getTimePart, formatDuration, formatTime12 } from '../lib/utils';
+import {
+  cn,
+  computeBackfilledEndTime,
+  getDatePart,
+  getTimePart,
+  formatDuration,
+  formatTime12,
+  formatToDatetimeLocal,
+  getCurrentDatetimeLocal,
+} from '../lib/utils';
 import {
   SchedulePresetOption,
   AnnouncementPlacementModalState,
@@ -14,6 +23,8 @@ import { MilitaryTimeInput } from './MilitaryTimeInput';
 
 interface PlacementPresetModalProps {
   placementModal: AnnouncementPlacementModalState;
+  parentStartDate?: string;
+  parentEndDate?: string;
   onSelectPreset: (preset: SchedulePresetOption) => void;
   onUpdateDates: (updates: {
     startDate?: string;
@@ -29,14 +40,62 @@ interface PlacementPresetModalProps {
 
 export function PlacementPresetModal({
   placementModal,
+  parentStartDate,
+  parentEndDate,
   onSelectPreset,
   onUpdateDates,
   onConfirm,
   onCancel,
 }: PlacementPresetModalProps) {
+  const prevEndDateInputRef = useRef<HTMLInputElement | null>(null);
   const activeTransitionPreset = placementModal.presets.find(
     p => p.transitionMp3Id && p.transitionMp3Id === placementModal.transitionMp3Id
   );
+
+  const formattedParentStart = parentStartDate && parentStartDate.trim()
+    ? formatToDatetimeLocal(parentStartDate)
+    : '';
+  const formattedParentEnd = parentEndDate && parentEndDate.trim()
+    ? formatToDatetimeLocal(parentEndDate)
+    : '';
+
+  const formatWindowBound = (isoLocal: string, fallbackTime: string) => {
+    if (!isoLocal) return '';
+    const dPart = getDatePart(isoLocal);
+    const tPart = getTimePart(isoLocal) || fallbackTime;
+    return `${dPart} @ ${formatTime12(tPart)}`;
+  };
+
+  const applyPreviousGateEndOffset = (mode: 'week' | 'month' | 'announcementEnd') => {
+    if (mode === 'announcementEnd') {
+      if (!formattedParentEnd) return;
+      onUpdateDates({
+        previousGateEndDate: getDatePart(formattedParentEnd),
+        previousGateEndTime: getTimePart(formattedParentEnd) || '23:59',
+      });
+      return;
+    }
+
+    const refStartIso =
+      activeTransitionPreset?.referenceStartDate ||
+      formattedParentStart ||
+      getCurrentDatetimeLocal();
+    const refDatePart = getDatePart(refStartIso);
+    const [ry, rm, rd] = refDatePart.split('-').map(Number);
+    if (isNaN(ry) || isNaN(rm) || isNaN(rd)) return;
+
+    const targetNextStart =
+      mode === 'week'
+        ? new Date(ry, rm - 1, rd + 7)
+        : new Date(ry, rm, rd);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const nextStartIso = `${targetNextStart.getFullYear()}-${pad(targetNextStart.getMonth() + 1)}-${pad(targetNextStart.getDate())}T00:00`;
+    const backfillIso = computeBackfilledEndTime(nextStartIso);
+    onUpdateDates({
+      previousGateEndDate: getDatePart(backfillIso),
+      previousGateEndTime: getTimePart(backfillIso) || '23:59',
+    });
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -67,6 +126,27 @@ export function PlacementPresetModal({
         </div>
 
         <div className="p-4 space-y-3.5 text-xs font-bold text-slate-700 max-h-[75vh] overflow-y-auto custom-scrollbar">
+          {/* Overall Parent Announcement Schedule Window Banner (#80) */}
+          <div className="p-2.5 rounded-lg bg-slate-100/90 border border-slate-200 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-600 select-none">
+              Announcement Window:
+            </span>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs font-mono">
+              <span>
+                <span className="text-slate-500 font-bold uppercase text-[10px] mr-1">Start:</span>
+                <span className="font-bold text-slate-800">
+                  {formattedParentStart ? formatWindowBound(formattedParentStart, '00:00') : 'Immediate'}
+                </span>
+              </span>
+              <span>
+                <span className="text-slate-500 font-bold uppercase text-[10px] mr-1">End:</span>
+                <span className="font-bold text-slate-800">
+                  {formattedParentEnd ? formatWindowBound(formattedParentEnd, '23:59') : 'Open-Ended (No end limit)'}
+                </span>
+              </span>
+            </div>
+          </div>
+
           {/* Available Gaps Selection */}
           <div className="space-y-1.5">
             <label className="text-[11px] font-black text-slate-600 uppercase tracking-wider block select-none">
@@ -181,7 +261,7 @@ export function PlacementPresetModal({
           {/* Open-Ended Previous Gate End Prompt */}
           {placementModal.transitionMp3Id && (
             <div className="bg-amber-50/90 p-3 rounded-lg border border-amber-300 space-y-2">
-              <div className="flex items-center justify-between gap-2 border-b border-amber-200 pb-1">
+              <div className="flex flex-col gap-1.5 border-b border-amber-200 pb-1.5">
                 <label className="text-[11px] font-black text-amber-900 uppercase tracking-wider block select-none">
                   When should Gate #{placementModal.transitionMp3Index || 1}
                   {placementModal.transitionMp3Title || activeTransitionPreset?.transitionMp3Title
@@ -189,23 +269,47 @@ export function PlacementPresetModal({
                     : ''}{' '}
                   end?
                 </label>
-                {activeTransitionPreset?.suggestedStartDate && (
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => applyPreviousGateEndOffset('week')}
+                    className="px-1.5 py-0.5 rounded bg-amber-200/80 hover:bg-amber-300/80 text-amber-950 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                    title="End previous gate +1 week from its start (new gate starts 1 minute later)"
+                  >
+                    +1 Week
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyPreviousGateEndOffset('month')}
+                    className="px-1.5 py-0.5 rounded bg-amber-200/80 hover:bg-amber-300/80 text-amber-950 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                    title="End previous gate +1 month from its start (new gate starts 1 minute later)"
+                  >
+                    +1 Month
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!formattedParentEnd}
+                    onClick={() => applyPreviousGateEndOffset('announcementEnd')}
+                    className="px-1.5 py-0.5 rounded bg-amber-200/80 hover:bg-amber-300/80 text-amber-950 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={
+                      formattedParentEnd
+                        ? `Set previous gate End to Announcement End (${formatWindowBound(formattedParentEnd, '23:59')})`
+                        : 'Parent Announcement has no End date set'
+                    }
+                  >
+                    Announcement End
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
-                      const sugStartIso = `${activeTransitionPreset.suggestedStartDate}T${activeTransitionPreset.suggestedStartTime || '00:00'}`;
-                      const backfillIso = computeBackfilledEndTime(sugStartIso);
-                      onUpdateDates({
-                        previousGateEndDate: getDatePart(backfillIso),
-                        previousGateEndTime: getTimePart(backfillIso) || '23:59',
-                      });
+                      prevEndDateInputRef.current?.focus();
                     }}
-                    className="px-1.5 py-0.5 rounded bg-amber-200/80 hover:bg-amber-300/80 text-amber-950 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors shrink-0"
-                    title="Fill +1 week from previous gate start"
+                    className="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                    title="Enter a custom End date & time below"
                   >
-                    Suggest +1 Week
+                    Custom
                   </button>
-                )}
+                </div>
               </div>
               <p className="text-[11px] font-semibold text-amber-800 leading-snug">
                 Gate #{placementModal.transitionMp3Index || 1} is currently open-ended. Choose when it should end; the new gate will start 1 minute later.
@@ -216,6 +320,7 @@ export function PlacementPresetModal({
                 </label>
                 <div className="flex items-center gap-px">
                   <input
+                    ref={prevEndDateInputRef}
                     type="date"
                     value={placementModal.previousGateEndDate || ''}
                     onChange={(e) =>

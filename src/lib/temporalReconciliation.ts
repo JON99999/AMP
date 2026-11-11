@@ -742,7 +742,22 @@ export function calculateGateSlotAssessment(
       );
 
       if (matchesRule) {
-        const rotIdx = slotIndex % itemCount;
+        // Resolve which media items were active at slotIso (respecting per-item inactivatedAt)
+        const eligibleItemIndices: number[] = [];
+        mediaItems.forEach((mi, idx) => {
+          if (!mi.inactivated) {
+            eligibleItemIndices.push(idx);
+          } else if (mi.inactivatedAt && mi.inactivatedAt.trim()) {
+            const itemInactIso = formatToDatetimeLocal(mi.inactivatedAt);
+            if (itemInactIso && slotIso <= itemInactIso) {
+              eligibleItemIndices.push(idx);
+            }
+          }
+        });
+        const rotIdx =
+          eligibleItemIndices.length > 0
+            ? eligibleItemIndices[slotIndex % eligibleItemIndices.length]
+            : slotIndex % itemCount;
         slotIndex++;
 
         const isAfterInactivation = Boolean(inactIso && effectiveEnd && slotIso > effectiveEnd);
@@ -838,12 +853,13 @@ export function calculateGateSlotAssessment(
     const firstLog = logsForThisItem[0];
     const lastLog = logsForThisItem[logsForThisItem.length - 1];
     const playedCount = logsForThisItem.length;
+    const itemIsInfiniteFuture = isInfiniteFuture && !mi.inactivated;
     const score = buildAssessmentScore(
       playedCount,
       itemMissedCounts[idx] || 0,
-      itemFutureCounts[idx] || 0,
+      mi.inactivated ? 0 : itemFutureCounts[idx] || 0,
       itemCancelledCounts[idx] || 0,
-      isInfiniteFuture
+      itemIsInfiniteFuture
     );
 
     return {

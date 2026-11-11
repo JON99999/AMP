@@ -303,6 +303,9 @@ export function getGateMediaItems(
         fileSize: gate.fileSize,
         backupMp3Url: gate.backupMp3Url,
         approximateReadTime: gate.approximateReadTime,
+        ...(typeof gate.isAutoReadTime === 'boolean'
+          ? { isAutoReadTime: gate.isAutoReadTime }
+          : {}),
       },
     ];
   }
@@ -366,6 +369,7 @@ type LegacyRawAnnouncement = Announcement & {
   backupMp3Url?: string;
   approximateReadTime?: string;
   approxReadTime?: string;
+  isAutoReadTime?: boolean;
   text?: string;
   content?: string;
   scriptText?: string;
@@ -406,6 +410,7 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
           mp3Url: anyItem.mp3Url,
           assetType: getGatedAssetType({ mp3Url: anyItem.mp3Url, assetType: anyItem.assetType }),
           approximateReadTime: anyItem.approximateReadTime,
+          isAutoReadTime: anyItem.isAutoReadTime,
           backupMp3Url: anyItem.backupMp3Url,
           duration: anyItem.duration,
         },
@@ -444,6 +449,14 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
       const mp3Url = String(mItem?.mp3Url ?? m?.mp3Url ?? '');
       const rawAssetType = (mItem?.assetType ?? m?.assetType) as 'audio' | 'script' | undefined;
       const derivedAssetType = classifyMediaAsset(mp3Url, rawAssetType);
+      const rawIsAuto =
+        typeof mItem?.isAutoReadTime === 'boolean'
+          ? mItem.isAutoReadTime
+          : typeof m?.isAutoReadTime === 'boolean'
+            ? m.isAutoReadTime
+            : typeof anyItem.isAutoReadTime === 'boolean'
+              ? anyItem.isAutoReadTime
+              : undefined;
       let resolvedApprox =
         derivedAssetType === 'script'
           ? ((mItem?.approximateReadTime ??
@@ -453,6 +466,7 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
             anyItem.approximateReadTime ??
             anyItem.approxReadTime) as string | undefined)
           : undefined;
+      let resolvedIsAuto = derivedAssetType === 'script' ? rawIsAuto : undefined;
       if (derivedAssetType === 'script' && isMissingApproxReadTime(resolvedApprox)) {
         const inlineText = String(
           (isUpNextPromoUrl(mp3Url) ? decodeUpNextPromoText(mp3Url) : '') ||
@@ -472,11 +486,17 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
         );
         const estimated = estimateWpmReadTimeFromText(inlineText);
         resolvedApprox = estimated || undefined;
+        if (estimated && resolvedIsAuto === undefined) {
+          resolvedIsAuto = true;
+        }
       }
       return {
         mp3Url,
         assetType: derivedAssetType,
         approximateReadTime: derivedAssetType === 'script' ? resolvedApprox : undefined,
+        ...(derivedAssetType === 'script' && typeof resolvedIsAuto === 'boolean'
+          ? { isAutoReadTime: resolvedIsAuto }
+          : {}),
         backupMp3Url:
           derivedAssetType === 'script'
             ? ((mItem?.backupMp3Url ?? m?.backupMp3Url) as string | undefined)
@@ -484,10 +504,12 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
         duration:
           derivedAssetType === 'audio' ? ((mItem?.duration ?? m?.duration) as string | undefined) : undefined,
         fileSize: mItem?.fileSize ?? m?.fileSize ?? undefined,
+        ...(mItem?.inactivated ? { inactivated: true } : {}),
+        ...(mItem?.inactivated && mItem?.inactivatedAt ? { inactivatedAt: mItem.inactivatedAt } : {}),
       };
     });
 
-    const primaryItem = normalizedMediaItems[0];
+    const primaryItem = normalizedMediaItems.find(mi => !mi.inactivated) || normalizedMediaItems[0];
 
     return {
       id: gateId,
@@ -500,6 +522,9 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
       mp3Url: primaryItem?.mp3Url ?? '',
       assetType: primaryItem?.assetType,
       approximateReadTime: primaryItem?.approximateReadTime,
+      ...(typeof primaryItem?.isAutoReadTime === 'boolean'
+        ? { isAutoReadTime: primaryItem.isAutoReadTime }
+        : {}),
       backupMp3Url: primaryItem?.backupMp3Url,
       duration: primaryItem?.duration,
       fileSize: primaryItem?.fileSize,
@@ -656,7 +681,18 @@ export function buildResolvedGateMp3(
   gate: TimeGatedMp3,
   targetMs: number
 ): ResolvedTimeGatedMp3 {
-  const items = getGateMediaItems(gate);
+  const allItems = getGateMediaItems(gate);
+  const activeAtTarget = allItems.filter(mi => {
+    if (!mi.inactivated) return true;
+    if (mi.inactivatedAt && mi.inactivatedAt.trim()) {
+      const inactMs = new Date(formatToDatetimeLocal(mi.inactivatedAt)).getTime();
+      if (!isNaN(inactMs) && targetMs <= inactMs) {
+        return true;
+      }
+    }
+    return false;
+  });
+  const items = activeAtTarget.length > 0 ? activeAtTarget : allItems.filter(mi => !mi.inactivated);
   const total = items.length;
   if (total === 0) {
     return {
@@ -665,7 +701,7 @@ export function buildResolvedGateMp3(
       mp3Url: '',
       startDate: gate.startDate || '',
       endDate: gate.endDate,
-      mediaItems: [],
+      mediaItems: allItems,
       rotationIndex: 1,
       rotationTotal: 1,
     };
@@ -689,7 +725,7 @@ export function buildResolvedGateMp3(
     fileSize: chosen.fileSize,
     backupMp3Url: chosen.backupMp3Url,
     approximateReadTime: chosen.approximateReadTime,
-    mediaItems: items,
+    mediaItems: allItems,
     rotationIndex: selectedIdx + 1,
     rotationTotal: total,
   };
@@ -1022,14 +1058,15 @@ export function validateTimeGatedMp3s(
       }
     }
     const mediaItems = getGateMediaItems(item);
-    if (mediaItems.length === 0) {
+    const activeMediaItems = mediaItems.filter(mi => !mi.inactivated);
+    if (activeMediaItems.length === 0) {
       warnings[item.id].push('File attachment selection is missing.');
       if (!isHistoricalExpired) {
         missingFileIds.add(item.id);
       }
     } else {
       let gateMissingFile = false;
-      mediaItems.forEach(mi => {
+      activeMediaItems.forEach(mi => {
         if (!mi.mp3Url || mi.mp3Url.trim() === '') {
           gateMissingFile = true;
         }
@@ -1042,6 +1079,27 @@ export function validateTimeGatedMp3s(
       }
     }
   });
+
+  // Check sequential gate order in the raw active list so out-of-order entries warn immediately (#81)
+  const rawActiveGates = (mp3s || []).filter(item => !isGateExpiredOrInactivated(item, currentNow));
+  for (let i = 0; i < rawActiveGates.length - 1; i++) {
+    const prevGate = rawActiveGates[i];
+    const nextGate = rawActiveGates[i + 1];
+    const prevStart = prevGate.startDate ? formatToDatetimeLocal(prevGate.startDate) : '';
+    const prevEnd = getGateEffectiveEndIso(prevGate) || '';
+    const nextStart = nextGate.startDate ? formatToDatetimeLocal(nextGate.startDate) : '';
+    if (prevStart && nextStart && nextStart < prevStart) {
+      warnings[nextGate.id].push(
+        `Sequential order warning: Starts (${formatDatetime12(nextStart)}) before preceding gate starts (${formatDatetime12(prevStart)}).`
+      );
+      overlapStartIds.add(nextGate.id);
+    } else if (prevEnd && nextStart && nextStart < prevEnd) {
+      warnings[nextGate.id].push(
+        `Sequential order warning: Starts (${formatDatetime12(nextStart)}) before preceding gate ends (${formatDatetime12(prevEnd)}).`
+      );
+      overlapStartIds.add(nextGate.id);
+    }
+  }
 
   for (let i = 0; i < sorted.length; i++) {
     const a = sorted[i];

@@ -91,12 +91,14 @@ function verifyVersionAlignment() {
   try {
     const electronText = readText('electron-main.cjs');
     const match = electronText.match(/Version\s+([0-9]+\.[0-9]+\.[0-9]+)/);
+    const appVerMatch = electronText.match(/const\s+APP_VERSION\s*=\s*["']([^"']+)["']/);
     const found = match ? match[1] : 'NOT_FOUND';
-    const ok = found === targetVersion;
+    const appVerFound = appVerMatch ? appVerMatch[1] : targetVersion;
+    const ok = found === targetVersion && appVerFound === targetVersion;
     if (!ok) hasMismatch = true;
     results.push({
       file: 'electron-main.cjs (About AMP dialog)',
-      found,
+      found: appVerMatch ? `${found} (APP_VERSION=${appVerFound})` : found,
       ok
     });
   } catch (err) {

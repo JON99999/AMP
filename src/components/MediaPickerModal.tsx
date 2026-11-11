@@ -89,6 +89,7 @@ export interface MediaPickerModalProps {
   allowProceedEmpty?: boolean;
   onSelectMultipleFiles?: (files: MediaPickerFile[]) => void;
   onProceedWithoutFile?: () => void;
+  highlightedFileName?: string | null;
 }
 
 export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
@@ -117,7 +118,8 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   allowMultiSelect = false,
   allowProceedEmpty = false,
   onSelectMultipleFiles,
-  onProceedWithoutFile
+  onProceedWithoutFile,
+  highlightedFileName = null
 }) => {
   const [typeFilter, setTypeFilter] = useState<PickerTypeFilter>(
     lockAudioOnly ? 'audio' : 'all'
@@ -164,13 +166,34 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     }
   }, [isOpen, lockAudioOnly]);
 
-  const toggleMultiSelectFile = (file: MediaPickerFile) => {
-    setSelectedFiles(prev => {
-      const exists = prev.some(f => f.name === file.name);
-      if (exists) {
-        return prev.filter(f => f.name !== file.name);
+  useEffect(() => {
+    if (isOpen && highlightedFileName) {
+      setRecentlyUploadedName(highlightedFileName);
+    }
+  }, [isOpen, highlightedFileName]);
+
+  useEffect(() => {
+    if (!isOpen || !recentlyUploadedName) return;
+    const timer = window.setTimeout(() => {
+      const rowEl = tableContainerRef.current?.querySelector('[data-recently-uploaded="true"]');
+      if (rowEl && typeof (rowEl as HTMLElement).scrollIntoView === 'function') {
+        (rowEl as HTMLElement).scrollIntoView({ block: 'nearest' });
       }
-      return [...prev, file];
+    }, 40);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, recentlyUploadedName, filteredFiles.length, unusedFirst, sortField, sortOrder]);
+
+  const toggleSelectFile = (file: MediaPickerFile) => {
+    setSelectedFiles(prev => {
+      const exists = prev.some(f => f.name.toLowerCase() === file.name.toLowerCase());
+      if (allowMultiSelect) {
+        if (exists) {
+          return prev.filter(f => f.name.toLowerCase() !== file.name.toLowerCase());
+        }
+        return [...prev, file];
+      }
+      // Single-select mode: toggle the clicked file as the sole selection
+      return exists ? [] : [file];
     });
   };
 
@@ -255,6 +278,17 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
       return true;
     });
 
+    // Always keep checked files visible even when filtered out by searchQuery or typeFilter (#79)
+    if (selectedFiles.length > 0) {
+      const existingNames = new Set(list.map(f => f.name.toLowerCase()));
+      for (const sel of selectedFiles) {
+        if (!existingNames.has(sel.name.toLowerCase())) {
+          list.push(sel);
+          existingNames.add(sel.name.toLowerCase());
+        }
+      }
+    }
+
     list.sort((a, b) => {
       const usageA = getUsageForFile(a.name);
       const usageB = getUsageForFile(b.name);
@@ -305,7 +339,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     });
 
     return list;
-  }, [filteredFiles, lockAudioOnly, typeFilter, unusedFirst, sortField, sortOrder, usageMap]);
+  }, [filteredFiles, selectedFiles, lockAudioOnly, typeFilter, unusedFirst, sortField, sortOrder, usageMap]);
 
   if (!isOpen) return null;
 
@@ -873,23 +907,19 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                      const typeCellTooltip = isAudio
                       ? `Audio (${ext || '.mp3'})`
                       : `LiveRead (${ext || '.txt'})`;
-                    const selectedIdx = allowMultiSelect
-                      ? selectedFiles.findIndex(f => f.name === file.name)
-                      : -1;
+                    const selectedIdx = selectedFiles.findIndex(
+                      f => f.name.toLowerCase() === file.name.toLowerCase()
+                    );
                     const isRowSelected = selectedIdx !== -1;
 
                     return (
                       <tr
                         key={file.name || i}
-                        onClick={() => {
-                          if (allowMultiSelect) {
-                            toggleMultiSelectFile(file);
-                          }
-                        }}
+                        data-recently-uploaded={isJustUploaded ? 'true' : undefined}
+                        onClick={() => toggleSelectFile(file)}
                         onDoubleClick={() => onSelectFile(file)}
                         className={cn(
-                          "transition-colors hover:bg-blue-50/70",
-                          allowMultiSelect && "cursor-pointer",
+                          "transition-colors hover:bg-blue-50/70 cursor-pointer",
                           isRowSelected
                             ? "bg-blue-50/90"
                             : isJustUploaded
@@ -905,24 +935,22 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                           title={id3Tooltip ? `${file.name} (${id3Tooltip})` : file.name}
                         >
                           <div className="flex items-center gap-1.5 min-w-0">
-                            {allowMultiSelect && (
-                              <label
-                                className="inline-flex items-center gap-1 shrink-0 cursor-pointer"
-                                onClick={e => e.stopPropagation()}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isRowSelected}
-                                  onChange={() => toggleMultiSelectFile(file)}
-                                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                                />
-                                {isRowSelected && (
-                                  <span className="px-1 py-0.2 rounded bg-blue-600 text-white text-[10px] font-black tabular-nums leading-tight">
-                                    {selectedIdx + 1}
-                                  </span>
-                                )}
-                              </label>
-                            )}
+                            <label
+                              className="inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                              onClick={e => e.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isRowSelected}
+                                onChange={() => toggleSelectFile(file)}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                              />
+                              {allowMultiSelect && isRowSelected && (
+                                <span className="px-1 py-0.2 rounded bg-blue-600 text-white text-[10px] font-black tabular-nums leading-tight">
+                                  {selectedIdx + 1}
+                                </span>
+                              )}
+                            </label>
                             <span className="font-bold text-slate-800 truncate">
                               {file.name}
                             </span>
@@ -984,33 +1012,13 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                           </button>
                         </td>
 
-                        {/* Column 5: Actions (Order: Select -> Preview -> Copy -> Edit; secondary actions rendered as compact icons) */}
+                        {/* Column 5: Actions (Order: Preview -> Copy -> Edit; secondary actions rendered as compact icons) */}
                         <td
                           className="py-1 px-1.5 text-right whitespace-nowrap overflow-hidden"
                           onClick={e => e.stopPropagation()}
                         >
                           <div className="inline-flex items-center justify-end gap-1 max-w-full">
-                            {/* 1. Select */}
-                            <button
-                              type="button"
-                              onClick={e => {
-                                e.stopPropagation();
-                                onSelectFile(file);
-                              }}
-                              className={cn(
-                                "bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer inline-flex items-center justify-center gap-0.5 h-6 shrink-0",
-                                collapseActionsToIcons ? "w-6" : "px-2"
-                              )}
-                              title={`Select ${file.name}`}
-                            >
-                              {collapseActionsToIcons ? (
-                                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                              ) : (
-                                <span>Select</span>
-                              )}
-                            </button>
-
-                            {/* 2. Preview */}
+                            {/* 1. Preview */}
                             {!isAudio ? (
                               <button
                                 type="button"
@@ -1105,64 +1113,74 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             </table>
           </div>
 
-          {(allowMultiSelect || allowProceedEmpty) && (
-            <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2">
-                {allowProceedEmpty && onProceedWithoutFile && (
-                  <button
-                    type="button"
-                    onClick={() => onProceedWithoutFile()}
-                    className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider cursor-pointer"
-                    title="Create announcement gate now and attach files later"
-                  >
-                    Proceed Without File
-                  </button>
-                )}
-                {allowMultiSelect && (
-                  <span className="text-xs font-bold text-slate-600">
-                    {selectedFiles.length > 0 ? (
-                      <>
-                        <span className="font-black text-blue-700">{selectedFiles.length}</span>{' '}
-                        file{selectedFiles.length === 1 ? '' : 's'} checked for rotation
-                      </>
-                    ) : (
-                      'Check multiple files for rotation, or click Select on one.'
-                    )}
-                  </span>
-                )}
-                {allowMultiSelect && selectedFiles.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedFiles([])}
-                    className="text-xs font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
+          <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2">
+              {allowProceedEmpty && onProceedWithoutFile && (
                 <button
                   type="button"
-                  onClick={onClose}
-                  className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+                  onClick={() => onProceedWithoutFile()}
+                  className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+                  title="Create announcement gate now and attach files later"
                 >
-                  Cancel
+                  Proceed Without File
                 </button>
-                {allowMultiSelect && onSelectMultipleFiles && (
-                  <button
-                    type="button"
-                    disabled={selectedFiles.length === 0}
-                    onClick={() => onSelectMultipleFiles(selectedFiles)}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                  >
-                    <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>Use Selected ({selectedFiles.length})</span>
-                  </button>
+              )}
+              <span className="text-xs font-bold text-slate-600">
+                {selectedFiles.length > 0 ? (
+                  allowMultiSelect ? (
+                    <>
+                      <span className="font-black text-blue-700">{selectedFiles.length}</span>{' '}
+                      file{selectedFiles.length === 1 ? '' : 's'} checked for rotation
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-black text-blue-700">1</span> file checked:{' '}
+                      <span className="font-mono text-slate-800">{selectedFiles[0].name}</span>
+                    </>
+                  )
+                ) : allowMultiSelect ? (
+                  'Check one or more files, then click Use Selected.'
+                ) : (
+                  'Check a file, then click Use Selected.'
                 )}
-              </div>
+              </span>
+              {selectedFiles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedFiles([])}
+                  className="text-xs font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
             </div>
-          )}
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={selectedFiles.length === 0}
+                onClick={() => {
+                  if (selectedFiles.length === 0) return;
+                  if (allowMultiSelect && onSelectMultipleFiles) {
+                    onSelectMultipleFiles(selectedFiles);
+                  } else {
+                    onSelectFile(selectedFiles[0]);
+                  }
+                }}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>Use Selected ({selectedFiles.length})</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

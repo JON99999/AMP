@@ -54,6 +54,7 @@ export interface CopyEditorModalOpenState {
   initialFileName?: string;
   sourceFileToCopy?: string;
   initialReadTime?: string;
+  initialIsAutoReadTime?: boolean;
   targetGateId?: string | null;
   targetGateIndex?: number;
   targetItemIndex?: number;

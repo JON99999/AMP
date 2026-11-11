@@ -53,6 +53,7 @@ export interface CopyEditorModalProps {
   initialFileName?: string;
   sourceFileToCopy?: string;
   initialReadTime?: string;
+  initialIsAutoReadTime?: boolean;
   suggestedBaseName?: string;
   isDriveActive: boolean;
   existingFileNames: string[];
@@ -69,6 +70,7 @@ export interface CopyEditorModalProps {
     path?: string;
     size?: string;
     approximateReadTime: string;
+    isAutoReadTime?: boolean;
     pairedBackupAudioFile?: string;
     doNotAttachBackup?: boolean;
     adoptNewFile?: boolean;
@@ -118,6 +120,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   initialFileName,
   sourceFileToCopy,
   initialReadTime,
+  initialIsAutoReadTime,
   suggestedBaseName,
   isDriveActive,
   existingFileNames,
@@ -141,6 +144,9 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   );
 
   const [fileNameStem, setFileNameStem] = useState('');
+  const [initialSuggestedStem, setInitialSuggestedStem] = useState('');
+  const [hasEditedFileName, setHasEditedFileName] = useState(false);
+  const [confirmDefaultNamePrompt, setConfirmDefaultNamePrompt] = useState(false);
   const [bodyText, setBodyText] = useState('');
   const [plainWordStats, setPlainWordStats] = useState(() =>
     calculateLiveReadWordStats('')
@@ -157,6 +163,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   const [manualReadTime, setManualReadTime] = useState('');
   const [nonTextPreviewUrl, setNonTextPreviewUrl] = useState('');
   const [adoptNewSplitFile, setAdoptNewSplitFile] = useState<boolean>(true);
+  const fileNameInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentSessionKey = isOpen
     ? `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseName || ''}`
@@ -221,6 +228,9 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     setPreviewingAudioFile(null);
   }, []);
 
+  const initialIsAutoReadTimeRef = useRef<boolean | undefined>(initialIsAutoReadTime);
+  initialIsAutoReadTimeRef.current = initialIsAutoReadTime;
+
   const populateRichEditorDom = useCallback(
     (rawMarkdownText: string, initReadTimeClean?: string, sessionKeyToCommit?: string | null) => {
       const cleaned = stripHtmlComments(rawMarkdownText || '');
@@ -230,7 +240,17 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       setPlainWordStats(initialStats);
       if (initReadTimeClean !== undefined) {
         const normalizedInit = normalizeReadTimeDisplay(initReadTimeClean);
-        if (!normalizedInit || normalizedInit === initialStats.formattedReadTime || normalizedInit === '0m00s' || normalizedInit === '00 min 00 sec') {
+        const explicitAuto = initialIsAutoReadTimeRef.current;
+        if (explicitAuto === false && normalizedInit && normalizedInit !== '0m00s' && normalizedInit !== '00 min 00 sec') {
+          setAutoApplyReadTime(false);
+          setManualReadTime(normalizedInit);
+        } else if (
+          explicitAuto === true ||
+          !normalizedInit ||
+          normalizedInit === initialStats.formattedReadTime ||
+          normalizedInit === '0m00s' ||
+          normalizedInit === '00 min 00 sec'
+        ) {
           setAutoApplyReadTime(true);
           setManualReadTime(initialStats.formattedReadTime);
         } else {
@@ -253,6 +273,19 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       editorRef.current.innerHTML = markdownTxtToEditableHtml(loadedInitialTextRef.current);
     }
   }, [isSessionLoaded, isNonTextCopyMode, loadedSessionKey]);
+
+  useEffect(() => {
+    if (
+      isSessionLoaded &&
+      !isEditingExisting &&
+      !sourceFileToCopy &&
+      initialSuggestedStem &&
+      fileNameInputRef.current
+    ) {
+      fileNameInputRef.current.focus();
+      fileNameInputRef.current.select();
+    }
+  }, [isSessionLoaded, isEditingExisting, sourceFileToCopy, initialSuggestedStem]);
 
   const updateLightweightWordStats = useCallback(() => {
     if (!editorRef.current) return;
@@ -313,6 +346,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     const activeSessionKey = `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseNameRef.current || ''}`;
     setErrorMsg(null);
     setOverwritePromptName(null);
+    setConfirmDefaultNamePrompt(false);
     setNonTextPreviewUrl('');
     setShowMarkdown(false);
     setCopiedMarkdown(false);
@@ -343,16 +377,30 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     }
 
     if (fileToLoad && fileToLoad.trim()) {
+      setInitialSuggestedStem('');
+      setHasEditedFileName(true);
       const cleanStem = normalizeStem(fileToLoad);
       if (sourceFileToCopy) {
-        setFileNameStem(`Copy of  ${cleanStem}`);
+        const copyExt = isNonTextCopyMode ? sourceExt : '.txt';
+        const lowerSet = new Set(existingFileNamesRef.current.map(n => n.toLowerCase()));
+        const baseCopyPrefix = cleanStem.replace(/\s*\(\d+\)$/, '');
+        const firstCandidate = /^Copy of\s+/i.test(baseCopyPrefix)
+          ? baseCopyPrefix.replace(/^Copy of\s+/i, 'Copy of ')
+          : `Copy of ${cleanStem}`;
+        let nextStem = firstCandidate;
+        let copyNum = 2;
+        while (lowerSet.has(`${nextStem}${copyExt}`.toLowerCase())) {
+          nextStem = `${firstCandidate} (${copyNum})`;
+          copyNum += 1;
+        }
+        setFileNameStem(nextStem);
       } else {
         setFileNameStem(cleanStem);
       }
 
       const cleanInitRead = normalizeReadTimeDisplay(initialReadTime);
       setManualReadTime(cleanInitRead);
-      setAutoApplyReadTime(true);
+      setAutoApplyReadTime(initialIsAutoReadTimeRef.current !== false);
 
       if (isNonTextCopyMode) {
         setLoadingContent(true);
@@ -427,6 +475,8 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         ? normalizeStem(currentSuggested).replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim()
         : '';
       setFileNameStem(defaultStem);
+      setInitialSuggestedStem(defaultStem);
+      setHasEditedFileName(false);
       populateRichEditorDom('', '', activeSessionKey);
       setManualReadTime('0m00s');
       setAutoApplyReadTime(true);
@@ -1143,6 +1193,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           latestReadTime && latestReadTime !== '0:00' && latestReadTime !== '0m00s' && latestReadTime !== '00 min 00 sec'
             ? latestReadTime.replace(/^~/, '')
             : '',
+        isAutoReadTime: autoApplyReadTime,
         pairedBackupAudioFile,
         doNotAttachBackup: doNotAttachAudio,
         adoptNewFile: isSplittingToNewName ? adoptNewSplitFile : true
@@ -1159,7 +1210,14 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     }
   };
 
-  const handlePrimarySave = () => {
+  const isUneditedDefaultName =
+    !isEditingExisting &&
+    !sourceFileToCopy &&
+    Boolean(initialSuggestedStem) &&
+    !hasEditedFileName &&
+    cleanStemWithoutExt === initialSuggestedStem;
+
+  const handlePrimarySave = (bypassDefaultNameConfirm = false) => {
     if (!finalFileName) {
       setErrorMsg(`Please enter a filename for the ${targetExtension} file.`);
       return;
@@ -1179,6 +1237,11 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       setErrorMsg('Please enter live read copy text before saving.');
       return;
     }
+    if (isUneditedDefaultName && !bypassDefaultNameConfirm && !confirmDefaultNamePrompt) {
+      setConfirmDefaultNamePrompt(true);
+      return;
+    }
+    setConfirmDefaultNamePrompt(false);
     if (isSameAsInitial) {
       executeSaveText(finalFileName, latestBody, true);
       return;
@@ -1191,15 +1254,28 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   };
 
   const handleSaveAsNewCopy = () => {
-    const baseClean = cleanStemWithoutExt.replace(/-copy(-\d+)?$/i, '');
-    let candidateNum = 2;
-    let candidateName = `${baseClean}-v${candidateNum}${targetExtension}`;
     const lowerSet = new Set(existingFileNames.map(n => n.toLowerCase()));
-    while (lowerSet.has(candidateName.toLowerCase())) {
-      candidateNum += 1;
-      candidateName = `${baseClean}-v${candidateNum}${targetExtension}`;
+    if (/^Copy of\s+/i.test(cleanStemWithoutExt)) {
+      const baseCopy = cleanStemWithoutExt.replace(/\s*\(\d+\)$/, '');
+      let copyNum = 2;
+      let candidateName = `${baseCopy} (${copyNum})${targetExtension}`;
+      while (lowerSet.has(candidateName.toLowerCase())) {
+        copyNum += 1;
+        candidateName = `${baseCopy} (${copyNum})${targetExtension}`;
+      }
+      setFileNameStem(candidateName.replace(escapedExtRegex, ''));
+    } else {
+      const baseClean = cleanStemWithoutExt.replace(/-copy(-\d+)?$/i, '');
+      let candidateNum = 2;
+      let candidateName = `${baseClean}-v${candidateNum}${targetExtension}`;
+      while (lowerSet.has(candidateName.toLowerCase())) {
+        candidateNum += 1;
+        candidateName = `${baseClean}-v${candidateNum}${targetExtension}`;
+      }
+      setFileNameStem(candidateName.replace(escapedExtRegex, ''));
     }
-    setFileNameStem(candidateName.replace(escapedExtRegex, ''));
+    setHasEditedFileName(true);
+    setConfirmDefaultNamePrompt(false);
     setAdoptNewSplitFile(true);
     setOverwritePromptName(null);
   };
@@ -1357,15 +1433,33 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           {/* Filename & Read Time Row */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
             <div className={cn(isNonTextCopyMode ? "sm:col-span-12" : "sm:col-span-7", "space-y-1")}>
-              <label className="text-xs font-black text-slate-600 uppercase tracking-wider block">
-                Filename ({targetExtension})
-              </label>
-              <div className="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-black text-slate-600 uppercase tracking-wider block">
+                  Filename ({targetExtension})
+                </label>
+                {isUneditedDefaultName && (
+                  <span
+                    className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded"
+                    title="Pre-filled from announcement name — edit filename or confirm on save"
+                  >
+                    Default name
+                  </span>
+                )}
+              </div>
+              <div
+                className={cn(
+                  "flex items-center border rounded-lg bg-white overflow-hidden focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500",
+                  isUneditedDefaultName ? "border-amber-400" : "border-slate-300"
+                )}
+              >
                 <input
+                  ref={fileNameInputRef}
                   type="text"
                   value={fileNameStem}
                   onChange={e => {
                     setFileNameStem(e.target.value);
+                    setHasEditedFileName(true);
+                    setConfirmDefaultNamePrompt(false);
                     setOverwritePromptName(null);
                   }}
                   placeholder="e.g. underwriting-community-garden"
@@ -1384,23 +1478,13 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                     Approx. Read Time
                   </label>
                   <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 whitespace-nowrap">
-                    {(!autoApplyReadTime ||
-                      (manualReadTime.trim() &&
-                        normalizeReadTimeDisplay(manualReadTime.trim()) !== stats.formattedReadTime)) && (
-                      <span
-                        className="text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded font-mono text-[11px]"
-                        title={`Calculated approximate read time at ${getLiveReadWpm()} words per minute`}
-                      >
-                        Est: ~{stats.formattedReadTime}
-                      </span>
-                    )}
                     <span>
                       {stats.wordCount} {stats.wordCount === 1 ? 'word' : 'words'}
                     </span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2.5">
-                  <div className="flex-1 flex items-center gap-1.5 border border-slate-300 rounded-lg bg-white px-2.5 py-1.5 focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="w-24 shrink-0 flex items-center gap-1.5 border border-slate-300 rounded-lg bg-white px-2 py-1.5 focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
                     <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     <input
                       type="text"
@@ -1439,6 +1523,12 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                     />
                     <span>Auto</span>
                   </label>
+                  <span
+                    className="text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-1 rounded font-mono font-bold text-[11px] shrink-0 select-none"
+                    title={`Calculated approximate read time at ${getLiveReadWpm()} words per minute`}
+                  >
+                    Est: ~{stats.formattedReadTime}
+                  </span>
                 </div>
               </div>
             )}
@@ -1975,6 +2065,44 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             </>
           )}
 
+          {/* Default Filename Unedited Confirmation Prompt (#89) */}
+          {confirmDefaultNamePrompt && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  Filename is still set to the default announcement name &quot;{finalFileName}&quot;. Keep this default filename or edit it first?
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmDefaultNamePrompt(false);
+                    if (fileNameInputRef.current) {
+                      fileNameInputRef.current.focus();
+                      fileNameInputRef.current.select();
+                    }
+                  }}
+                  className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase cursor-pointer"
+                >
+                  Edit Filename
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHasEditedFileName(true);
+                    setConfirmDefaultNamePrompt(false);
+                    handlePrimarySave(true);
+                  }}
+                  className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase cursor-pointer"
+                >
+                  Keep Default &amp; Save
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Overwrite Confirmation Prompt */}
           {overwritePromptName && (
             <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -2045,7 +2173,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             <button
               type="button"
               disabled={isSaving || loadingContent || (!isSessionLoaded && !isNonTextCopyMode) || !finalFileName}
-              onClick={handlePrimarySave}
+              onClick={() => handlePrimarySave(false)}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
             >
               {isSaving ? (

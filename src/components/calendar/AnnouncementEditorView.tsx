@@ -132,6 +132,16 @@ export function AnnouncementEditorView({
     confirmLabel?: string;
     onConfirm: () => void;
   } | null>(null);
+  const [expandedInactivatedMediaGateIds, setExpandedInactivatedMediaGateIds] = React.useState<Set<string>>(
+    () => new Set()
+  );
+  const [inactivateLastMediaPromptState, setInactivateLastMediaPromptState] = React.useState<{
+    gate: TimeGatedMp3;
+    gateNumber: number;
+    itemIndex: number;
+    fileName: string;
+    playCount: number;
+  } | null>(null);
 
   // Track gate IDs that were active when the editor opened (or added/reactivated during this edit session)
   // so changing an active gate's End date into the past does not abruptly drop it into Past / Inactivated Gates mid-edit (#71).
@@ -655,6 +665,58 @@ export function AnnouncementEditorView({
                     });
                   };
 
+                  const applyInactivateSingleMediaItem = (targetGate: TimeGatedMp3, targetMIdx: number) => {
+                    const currentNowIso = getCurrentDatetimeLocal();
+                    const updated = currentMp3s.map(m => {
+                      if (m.id !== targetGate.id) return m;
+                      const existingItems = getGateMediaItems(m);
+                      const nextItems = existingItems.map((mi, iIdx) =>
+                        iIdx === targetMIdx
+                          ? { ...mi, inactivated: true, inactivatedAt: currentNowIso }
+                          : mi
+                      );
+                      const hasRemainingActive = nextItems.some(mi => !mi.inactivated);
+                      return {
+                        ...m,
+                        mediaItems: hasRemainingActive ? nextItems : [{ mp3Url: '' }, ...nextItems],
+                      };
+                    });
+                    setExpandedInactivatedMediaGateIds(prev => {
+                      const next = new Set(prev);
+                      next.add(targetGate.id);
+                      return next;
+                    });
+                    setFormData({
+                      ...formData,
+                      timeGatedMp3s: updated,
+                    });
+                    setInactivateLastMediaPromptState(null);
+                  };
+
+                  const handleReactivateMediaItem = (targetGate: TimeGatedMp3, targetMIdx: number) => {
+                    const updated = currentMp3s.map(m => {
+                      if (m.id !== targetGate.id) return m;
+                      const existingItems = getGateMediaItems(m);
+                      const restoredItems = existingItems
+                        .map((mi, iIdx) => {
+                          if (iIdx !== targetMIdx) return mi;
+                          const nextMi = { ...mi };
+                          delete nextMi.inactivated;
+                          delete nextMi.inactivatedAt;
+                          return nextMi;
+                        })
+                        .filter(mi => Boolean(mi.mp3Url && mi.mp3Url.trim()) || Boolean(mi.inactivated));
+                      return {
+                        ...m,
+                        mediaItems: restoredItems.length > 0 ? restoredItems : [{ mp3Url: '' }],
+                      };
+                    });
+                    setFormData({
+                      ...formData,
+                      timeGatedMp3s: updated,
+                    });
+                  };
+
                   const countMissedSlotsDuringInactivation = (gate: TimeGatedMp3): number => {
                     const currentNowIso = getCurrentDatetimeLocal();
                     const inactIso =
@@ -842,6 +904,18 @@ export function AnnouncementEditorView({
                     const hasMissingStart =
                       validation.missingStartIds?.has(item.id) || !item.startDate || item.startDate.trim() === '';
                     const gateMediaItems = getGateMediaItems(item);
+                    const indexedActiveMediaItems = gateMediaItems
+                      .map((mItem, mIdx) => ({ mItem, mIdx }))
+                      .filter(entry => !entry.mItem.inactivated);
+                    const indexedInactivatedMediaItems = gateMediaItems
+                      .map((mItem, mIdx) => ({ mItem, mIdx }))
+                      .filter(entry => Boolean(entry.mItem.inactivated));
+                    const activeRowsToRender =
+                      indexedActiveMediaItems.length > 0
+                        ? indexedActiveMediaItems
+                        : [{ mItem: { mp3Url: '' } as TimeGatedMediaItem, mIdx: gateMediaItems.length }];
+                    const totalActiveInGate = activeRowsToRender.length;
+                    const isInactivatedMediaExpanded = expandedInactivatedMediaGateIds.has(item.id);
                     const gateAssessment = getGateAssessment(item);
                     const gatePlayCount = gateAssessment.gateScore.played;
                     const isManuallyInactivated = Boolean(item.inactivated);
@@ -1109,6 +1183,16 @@ export function AnnouncementEditorView({
                                       placeholder="hh:mm AM"
                                     />
                                   </div>
+                                  {!isItemExpired && !item.endDate && formData.endDate && (
+                                    <button
+                                      type="button"
+                                      onClick={() => updateGateEndDate(formData.endDate)}
+                                      className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider rounded border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors cursor-pointer shrink-0 select-none"
+                                      title={`Fill with parent Announcement End date (${formatDatetime12(formData.endDate)})`}
+                                    >
+                                      Ann. End
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -1196,6 +1280,30 @@ export function AnnouncementEditorView({
                           </div>
                         )}
 
+                        {/* Consolidated Gate Warnings & Errors Strip Directly Below Header (#81) */}
+                        {(itemErrors.length > 0 || itemWarnings.length > 0) && (
+                          <div className="px-2.5 py-1.5 bg-amber-50/90 border-b border-amber-200 space-y-1">
+                            {itemErrors.map((err, errIdx) => (
+                              <div
+                                key={`err-${errIdx}`}
+                                className="flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-0.5"
+                              >
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-500" />
+                                <span>{err}</span>
+                              </div>
+                            ))}
+                            {itemWarnings.map((warn, warnIdx) => (
+                              <div
+                                key={`warn-${warnIdx}`}
+                                className="flex items-center gap-1.5 text-xs font-bold text-amber-800 bg-amber-100/70 border border-amber-300 rounded px-2 py-0.5"
+                              >
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                                <span>{warn}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         <div
                           className={cn(
                             'px-2.5 py-0.5 text-[11px] font-bold text-slate-600 border-b border-slate-200 select-none flex items-center justify-between',
@@ -1212,15 +1320,12 @@ export function AnnouncementEditorView({
 
                         <div className="p-2 space-y-1.5">
                           <div className="border border-grid-active rounded-lg overflow-hidden divide-y divide-grid-active bg-white shadow-2xs">
-                            {(gateMediaItems.length > 0
-                              ? gateMediaItems
-                              : [{ mp3Url: '' } as TimeGatedMediaItem]
-                            ).map((mItem, mIdx) => {
+                            {activeRowsToRender.map(({ mItem, mIdx }, activePos) => {
                               const hasMissingItemFile = !mItem.mp3Url || mItem.mp3Url.trim() === '';
                               const url = (mItem.mp3Url || '').toLowerCase();
                               const isItemAudio = isAudioFile(url);
                               const isItemScriptExt = isScriptFile(url);
-                              const totalInGate = gateMediaItems.length;
+                              const totalInGate = totalActiveInGate;
                               const itemTrackAudit =
                                 gateAssessment.itemAudits[mIdx] ||
                                 calculateGatedTrackAudit(
@@ -1239,7 +1344,7 @@ export function AnnouncementEditorView({
                                   key={`${item.id}-${mIdx}`}
                                   className={cn(
                                     'px-2 py-1.5 space-y-1 border-l-4 transition-colors',
-                                    mIdx % 2 === 0 ? 'bg-white' : 'bg-slate-205',
+                                    activePos % 2 === 0 ? 'bg-white' : 'bg-slate-205',
                                     hasMissingItemFile
                                       ? 'border-l-amber-500 bg-amber-50/30'
                                       : isItemAudio
@@ -1253,11 +1358,13 @@ export function AnnouncementEditorView({
                                         <div className="flex items-center gap-0.5 shrink-0">
                                           <button
                                             type="button"
-                                            disabled={mIdx === 0}
+                                            disabled={activePos === 0}
                                             onClick={() => {
+                                              const prevEntry = activeRowsToRender[activePos - 1];
+                                              if (!prevEntry) return;
                                               const nextItems = [...gateMediaItems];
-                                              const tmp = nextItems[mIdx - 1];
-                                              nextItems[mIdx - 1] = nextItems[mIdx];
+                                              const tmp = nextItems[prevEntry.mIdx];
+                                              nextItems[prevEntry.mIdx] = nextItems[mIdx];
                                               nextItems[mIdx] = tmp;
                                               const updated = currentMp3s.map(m =>
                                                 m.id === item.id ? { ...m, mediaItems: nextItems } : m
@@ -1271,11 +1378,13 @@ export function AnnouncementEditorView({
                                           </button>
                                           <button
                                             type="button"
-                                            disabled={mIdx === totalInGate - 1}
+                                            disabled={activePos === totalInGate - 1}
                                             onClick={() => {
+                                              const nextEntry = activeRowsToRender[activePos + 1];
+                                              if (!nextEntry) return;
                                               const nextItems = [...gateMediaItems];
-                                              const tmp = nextItems[mIdx + 1];
-                                              nextItems[mIdx + 1] = nextItems[mIdx];
+                                              const tmp = nextItems[nextEntry.mIdx];
+                                              nextItems[nextEntry.mIdx] = nextItems[mIdx];
                                               nextItems[mIdx] = tmp;
                                               const updated = currentMp3s.map(m =>
                                                 m.id === item.id ? { ...m, mediaItems: nextItems } : m
@@ -1298,7 +1407,7 @@ export function AnnouncementEditorView({
                                           mItem.mp3Url ? getFilenameFromUrlOrPath(mItem.mp3Url) : 'No file selected'
                                         }
                                       >
-                                        {totalInGate > 1 ? `(${mIdx + 1}/${totalInGate}) ` : ''}
+                                        {totalInGate > 1 ? `(${activePos + 1}/${totalInGate}) ` : ''}
                                         {mItem.mp3Url ? (
                                           getFilenameFromUrlOrPath(mItem.mp3Url)
                                         ) : (
@@ -1382,7 +1491,11 @@ export function AnnouncementEditorView({
                                                           ...m,
                                                           mediaItems: getGateMediaItems(m).map((mi, iIdx) =>
                                                             iIdx === mIdx
-                                                              ? { ...mi, approximateReadTime: nextApprox }
+                                                              ? {
+                                                                  ...mi,
+                                                                  approximateReadTime: nextApprox,
+                                                                  isAutoReadTime: nextApprox ? false : true,
+                                                                }
                                                               : mi
                                                           ),
                                                         }
@@ -1408,7 +1521,11 @@ export function AnnouncementEditorView({
                                                           ...m,
                                                           mediaItems: getGateMediaItems(m).map((mi, iIdx) =>
                                                             iIdx === mIdx
-                                                              ? { ...mi, approximateReadTime: nextApprox }
+                                                              ? {
+                                                                  ...mi,
+                                                                  approximateReadTime: nextApprox,
+                                                                  isAutoReadTime: nextApprox ? false : true,
+                                                                }
                                                               : mi
                                                           ),
                                                         }
@@ -1468,6 +1585,7 @@ export function AnnouncementEditorView({
                                                       isOpen: true,
                                                       initialFileName: getFilenameFromUrlOrPath(mItem.mp3Url),
                                                       initialReadTime: mItem.approximateReadTime,
+                                                      initialIsAutoReadTime: mItem.isAutoReadTime,
                                                       targetGateId: item.id,
                                                       targetGateIndex: idx,
                                                       targetItemIndex: mIdx,
@@ -1521,6 +1639,7 @@ export function AnnouncementEditorView({
                                                 initialFileName: undefined,
                                                 sourceFileToCopy: undefined,
                                                 initialReadTime: mItem.approximateReadTime,
+                                                initialIsAutoReadTime: mItem.isAutoReadTime,
                                                 targetGateId: item.id,
                                                 targetGateIndex: idx,
                                                 targetItemIndex: mIdx,
@@ -1575,9 +1694,27 @@ export function AnnouncementEditorView({
                                                 {showRowInactivate && (
                                                   <button
                                                     type="button"
-                                                    onClick={() => handleInactivateGate(item)}
+                                                    onClick={() => {
+                                                      const fileNameLabel = mItem.mp3Url
+                                                        ? getFilenameFromUrlOrPath(mItem.mp3Url)
+                                                        : 'Media File';
+                                                      const populatedActiveCount = indexedActiveMediaItems.filter(
+                                                        x => Boolean(x.mItem.mp3Url && x.mItem.mp3Url.trim())
+                                                      ).length;
+                                                      if (populatedActiveCount > 1) {
+                                                        applyInactivateSingleMediaItem(item, mIdx);
+                                                      } else {
+                                                        setInactivateLastMediaPromptState({
+                                                          gate: item,
+                                                          gateNumber: idx + 1,
+                                                          itemIndex: mIdx,
+                                                          fileName: fileNameLabel,
+                                                          playCount: itemTrackAudit.totalPlays,
+                                                        });
+                                                      }
+                                                    }}
                                                     className="px-1.5 py-px bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
-                                                    title="Inactivate this gate now and move it to Past / Inactivated Gates (preserves broadcast history)"
+                                                    title="Inactivate this media file and move it to Past / Inactivated Media inside this gate (preserves broadcast history)"
                                                   >
                                                     <Archive className="w-3.5 h-3.5 text-amber-700" />
                                                     <span className="mp3-btn-text">Inactivate</span>
@@ -1594,7 +1731,7 @@ export function AnnouncementEditorView({
                                                       setGateDeleteConfirmState({
                                                         title:
                                                           totalInGate > 1
-                                                            ? `Remove Media Row (${mIdx + 1}/${totalInGate})`
+                                                            ? `Remove Media Row (${activePos + 1}/${totalInGate})`
                                                             : `Clear Media Slot in Gate #${idx + 1}`,
                                                         message:
                                                           totalInGate > 1
@@ -1614,9 +1751,18 @@ export function AnnouncementEditorView({
                                                               timeGatedMp3s: updated,
                                                             });
                                                           } else {
+                                                            const preservedInactivated = gateMediaItems.filter(
+                                                              mi => Boolean(mi.inactivated)
+                                                            );
                                                             const updated = currentMp3s.map(m =>
                                                               m.id === item.id
-                                                                ? { ...m, mediaItems: [{ mp3Url: '' }] }
+                                                                ? {
+                                                                    ...m,
+                                                                    mediaItems: [
+                                                                      { mp3Url: '' },
+                                                                      ...preservedInactivated,
+                                                                    ],
+                                                                  }
                                                                 : m
                                                             );
                                                             setFormData({
@@ -1814,56 +1960,206 @@ export function AnnouncementEditorView({
                                 </div>
                               );
                             })}
+                            {/* Compact "No file selected"-style Add Row for Multi-File Rotation (#82) */}
+                            {!isItemExpired &&
+                              indexedActiveMediaItems.length > 0 &&
+                              indexedActiveMediaItems.every(x => Boolean(x.mItem.mp3Url && x.mItem.mp3Url.trim())) && (
+                                <div className="px-2 py-1 bg-slate-50/80 border-l-4 border-l-slate-300 flex items-center justify-between gap-1.5 flex-nowrap min-w-0">
+                                  <span className="text-xs italic text-slate-400 font-sans font-medium truncate min-w-0 select-none">
+                                    No file selected — add file to rotate (optional)
+                                  </span>
+                                  <div className="flex items-center gap-0 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCopyEditorState({
+                                          isOpen: true,
+                                          initialFileName: undefined,
+                                          sourceFileToCopy: undefined,
+                                          initialReadTime: undefined,
+                                          targetGateId: item.id,
+                                          targetGateIndex: idx,
+                                          targetItemIndex: gateMediaItems.length,
+                                          targetAnnouncementId: editingId || formData.id || null,
+                                          fromPicker: false,
+                                        });
+                                      }}
+                                      className="px-1.5 py-px text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none border min-w-[26px] bg-blue-600 hover:bg-blue-700 text-white border-blue-700 rounded-l rounded-r-none border-r-0"
+                                      title="Create new .txt live read and add to this gate's rotation"
+                                    >
+                                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                                      <span className="mp3-btn-text">Create Live Read</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setPickerTarget('addGateFile');
+                                        setPickerMp3Id(item.id);
+                                        setPickerItemIndex(null);
+                                        setSearchQuery('');
+                                        setIsPickerOpen(true);
+                                      }}
+                                      className="px-1.5 py-px bg-slate-900 hover:bg-slate-800 text-white border border-slate-900 rounded-r rounded-l-none text-[11px] font-black uppercase flex items-center justify-center gap-0.5 transition-all shadow-xs cursor-pointer h-6 select-none min-w-[26px]"
+                                      title="Choose one or more files to add to this gate's rotation"
+                                    >
+                                      <FolderOpen className="w-3.5 h-3.5" />
+                                      <span className="mp3-btn-text">Choose</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
                           </div>
 
-                          {!isItemExpired && (
-                            <div className="pt-0.5 flex items-center justify-start">
+                          {/* Collapsible Past / Inactivated Media Subsection Inside Gate (#86) */}
+                          {indexedInactivatedMediaItems.length > 0 && (
+                            <div className="border border-slate-300 rounded-lg overflow-hidden bg-slate-100/80">
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setPickerTarget('addGateFile');
-                                  setPickerMp3Id(item.id);
-                                  setPickerItemIndex(null);
-                                  setSearchQuery('');
-                                  setIsPickerOpen(true);
+                                  setExpandedInactivatedMediaGateIds(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(item.id)) {
+                                      next.delete(item.id);
+                                    } else {
+                                      next.add(item.id);
+                                    }
+                                    return next;
+                                  });
                                 }}
-                                className="px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded text-[11px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
-                                title="Add another file to auto-rotate in this time gate"
+                                className="w-full px-2 py-1 flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-colors cursor-pointer select-none"
                               >
-                                <Plus className="w-3 h-3 stroke-[3]" />
-                                Add File
+                                <span className="flex items-center gap-1">
+                                  {isInactivatedMediaExpanded ? (
+                                    <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                                  ) : (
+                                    <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                                  )}
+                                  <Archive className="w-3 h-3 text-slate-500" />
+                                  <span>
+                                    Past / Inactivated Media ({indexedInactivatedMediaItems.length})
+                                  </span>
+                                </span>
+                                <span className="text-[10px] font-bold text-slate-500 normal-case tracking-normal">
+                                  {isInactivatedMediaExpanded ? 'Hide inactivated files' : 'Show inactivated files'}
+                                </span>
                               </button>
+
+                              {isInactivatedMediaExpanded && (
+                                <div className="divide-y divide-slate-200 border-t border-slate-300 bg-slate-50">
+                                  {indexedInactivatedMediaItems.map(({ mItem, mIdx }) => {
+                                    const fileName = mItem.mp3Url
+                                      ? getFilenameFromUrlOrPath(mItem.mp3Url)
+                                      : 'Inactivated Media';
+                                    const isItemAudio = isAudioFile(fileName.toLowerCase());
+                                    const itemAudit =
+                                      gateAssessment.itemAudits[mIdx] ||
+                                      calculateGatedTrackAudit(
+                                        formData.id || '',
+                                        mItem.mp3Url || '',
+                                        logs,
+                                        {
+                                          gate: item,
+                                          announcement: formData,
+                                          itemIndex: mIdx,
+                                        }
+                                      );
+                                    return (
+                                      <div
+                                        key={`inact-media-${item.id}-${mIdx}`}
+                                        className="px-2 py-1.5 flex items-center justify-between gap-2 min-w-0"
+                                      >
+                                        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                          <span
+                                            className="text-xs font-sans font-bold text-slate-600 truncate"
+                                            title={fileName}
+                                          >
+                                            {fileName}
+                                          </span>
+                                          <span
+                                            className="text-[10px] font-bold px-1.5 py-px rounded bg-amber-200/80 text-amber-900 border border-amber-300 shrink-0"
+                                            title={
+                                              mItem.inactivatedAt
+                                                ? `Inactivated at ${formatDatetime12(formatToDatetimeLocal(mItem.inactivatedAt))}`
+                                                : 'Inactivated media file'
+                                            }
+                                          >
+                                            Inactivated
+                                          </span>
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          {itemAudit.totalPlays > 0 && (
+                                            <span
+                                              className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-300 select-none"
+                                              title={`Protected broadcast history (${itemAudit.totalPlays} ${itemAudit.totalPlays === 1 ? 'play' : 'plays'})`}
+                                            >
+                                              Protected ({itemAudit.totalPlays}{' '}
+                                              {itemAudit.totalPlays === 1 ? 'play' : 'plays'})
+                                            </span>
+                                          )}
+
+                                          {mItem.mp3Url &&
+                                            (isItemAudio ? (
+                                              <button
+                                                type="button"
+                                                onClick={() => togglePreview(mItem.mp3Url)}
+                                                className={cn(
+                                                  'flex items-center justify-center gap-0.5 text-[10px] font-black uppercase px-1.5 py-0.5 border rounded shadow-2xs transition-all cursor-pointer select-none',
+                                                  previewUrl === mItem.mp3Url
+                                                    ? 'bg-slate-900 text-white border-slate-900'
+                                                    : 'bg-white text-blue-600 border-slate-300 hover:bg-slate-50'
+                                                )}
+                                                title={previewUrl === mItem.mp3Url ? 'Stop preview' : 'Preview audio'}
+                                              >
+                                                {previewUrl === mItem.mp3Url ? (
+                                                  <Square className="w-3 h-3 fill-current" />
+                                                ) : (
+                                                  <Play className="w-3 h-3 fill-current" />
+                                                )}
+                                                <span>{previewUrl === mItem.mp3Url ? 'Stop' : 'Preview'}</span>
+                                              </button>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setPreviewScriptBackupUrl(mItem.backupMp3Url);
+                                                  setPreviewScriptOrigin({
+                                                    announcementId: editingId || formData.id || null,
+                                                    gateId: item.id,
+                                                    gateIndex: idx,
+                                                    itemIndex: mIdx,
+                                                    fromPicker: false,
+                                                  });
+                                                  setPreviewScriptFromPicker(false);
+                                                  setPreviewScriptFile(mItem.mp3Url);
+                                                }}
+                                                className="flex items-center justify-center gap-0.5 text-[10px] font-black uppercase px-1.5 py-0.5 border rounded shadow-2xs transition-all cursor-pointer select-none bg-white text-blue-600 border-slate-300 hover:bg-slate-50"
+                                                title="Preview script"
+                                              >
+                                                <Eye className="w-3 h-3" />
+                                                <span>Preview</span>
+                                              </button>
+                                            ))}
+
+                                          {!isItemExpired && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleReactivateMediaItem(item, mIdx)}
+                                              className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all cursor-pointer shadow-2xs select-none"
+                                              title="Restore this media file to active rotation in this gate"
+                                            >
+                                              <CheckCircle className="w-3 h-3" />
+                                              <span>Reactivate</span>
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )}
-
-                          {(() => {
-                            const bottomWarnings = itemWarnings;
-
-                            if (itemErrors.length === 0 && bottomWarnings.length === 0) return null;
-
-                            return (
-                              <div className="space-y-0.5 pt-0.5 border-t border-slate-100">
-                                {itemErrors.map((err, errIdx) => (
-                                  <div
-                                    key={errIdx}
-                                    className="flex items-center gap-1.5 text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded px-2 py-0.5"
-                                  >
-                                    <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-500" />
-                                    <span>{err}</span>
-                                  </div>
-                                ))}
-                                {bottomWarnings.map((warn, warnIdx) => (
-                                  <div
-                                    key={warnIdx}
-                                    className="flex items-center gap-1.5 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5"
-                                  >
-                                    <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-500" />
-                                    <span>{warn}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            );
-                          })()}
                         </div>
                       </div>
                     );
@@ -1968,6 +2264,109 @@ export function AnnouncementEditorView({
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                                 {gateDeleteConfirmState.confirmLabel || 'Delete'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {inactivateLastMediaPromptState && (
+                        <div
+                          className="fixed inset-0 z-[175] flex items-center justify-center p-4 bg-slate-950/60"
+                          onClick={() => setInactivateLastMediaPromptState(null)}
+                        >
+                          <div
+                            className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
+                                  <Archive className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                  <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
+                                    Inactivate Media File vs. Gate
+                                  </h4>
+                                  <p className="text-xs font-bold text-amber-800 truncate mt-1">
+                                    {inactivateLastMediaPromptState.fileName} ({inactivateLastMediaPromptState.playCount}{' '}
+                                    {inactivateLastMediaPromptState.playCount === 1 ? 'play' : 'plays'})
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setInactivateLastMediaPromptState(null)}
+                                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+                                title="Cancel"
+                              >
+                                <XCircle className="w-5 h-5" />
+                              </button>
+                            </div>
+
+                            <div className="p-4 space-y-3 text-xs text-slate-700 leading-relaxed">
+                              <p className="font-bold text-slate-800">
+                                <span className="font-mono">{inactivateLastMediaPromptState.fileName}</span> is the
+                                only active file in Gate #{inactivateLastMediaPromptState.gateNumber}. Would you like
+                                to inactivate only this media file (leaving Gate #
+                                {inactivateLastMediaPromptState.gateNumber} open for a replacement file) or inactivate
+                                the entire gate?
+                              </p>
+
+                              <div className="space-y-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    applyInactivateSingleMediaItem(
+                                      inactivateLastMediaPromptState.gate,
+                                      inactivateLastMediaPromptState.itemIndex
+                                    )
+                                  }
+                                  className="w-full text-left p-2.5 rounded-lg border border-blue-300 bg-blue-50/30 hover:border-blue-500 hover:bg-blue-50/70 transition-colors cursor-pointer space-y-0.5"
+                                >
+                                  <div className="font-black text-blue-950 uppercase tracking-wider flex items-center justify-between">
+                                    <span>1. Inactivate Media File Only</span>
+                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white">
+                                      Keep Gate Open
+                                    </span>
+                                  </div>
+                                  <p className="text-slate-600 font-medium">
+                                    Moves <span className="font-mono">{inactivateLastMediaPromptState.fileName}</span>{' '}
+                                    to Past / Inactivated Media inside Gate #{inactivateLastMediaPromptState.gateNumber}{' '}
+                                    and leaves an empty slot so you can choose a new file.
+                                  </p>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const targetGate = inactivateLastMediaPromptState.gate;
+                                    setInactivateLastMediaPromptState(null);
+                                    handleInactivateGate(targetGate);
+                                  }}
+                                  className="w-full text-left p-2.5 rounded-lg border border-amber-300 bg-amber-50/30 hover:border-amber-500 hover:bg-amber-50/70 transition-colors cursor-pointer space-y-0.5"
+                                >
+                                  <div className="font-black text-amber-950 uppercase tracking-wider flex items-center justify-between">
+                                    <span>2. Inactivate Entire Gate</span>
+                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-200 text-amber-950">
+                                      Archive Gate #{inactivateLastMediaPromptState.gateNumber}
+                                    </span>
+                                  </div>
+                                  <p className="text-slate-600 font-medium">
+                                    Inactivates Gate #{inactivateLastMediaPromptState.gateNumber} and moves the entire
+                                    gate to Past / Inactivated Gates.
+                                  </p>
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end">
+                              <button
+                                type="button"
+                                onClick={() => setInactivateLastMediaPromptState(null)}
+                                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+                              >
+                                Cancel
                               </button>
                             </div>
                           </div>

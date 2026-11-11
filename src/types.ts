@@ -16,6 +16,9 @@ export interface TimeGatedMediaItem {
   fileSize?: string;
   backupMp3Url?: string;
   approximateReadTime?: string;
+  isAutoReadTime?: boolean;
+  inactivated?: boolean;
+  inactivatedAt?: string;
 }
 
 export interface TimeGatedMp3 {
@@ -32,6 +35,7 @@ export interface TimeGatedMp3 {
   fileSize?: string;
   backupMp3Url?: string;
   approximateReadTime?: string;
+  isAutoReadTime?: boolean;
 }
 
 export interface ResolvedTimeGatedMp3 extends TimeGatedMediaItem {

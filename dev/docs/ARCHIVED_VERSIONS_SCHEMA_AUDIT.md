@@ -6,7 +6,15 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.5
+### Current Release: v0.20.6
+- **App Version**: `0.20.6`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.5**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Optional `TimeGatedMediaItem.isAutoReadTime` Field (`#77`)**: Added optional `isAutoReadTime?: boolean` on `TimeGatedMediaItem` and `TimeGatedMp3` (defaults to `true` when `Auto` read-time calculation is enabled, or `false` when manually overridden), allowing `migrateAnnouncementsPayload` and `POST /api/shows` to recalculate `approximateReadTime` across all `Auto` script items whenever `_meta.scheduleWindow.liveReadWpm` changes.
+  - **Overlapping Markdown Stripping (`#88`), WPM Input & `Est:` Layout (`#77`), Sequential `"Copy of ... (2)"` Naming & Picker Highlight (`#87`), and Default Filename Confirmation (`#89`)**: Application and editor improvements with full Schema v1 compatibility.
+
+### v0.20.5
 - **App Version**: `0.20.5`
 - **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
 - **Changes vs. v0.20.4**:

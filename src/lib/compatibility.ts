@@ -4,7 +4,7 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.5";
+export const CURRENT_APP_VERSION = "0.20.6";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 
@@ -732,15 +732,21 @@ export function estimateWpmReadTimeFromText(
   wpm: number = getLiveReadWpm()
 ): string {
   if (!rawText || typeof rawText !== 'string') return '';
-  const withoutComments = rawText
+  let cleaned = rawText
     .replace(/^\uFEFF/, '')
-    .replace(/<!--[\s\S]*?-->\r?\n?/g, '');
-  const plain = withoutComments
-    .replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1')
-    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
-    .replace(/__([^_\n]+)__/g, '$1')
-    .replace(/<u>([\s\S]+?)<\/u>/gi, '$1')
-    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1')
+    .replace(/<!--[\s\S]*?-->\r?\n?/g, '')
+    .replace(/<\/?u>/gi, '');
+  let prev = '';
+  while (prev !== cleaned) {
+    prev = cleaned;
+    cleaned = cleaned.replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1');
+    cleaned = cleaned.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+    cleaned = cleaned.replace(/__([^_\n]+)__/g, '$1');
+    cleaned = cleaned.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1');
+  }
+  const plain = cleaned
+    .replace(/\*+/g, '')
+    .replace(/_{2,}/g, '')
     .trim();
   if (!plain) return '';
   const words = plain.split(/\s+/).filter(Boolean);
@@ -874,6 +880,14 @@ export function migrateAnnouncementsPayload(
 ): { envelope: DataEnvelope<any[]>; data: any[] } {
   let rawList: any[] = [];
   let counter = existingCounter;
+  const priorEnvelopeWpm =
+    rawInput &&
+    typeof rawInput === 'object' &&
+    !Array.isArray(rawInput) &&
+    typeof rawInput._meta?.scheduleWindow?.liveReadWpm === 'number'
+      ? getLiveReadWpm(rawInput._meta.scheduleWindow)
+      : undefined;
+
   let existingWindow: ScheduleWindowConfig | undefined = overrideScheduleWindow
     ? setScheduleWindowConfig(overrideScheduleWindow)
     : undefined;
@@ -903,6 +917,7 @@ export function migrateAnnouncementsPayload(
     setUpNextPromoConfig(embeddedStationMeta.upNextPromo);
   }
 
+  const effectiveWpm = getLiveReadWpm(existingWindow);
   const isoNow = new Date().toISOString();
   const tz = getStationTimezone();
   const persistedRawList = rawList.filter(
@@ -938,17 +953,51 @@ export function migrateAnnouncementsPayload(
       parentItem?.approxReadTime ??
       '';
 
+    const rawIsAuto: boolean | undefined =
+      typeof mItem?.isAutoReadTime === 'boolean'
+        ? mItem.isAutoReadTime
+        : typeof gateItem?.isAutoReadTime === 'boolean'
+          ? gateItem.isAutoReadTime
+          : undefined;
+
     let finalApproxReadTime = isMissingApproxReadTime(rawApprox) ? '' : String(rawApprox).trim();
+    let finalIsAutoReadTime: boolean | undefined =
+      resolvedAssetType === 'script' ? rawIsAuto : undefined;
 
     if (
       resolvedAssetType === 'script' &&
-      !finalApproxReadTime &&
       (isReadableTextScriptTarget(rawUrl, resolvedAssetType) || hasInlineText)
     ) {
-      const readableText = resolveReadableTextForScriptSlot(rawUrl, mItem || gateItem, parentItem, scriptTextResolver);
-      const estimated = estimateWpmReadTimeFromText(readableText);
-      if (estimated) {
-        finalApproxReadTime = estimated;
+      if (rawIsAuto === true || !finalApproxReadTime) {
+        const readableText = resolveReadableTextForScriptSlot(rawUrl, mItem || gateItem, parentItem, scriptTextResolver);
+        const estimated = estimateWpmReadTimeFromText(readableText, effectiveWpm);
+        if (estimated) {
+          finalApproxReadTime = estimated;
+        }
+        finalIsAutoReadTime = true;
+      } else if (rawIsAuto === undefined && scriptTextResolver) {
+        const readableText = resolveReadableTextForScriptSlot(rawUrl, mItem || gateItem, parentItem, scriptTextResolver);
+        if (readableText) {
+          const cleanStored = finalApproxReadTime.replace(/^~\s*/, '').trim();
+          const estCurrent = estimateWpmReadTimeFromText(readableText, effectiveWpm);
+          const estDefault150 = estimateWpmReadTimeFromText(readableText, 150);
+          const estPrior =
+            priorEnvelopeWpm !== undefined
+              ? estimateWpmReadTimeFromText(readableText, priorEnvelopeWpm)
+              : '';
+          if (
+            cleanStored === estCurrent ||
+            cleanStored === estDefault150 ||
+            (estPrior && cleanStored === estPrior)
+          ) {
+            if (estCurrent) {
+              finalApproxReadTime = estCurrent;
+            }
+            finalIsAutoReadTime = true;
+          } else {
+            finalIsAutoReadTime = false;
+          }
+        }
       }
     }
 
@@ -957,6 +1006,9 @@ export function migrateAnnouncementsPayload(
       assetType: resolvedAssetType,
       backupMp3Url: mItem?.backupMp3Url ?? gateItem?.backupMp3Url ?? '',
       approximateReadTime: finalApproxReadTime,
+      ...(resolvedAssetType === 'script' && typeof finalIsAutoReadTime === 'boolean'
+        ? { isAutoReadTime: finalIsAutoReadTime }
+        : {}),
       duration: mItem?.duration ?? gateItem?.duration ?? '',
       fileSize: mItem?.fileSize ?? gateItem?.fileSize ?? ''
     };
@@ -1015,6 +1067,9 @@ export function migrateAnnouncementsPayload(
       assetType: primaryItem?.assetType ?? 'audio',
       backupMp3Url: primaryItem?.backupMp3Url ?? '',
       approximateReadTime: primaryItem?.approximateReadTime ?? '',
+      ...(typeof primaryItem?.isAutoReadTime === 'boolean'
+        ? { isAutoReadTime: primaryItem.isAutoReadTime }
+        : {}),
       duration: primaryItem?.duration ?? '',
       fileSize: primaryItem?.fileSize ?? '',
     };

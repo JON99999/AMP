@@ -39,13 +39,24 @@ export function serializeTxtScriptContent(bodyText: string): string {
  * Strips inline formatting markers for plain word-count calculation.
  */
 export function stripFormattingMarkers(text: string): string {
-  const withoutComments = stripHtmlComments(text || '');
-  return withoutComments
-    .replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1')
-    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
-    .replace(/__([^_\n]+)__/g, '$1')
-    .replace(/<u>([\s\S]+?)<\/u>/gi, '$1')
-    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1');
+  let cleaned = stripHtmlComments(text || '');
+  cleaned = cleaned.replace(/<\/?u>/gi, '');
+
+  // Iteratively strip paired ***bold+italic***, **bold**, __underline__, and *italic* spans
+  let prev = '';
+  while (prev !== cleaned) {
+    prev = cleaned;
+    cleaned = cleaned.replace(/\*\*\*([^*\n]+)\*\*\*/g, '$1');
+    cleaned = cleaned.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+    cleaned = cleaned.replace(/__([^_\n]+)__/g, '$1');
+    cleaned = cleaned.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1');
+  }
+
+  // Strip any remaining overlapping/interleaved inline markdown formatting runs (*, **, ***, __, ____)
+  cleaned = cleaned.replace(/\*+/g, '');
+  cleaned = cleaned.replace(/_{2,}/g, '');
+
+  return cleaned;
 }
 
 /**

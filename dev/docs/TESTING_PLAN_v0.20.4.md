@@ -1,14 +1,71 @@
-# AMP `v0.20.5` Remaining Delta Verification Plan (Round 1: macOS on Intel -> Round 2: Windows)
+# AMP `v0.20.5` -> `v0.20.6` Remaining Delta Verification Plan & Session Handoff
 
 > **Status**:
-> - All prior Windows (`v0.20.1`–`v0.20.3`) and macOS Intel (`v0.20.3`) test phases (`Phases 1–4`, including `#2`, `#5a`, `#5b` coexistence/WPM backfill, `#7`, `#9`, `#12`, `#13`, `#15`, `#17`, `#21`, `#24`, `#25`, `#28`, `#29`, `#31`, `#36`, `#44`, `#46`–`#52`, `#54`–`#58`, and `#65`) have **passed** and been purged from this plan.
-> - All remaining `v0.20.4` / `v0.20.5` delta items (`#60`, `#61`–`#64`, server startup bundle fix) and completed roadmap items (`#42`, `#53`, `#66`–`#75`) are organized below into a two-round path:
->   - **Round 1: macOS on Intel (`AMP Admin / Studio / Live-0.20.5-Mac.dmg`)** — Complete all 15 delta tests on macOS Intel first.
->   - **Round 2: Windows (`AMP Admin / Studio / Live-0.20.5-Windows-Installer.exe`)** — Complete the cross-platform follow-up verification on Windows afterward.
+> - **Round 1: macOS on Intel (`AMP Admin / Studio / Live-0.20.5-Mac.dmg` — Tests 1–15)** has been **completed**. All tests passed except the exceptions and roadmap items logged as **`#76`–`#89`** in `dev/docs/ROADMAP_AND_BACKLOG.md`.
+> - **Current Decision (11/11/2026)**: Pause before **Round 2: Windows (`Tests 16–17`)** to work through the macOS Round 1 issues first and iterate the app version to **`v0.20.6`**.
 
 ---
 
-## Round 1: macOS on Intel (`AMP Admin / Studio / Live-0.20.5-Mac.dmg`) — Primary Verification Pass
+## Session Handoff: macOS Round 1 Triage & `v0.20.6` Starting Execution Plan
+
+### Part 1: Summary of Open Items (Test-Failing Bugs & `Live` / `Studio` Impact)
+
+#### Category 1: Actual Test-Failing Bugs from macOS Round 1
+- **1. `#88` (`Test 15.c` — Exported `.txt` Overlapping Markdown Stripping)**
+  - `a.` **Failure**: `stripFormattingMarkers()` in `src/lib/liveReadTextUtils.ts` uses single-pass non-overlapping regexes (`[^*\n]+`), leaving stray `*` and `**` characters behind when scripts contain overlapping or adjacent Bold/Italic/Underline spans (`*...*__*...*____***...***`).
+  - `b.` **Impact**: Affects `.txt` files exported in **Prerecord -> Export -> Export Files...**, plain-text clipboard copies on the **Live Reads** tab, and plain word-count calculations.
+- **2. `#84` (`Test 8.b` / `C.8.b` — Shows Manager `Short Name` Validation)**
+  - `a.` **Failure**: When `Show Name` and `Show Host` are filled in, deleting `Short Name (For Filenames)` and clicking **Save Changes** silently auto-generates a short name from `Show Name` instead of triggering the inline required-field validation error.
+- **3. `#86` (`Test 7.c` — Media-Row `Inactivate` Button on Played Media Rows)**
+  - `a.` **Failure**: Clicking **Inactivate** on a single played media item (`> 0 plays`) inside a gate calls the gate-level inactivation handler, inactivating the entire gate and all of its media items instead of moving only that media item to a per-gate `Past / Inactivated Media` section.
+- **4. `#87` (`Test 12.b` — `Select Announcement` Copied `.txt` Highlight & Repeat Copy Naming Collision)**
+  - `a.` **Failure 1**: Returning to `Select Announcement` after copying a `.txt` file in `CopyEditorModal` does not pass the new filename back to `MediaPickerModal`'s `recentlyUploadedName` state, so the new row is not highlighted (`New`).
+  - `b.` **Failure 2**: Clicking **Copy** a second time on the same source file suggests `"Copy of  <stem>"` without checking `existingFileNames`, colliding with the first copy on **Save** instead of suggesting `"Copy of <stem> (2)"`.
+
+#### Category 2: Open Items Affecting `AMP Live` or `AMP Studio`
+- **5. `#76` (Startup Opening Logo / Branded Splash Screen)**
+  - `a.` **Affects**: `AMP Live`, `AMP Studio`, and `AMP Admin`.
+  - `b.` Replaces the multiple temporary startup/verification flashes with a single branded splash view (large edition icon, version `v0.20.6`, and `AMP = Announcement Media Player`) until startup checks complete.
+- **6. `#88` (`Test 15.c` — Prerecord Export `.txt` & Plain-Text Copy Stripping)**
+  - `a.` **Affects**: `AMP Studio` (and `AMP Admin`) in `Prerecord -> Export`.
+- **7. `#77` (`Test 3.b–3.d` & `11.b` — Station WPM Setting, `Est:` Layout, & Auto Read-Time Recalculation)**
+  - `a.` **Affects**: `AMP Live` and `AMP Studio` card durations (`3.d`), plus `AMP Admin` settings (`3.b`) and `CopyEditorModal` (`3.c` / `11.b`).
+  - `b.` Persisting whether a Live Read's duration is `Auto` vs. manual so changing the station WPM updates all auto-calculated read times directly updates the durations shown on Live Read cards in `Live` and `Studio`.
+
+---
+
+### Part 2: Batch 1 Execution Status (`v0.20.6` Version Bump + `#88` & Same-Context Live Read Items `#77`, `#87`, `#89`) — ✅ COMPLETED
+
+Because **`#88`** (test-failing bug + `AMP Studio` impact), **`#77`** (`3.b–3.d` / `11.b`), **`#87`** (`12.b`), and **`#89`** (`15.d`) all live in the **Live Read / `CopyEditorModal` / WPM calculation pipeline** (`src/lib/liveReadTextUtils.ts`, `src/lib/compatibility.ts`, `src/components/CopyEditorModal.tsx`, `src/components/LocalHelpModal.tsx`, `src/components/MediaPickerModal.tsx`, and `src/components/CalendarTab.tsx`), they were completed together in **Batch 1**:
+
+#### Core Scoped Changes (Batch 1 — ✅ Completed)
+- **1. [x] Bump Application Version to `v0.20.6`**
+  - `a.` Updated version strings from `0.20.5` to `0.20.6` across `package.json`, `package-lock.json`, `electron-main.cjs`, `src/lib/compatibility.ts` (`CURRENT_APP_VERSION`), `CHANGELOG.md`, and `dev/docs/ARCHIVED_VERSIONS_SCHEMA_AUDIT.md`, and verified with `node scripts/verify-version.cjs`.
+- **2. [x] `#88` (`Test 15.c`) — Complete Stripping of Overlapping & Interleaved Markdown in `.txt` Exports & Plain Text**
+  - `a.` Updated `stripFormattingMarkers()` in `src/lib/liveReadTextUtils.ts` and `estimateWpmReadTimeFromText()` in `src/lib/compatibility.ts` to iteratively strip nested/overlapping `***`, `**`, `__`, and formatting `*` markers and remove leftover `*+` or `_{2,}` formatting runs.
+  - `b.` Verified the vehicle-donation test string produces clean plain text with zero leftover `*` or `_` characters in both exported `.txt` files and plain-text clipboard copies.
+- **3. [x] `#77` (`3.b`, `3.c` / `11.b`, & `3.d`) — WPM Input Typing, `Est:` Box Layout, & Auto-Calculated Read-Time Persistence/Recalculation**
+  - `a.` **WPM Input (`3.b`)**: In `LocalHelpModal.tsx`, updated the `Words Per Minute (50–300 WPM)` input to hold raw text while typing (`draftLiveReadWpmText`) and apply the `50–300` clamp only on `onBlur` and **Save Live Read WPM**.
+  - `b.` **`Est:` Box Layout (`3.c` / `11.b`)**: In `CopyEditorModal.tsx`, kept **Approx. Read Time** and `xx words` on the top label row, narrowed the `0m10s` time input box to fit its content (`w-24`), and moved the `Est: ~0m10s` badge to the right of the **Auto** checkbox so it is **always visible** whether **Auto** is checked or unchecked.
+  - `c.` **Persist `Auto` Read-Time Flag & Recalculate on WPM Change (`3.d`)**:
+    - Added `isAutoReadTime?: boolean` on `TimeGatedMediaItem` and `TimeGatedMp3` (defaulting to `true` when `Auto` is checked in `CopyEditorModal`, or `false` when manually overridden).
+    - Updated `migrateAnnouncementsPayload`, `POST /api/shows`, `writeDriveShows`, and `useScheduleManager.ts` so saving a new **Live Read Calculation Speed (WPM)** in `LocalHelpModal.tsx` automatically recalculates `approximateReadTime` across all script media items where `isAutoReadTime !== false` (or where the stored time matches the previous WPM auto-estimate) and persists the updated schedule.
+- **4. [x] `#87` (`12.b`) — `Select Announcement` Copied `.txt` Highlight & Sequential `"Copy of ... (2)"` Naming**
+  - `a.` In `CopyEditorModal.tsx`, fixed the double space in `"Copy of ..."` and checked `existingFileNames` when seeding a copy name so if `"Copy of <stem>.txt"` already exists, it automatically suggests `"Copy of <stem> (2)"`, `"Copy of <stem> (3)"`, etc.
+  - `b.` In `CalendarTab.tsx` and `MediaPickerModal.tsx`, passed the newly saved copy filename back to `MediaPickerModal` (`highlightedFileName`) so the new row is highlighted with the `New` badge and scrolled into view whether `Unused First` is checked or unchecked.
+
+#### Related / Edge-of-Scope Suggestion (Batch 1 — ✅ Completed)
+- **5. [x] `#89` (`15.d` — Future Roadmap Item in `CopyEditorModal.tsx`) — New Live Read Default Filename Focus & Unedited Name Confirmation**
+  - `a.` When creating a new Live Read from scratch (`!isEditingExisting && !sourceFileToCopy`) where the filename is pre-filled from the announcement name, `CopyEditorModal` now auto-focuses/selects the filename input on open, shows a `"Default name"` badge next to the label until edited, and prompts for inline confirmation on **Save** if the default name was not changed.
+
+#### Subsequent Batches for Remaining macOS Round 1 Items (`v0.20.6`)
+- **Batch 2 (✅ Completed)**: `#76` — Startup Opening Logo / Branded Splash Screen (`AMP Live`, `AMP Studio`, `AMP Admin`) with large edition icon, `v0.20.6` badge, `AMP = Announcement Media Player` description, unified startup/fetch/silent-audio-cache gate, pre-server Electron dark splash window, and `500ms` minimum hold.
+- **Batch 3 (✅ Completed)**: `#84` & `#85` — Shows Manager `Short Name` required validation + `Check Folders` grouped `"Notice Extra folder(s) found"` formatting, `Folders` and `Open in Finder / Explorer` buttons, and stranded folder merge option.
+- **Batch 4 (✅ Completed)**: `#86` + `#79`, `#80`, `#81`, `#82` — Per-media-row inactivation (`Past / Inactivated Media` section in gates) + unified `Use Selected (N)` flow in `Select Announcement`, open-ended gate End-date presets (`+1 Week`, `+1 Month`, `Announcement End`, `Custom`) + `Announcement Window` banner, consolidated gate header warnings & sequential gate validation, and `"No file selected — add file to rotate (optional)"` row.
+
+---
+
+## Round 1: macOS on Intel (`AMP Admin / Studio / Live-0.20.5-Mac.dmg`) — Completed Pass Reference
 
 ### A. Startup, Storage Folders, Cache & Admin Settings (`#61`–`#64`, `#75`)
 

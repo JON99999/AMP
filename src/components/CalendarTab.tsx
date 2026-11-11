@@ -71,9 +71,11 @@ interface CalendarTabProps {
   currentViewMode?: 'list' | 'calendar' | 'shows';
   onViewModeChange?: (mode: 'list' | 'calendar' | 'shows') => void;
   showPixelRuler?: boolean;
+  onOpenLocationsModal?: () => void;
+  onOpenLocalStationFolder?: () => void;
 }
 
-function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _liveNow, driveMP3s: propDriveMP3s = [], isDriveActive = false, onRefresh, shows = [], onSaveShows, stationTimezone, onSaveStationTimezone, adminContactInfo, hasSavedAdminContact = false, onSaveAdminContactInfo, upNextPromoConfig, logs = [], currentViewMode, onViewModeChange, showPixelRuler = false }: CalendarTabProps) {
+function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _liveNow, driveMP3s: propDriveMP3s = [], isDriveActive = false, onRefresh, shows = [], onSaveShows, stationTimezone, onSaveStationTimezone, adminContactInfo, hasSavedAdminContact = false, onSaveAdminContactInfo, upNextPromoConfig, logs = [], currentViewMode, onViewModeChange, showPixelRuler = false, onOpenLocationsModal, onOpenLocalStationFolder }: CalendarTabProps) {
   const [localSavedMediaFiles, setLocalSavedMediaFiles] = useState<MediaAssetFile[]>([]);
   const driveMP3s = useMemo<MediaAssetFile[]>(() => {
     const base = propDriveMP3s || [];
@@ -175,12 +177,14 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     initialFileName?: string;
     sourceFileToCopy?: string;
     initialReadTime?: string;
+    initialIsAutoReadTime?: boolean;
     targetGateId?: string | null;
     targetGateIndex?: number;
     targetItemIndex?: number;
     targetAnnouncementId?: string | null;
     fromPicker?: boolean;
   }>({ isOpen: false });
+  const [pickerHighlightedFileName, setPickerHighlightedFileName] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const handleAddMp3 = () => {
@@ -188,6 +192,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     setPickerMp3Id(null);
     setPickerItemIndex(null);
     setSearchQuery('');
+    setPickerHighlightedFileName(null);
     setIsPickerOpen(true);
   };
 
@@ -201,6 +206,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         name: firstFileName,
         duration: first?.duration,
         approximateReadTime: first?.approximateReadTime,
+        isAutoReadTime: first?.isAutoReadTime,
         backupMp3Url: first?.backupMp3Url,
       },
       inferredType,
@@ -214,6 +220,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       duration?: string | number;
       path?: string;
       approximateReadTime?: string;
+      isAutoReadTime?: boolean;
       backupMp3Url?: string;
     },
     inferredAssetType?: 'audio' | 'script',
@@ -238,6 +245,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               assetType: inferredAssetType,
               duration: mp3Duration,
               ...(selectedFile?.approximateReadTime ? { approximateReadTime: selectedFile.approximateReadTime } : {}),
+              ...(selectedFile?.isAutoReadTime !== undefined ? { isAutoReadTime: selectedFile.isAutoReadTime } : {}),
               ...(selectedFile?.backupMp3Url ? { backupMp3Url: selectedFile.backupMp3Url } : {})
             }
           ];
@@ -632,7 +640,12 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     isRunning: boolean;
     hasError: boolean;
     lines: string[];
+    extraFolders: Array<{ category: 'media_evergreens' | 'media_shows'; name: string }>;
   } | null>(null);
+  const [selectedStrandedKey, setSelectedStrandedKey] = useState<string>('');
+  const [selectedMergeTargetShortName, setSelectedMergeTargetShortName] = useState<string>('');
+  const [isMergingStranded, setIsMergingStranded] = useState<boolean>(false);
+  const [confirmMergeStrandedOpen, setConfirmMergeStrandedOpen] = useState<boolean>(false);
 
   // Global unsaved changes listener for top-level navigation and auto-refresh guards
   useEffect(() => {
@@ -686,25 +699,38 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         : settings.mode === 'Demo'
           ? 'Demo Mode'
           : 'Local Folder';
-    const showsWithShortNameCount = shows.filter(s => String(s?.nameShort || '').trim().length > 0).length;
+    const showsWithShortName = shows.filter(s => !s?.isDeleted && String(s?.nameShort || '').trim().length > 0);
+    const showsWithShortNameCount = showsWithShortName.length;
 
     setIsVerifyingEvergreens(true);
+    setConfirmMergeStrandedOpen(false);
+    setSelectedStrandedKey('');
+    setSelectedMergeTargetShortName(showsWithShortName[0]?.nameShort || '');
     setFolderCheckModal({
       isOpen: true,
       isRunning: true,
       hasError: false,
       lines: [
         `[Starting] Folder verification (${modeLabel})...`
-      ]
+      ],
+      extraFolders: []
     });
 
-    const appendLines = (newLines: string[], updates?: { isRunning?: boolean; hasError?: boolean }) => {
+    const appendLines = (
+      newLines: string[],
+      updates?: {
+        isRunning?: boolean;
+        hasError?: boolean;
+        extraFolders?: Array<{ category: 'media_evergreens' | 'media_shows'; name: string }>;
+      }
+    ) => {
       setFolderCheckModal(prev => {
         if (!prev) return prev;
         return {
           ...prev,
           ...(updates?.isRunning !== undefined ? { isRunning: updates.isRunning } : {}),
           ...(updates?.hasError !== undefined ? { hasError: updates.hasError } : {}),
+          ...(updates?.extraFolders !== undefined ? { extraFolders: updates.extraFolders } : {}),
           lines: [...prev.lines, ...newLines]
         };
       });
@@ -800,21 +826,24 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         );
       }
 
-      for (const extraFolder of extraEvergreens) {
-        resultLines.push(
-          `[Notice] Extra folder found in media_evergreens (not matched to any show Short Name): ${extraFolder}`
-        );
-      }
-      for (const extraFolder of extraPlaylists) {
-        resultLines.push(
-          `[Notice] Extra folder found in media_shows (not matched to any show Short Name): ${extraFolder}`
-        );
+      const discoveredExtras: Array<{ category: 'media_evergreens' | 'media_shows'; name: string }> = [
+        ...extraEvergreens.map(name => ({ category: 'media_evergreens' as const, name })),
+        ...extraPlaylists.map(name => ({ category: 'media_shows' as const, name })),
+      ];
+
+      if (discoveredExtras.length > 0) {
+        resultLines.push('[Notice] Notice Extra folder(s) found');
+        for (const extra of discoveredExtras) {
+          resultLines.push(`  ${extra.category}/${extra.name}`);
+        }
+        setSelectedStrandedKey(`${discoveredExtras[0].category}/${discoveredExtras[0].name}`);
       }
 
       resultLines.push('[Complete] Folder verification finished.');
       appendLines(resultLines, {
         isRunning: false,
-        hasError: Boolean(data.announcementsReadonlyError)
+        hasError: Boolean(data.announcementsReadonlyError),
+        extraFolders: discoveredExtras
       });
     } catch (err: any) {
       appendLines(
@@ -826,6 +855,70 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       );
     } finally {
       setIsVerifyingEvergreens(false);
+    }
+  };
+
+  const handleMergeStrandedFolder = async () => {
+    if (!folderCheckModal || isMergingStranded || !selectedStrandedKey || !selectedMergeTargetShortName) return;
+    const slashIdx = selectedStrandedKey.indexOf('/');
+    if (slashIdx <= 0) return;
+    const folderCategory = selectedStrandedKey.slice(0, slashIdx) as 'media_evergreens' | 'media_shows';
+    const sourceFolderName = selectedStrandedKey.slice(slashIdx + 1);
+    const targetShowShortName = selectedMergeTargetShortName.trim();
+    if (!sourceFolderName || !targetShowShortName) return;
+
+    setIsMergingStranded(true);
+    try {
+      const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' });
+      const res = await fetch('/api/shows/merge-stranded-folder', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          folderCategory,
+          sourceFolderName,
+          targetShowShortName
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Failed to merge stranded folder.');
+      }
+
+      const movedCount = typeof data.movedCount === 'number' ? data.movedCount : 0;
+      const skippedCount = typeof data.skippedCount === 'number' ? data.skippedCount : 0;
+      const removedSourceFolder = Boolean(data.removedSourceFolder);
+
+      const summaryLine = `[Fixed] Merged ${folderCategory}/${sourceFolderName} -> ${folderCategory}/${targetShowShortName} (${movedCount} file${movedCount === 1 ? '' : 's'} moved${skippedCount > 0 ? `, ${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped` : ''}${removedSourceFolder ? ', stranded folder removed' : ''}).`;
+
+      setFolderCheckModal(prev => {
+        if (!prev) return prev;
+        const remainingExtras = removedSourceFolder
+          ? prev.extraFolders.filter(
+              e => !(e.category === folderCategory && e.name === sourceFolderName)
+            )
+          : prev.extraFolders;
+        const nextFirst = remainingExtras[0];
+        setSelectedStrandedKey(nextFirst ? `${nextFirst.category}/${nextFirst.name}` : '');
+        return {
+          ...prev,
+          extraFolders: remainingExtras,
+          lines: [...prev.lines, summaryLine]
+        };
+      });
+      setConfirmMergeStrandedOpen(false);
+    } catch (err: any) {
+      setFolderCheckModal(prev =>
+        prev
+          ? {
+              ...prev,
+              hasError: true,
+              lines: [...prev.lines, `[Error] Merge failed: ${err?.message || 'Unknown error'}`]
+            }
+          : prev
+      );
+      setConfirmMergeStrandedOpen(false);
+    } finally {
+      setIsMergingStranded(false);
     }
   };
 
@@ -899,7 +992,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     const trimmedName = String(showFormData.name || '').trim();
     const trimmedHost = String(showFormData.host || '').trim();
     const rawShort = String(showFormData.nameShort || '').trim();
-    const finalNameShort = rawShort ? cleanNameShort(rawShort) : cleanNameShort(trimmedName);
+    const finalNameShort = cleanNameShort(rawShort);
     const totalDurationMinutes =
       (Number(showFormData.durationHours) || 0) * 60 + (Number(showFormData.durationMinutes) || 0);
 
@@ -986,6 +1079,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         existingShow.durationHours !== (typeof showFormData.durationHours === 'number' ? showFormData.durationHours : 0) ||
         existingShow.durationMinutes !== (typeof showFormData.durationMinutes === 'number' ? showFormData.durationMinutes : 0) ||
         existingShow.name !== (showFormData.name || '') ||
+        existingShow.nameShort !== finalNameShort ||
         existingShow.host !== (showFormData.host || '') ||
         existingShow.description !== (showFormData.description || '') ||
         existingShow.active !== nextActive ||
@@ -1496,7 +1590,12 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
   const handleSelectFileFromPicker = (
     file: { name: string; duration?: string | number; path?: string; size?: string },
-    options?: { pairedBackupAudioFile?: string; doNotAttachBackup?: boolean; approximateReadTime?: string }
+    options?: {
+      pairedBackupAudioFile?: string;
+      doNotAttachBackup?: boolean;
+      approximateReadTime?: string;
+      isAutoReadTime?: boolean;
+    }
   ) => {
     const inferredAssetType = classifyMediaAsset(file.name);
     const fileDuration = pickerDurations[file.name] || file.duration;
@@ -1509,6 +1608,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         ? options.approximateReadTime.startsWith('~')
           ? options.approximateReadTime
           : `~${options.approximateReadTime}`
+        : undefined;
+    const resolvedIsAutoReadTime =
+      inferredAssetType === 'script' && options?.isAutoReadTime !== undefined
+        ? options.isAutoReadTime
         : undefined;
 
     upsertMediaCatalogFile({
@@ -1526,6 +1629,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           duration: fileDuration,
           path: file.path,
           approximateReadTime: resolvedApproxReadTime,
+          isAutoReadTime: resolvedIsAutoReadTime,
           backupMp3Url: suggestedBackupAudio
         },
         inferredAssetType
@@ -1540,6 +1644,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             assetType: inferredAssetType,
             duration: inferredAssetType === 'audio' ? (pickerDurations[file.name] || file.duration) : undefined,
             ...(resolvedApproxReadTime ? { approximateReadTime: resolvedApproxReadTime } : {}),
+            ...(resolvedIsAutoReadTime !== undefined ? { isAutoReadTime: resolvedIsAutoReadTime } : {}),
             ...(suggestedBackupAudio ? { backupMp3Url: suggestedBackupAudio } : {})
           };
            return {
@@ -1574,6 +1679,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               assetType: inferredAssetType,
               duration: inferredAssetType === 'audio' ? (pickerDurations[file.name] || file.duration || mi.duration) : undefined,
               ...(resolvedApproxReadTime ? { approximateReadTime: resolvedApproxReadTime } : {}),
+              ...(resolvedIsAutoReadTime !== undefined ? { isAutoReadTime: resolvedIsAutoReadTime } : {}),
               ...(suggestedBackupAudio && !mi.backupMp3Url ? { backupMp3Url: suggestedBackupAudio } : {})
             };
           }
@@ -1979,8 +2085,13 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           assetType: derivedAssetType,
           backupMp3Url: derivedAssetType === 'script' && mi.backupMp3Url ? getFilenameFromUrlOrPath(mi.backupMp3Url) : undefined,
           approximateReadTime: derivedAssetType === 'script' ? mi.approximateReadTime : undefined,
+          ...(derivedAssetType === 'script' && typeof mi.isAutoReadTime === 'boolean'
+            ? { isAutoReadTime: mi.isAutoReadTime }
+            : {}),
           duration: derivedAssetType === 'audio' ? mi.duration : undefined,
-          fileSize: mi.fileSize
+          fileSize: mi.fileSize,
+          ...(mi.inactivated ? { inactivated: true } : {}),
+          ...(mi.inactivated && mi.inactivatedAt ? { inactivatedAt: mi.inactivatedAt } : {})
         };
       });
 
@@ -2596,6 +2707,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             initialFileName: name,
             sourceFileToCopy: undefined,
             initialReadTime: matchingItem?.approximateReadTime,
+            initialIsAutoReadTime: matchingItem?.isAutoReadTime,
             targetGateId: pickerMp3Id,
             targetItemIndex: pickerItemIndex ?? undefined,
             targetAnnouncementId: editingId || formData.id || null,
@@ -2612,6 +2724,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             initialFileName: undefined,
             sourceFileToCopy: name,
             initialReadTime: matchingItem?.approximateReadTime,
+            initialIsAutoReadTime: matchingItem?.isAutoReadTime,
             targetGateId: pickerMp3Id,
             targetItemIndex: pickerItemIndex ?? undefined,
             targetAnnouncementId: editingId || formData.id || null,
@@ -2623,10 +2736,12 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         allowProceedEmpty={pickerTarget === 'newTimeGated'}
         onSelectMultipleFiles={handleSelectMultipleFilesFromPicker}
         onProceedWithoutFile={handleProceedWithoutFileFromPicker}
+        highlightedFileName={pickerHighlightedFileName}
         onClose={() => {
           setIsPickerOpen(false);
           setPickerTarget('main');
           setPickerItemIndex(null);
+          setPickerHighlightedFileName(null);
         }}
         onRefresh={async () => {
           if (onRefresh) {
@@ -2673,6 +2788,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         initialFileName={copyEditorState.initialFileName}
         sourceFileToCopy={copyEditorState.sourceFileToCopy}
         initialReadTime={copyEditorState.initialReadTime}
+        initialIsAutoReadTime={copyEditorState.initialIsAutoReadTime}
         suggestedBaseName={formData.name || ''}
         isDriveActive={isDriveActive}
         existingFileNames={existingFileNames}
@@ -2754,8 +2870,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             )
           ]);
         }}
-        onSaved={async ({ name, path, size, approximateReadTime, pairedBackupAudioFile, doNotAttachBackup, adoptNewFile }) => {
+        onSaved={async ({ name, path, size, approximateReadTime, isAutoReadTime, pairedBackupAudioFile, doNotAttachBackup, adoptNewFile }) => {
           const shouldAdopt = adoptNewFile !== false;
+          const nextIsAutoReadTime = isAutoReadTime !== undefined ? isAutoReadTime : true;
           const isSplitFromExisting = Boolean(
             copyEditorState.initialFileName &&
             getFilenameFromUrlOrPath(copyEditorState.initialFileName).toLowerCase() !== name.toLowerCase()
@@ -2808,12 +2925,16 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
           // If user split to a new filename and explicitly chose to keep the original file in the slot, stop here
           if (isSplitFromExisting && !shouldAdopt) {
+            if (copyEditorState.fromPicker) {
+              setPickerHighlightedFileName(name);
+            }
             return;
           }
 
           if (copyEditorState.fromPicker) {
             if (wasCopyingInPicker) {
-              // User clicked Copy on an item inside Select Announcement: keep Select Announcement open showing the newly created copy
+              // User clicked Copy on an item inside Select Announcement: keep Select Announcement open showing and highlighting the newly created copy
+              setPickerHighlightedFileName(name);
               return;
             }
             if (!wasEditingExistingInPicker || isSplitFromExisting) {
@@ -2822,7 +2943,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                 {
                   pairedBackupAudioFile: resolvedBackup,
                   doNotAttachBackup,
-                  approximateReadTime: nextApprox
+                  approximateReadTime: nextApprox,
+                  isAutoReadTime: nextIsAutoReadTime
                 }
               );
             } else {
@@ -2837,6 +2959,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       ? {
                           ...mi,
                           approximateReadTime: nextApprox || mi.approximateReadTime,
+                          isAutoReadTime: nextIsAutoReadTime,
                           ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {})
                         }
                       : mi
@@ -2881,6 +3004,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         mp3Url: name,
                         assetType: classifyMediaAsset(name, 'script'),
                         approximateReadTime: nextApprox || mi.approximateReadTime,
+                        isAutoReadTime: nextIsAutoReadTime,
                         ...(resolvedBackup &&
                         (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
                           ? { backupMp3Url: resolvedBackup }
@@ -2902,6 +3026,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                           mp3Url: name,
                           assetType: classifyMediaAsset(name, 'script'),
                           approximateReadTime: nextApprox || mi.approximateReadTime,
+                          isAutoReadTime: nextIsAutoReadTime,
                           ...(resolvedBackup &&
                           (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
                             ? { backupMp3Url: resolvedBackup }
@@ -2959,6 +3084,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                           ? {
                               ...mi,
                               approximateReadTime: nextApprox || mi.approximateReadTime,
+                              isAutoReadTime: nextIsAutoReadTime,
                               ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {})
                             }
                           : mi
@@ -2966,6 +3092,21 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                     };
                   }
                   return m;
+                }
+                if (targetItemIndex !== undefined && targetItemIndex >= items.length) {
+                  return {
+                    ...m,
+                    mediaItems: [
+                      ...items.filter(mi => mi.mp3Url && mi.mp3Url.trim() !== ''),
+                      {
+                        mp3Url: name,
+                        assetType: classifyMediaAsset(name, 'script'),
+                        approximateReadTime: nextApprox,
+                        isAutoReadTime: nextIsAutoReadTime,
+                        ...(resolvedBackup ? { backupMp3Url: resolvedBackup } : {})
+                      }
+                    ]
+                  };
                 }
                 return {
                   ...m,
@@ -2978,6 +3119,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         mp3Url: name,
                         assetType: classifyMediaAsset(name, 'script'),
                         approximateReadTime: nextApprox || mi.approximateReadTime,
+                        isAutoReadTime: nextIsAutoReadTime,
                         ...(resolvedBackup &&
                         (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
                           ? { backupMp3Url: resolvedBackup }
@@ -2995,6 +3137,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       return {
                         ...mi,
                         approximateReadTime: nextApprox || mi.approximateReadTime,
+                        isAutoReadTime: nextIsAutoReadTime,
                         ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {})
                       };
                     }
@@ -3020,6 +3163,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         ...mi,
                         mp3Url: name,
                         approximateReadTime: nextApprox || mi.approximateReadTime,
+                        isAutoReadTime: nextIsAutoReadTime,
                         ...(resolvedBackup && (!mi.backupMp3Url || isSplitFromExisting)
                           ? { backupMp3Url: resolvedBackup }
                           : {})
@@ -3112,6 +3256,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       {placementModal && (
         <PlacementPresetModal
           placementModal={placementModal}
+          parentStartDate={formData.startDate}
+          parentEndDate={formData.endDate}
           onSelectPreset={handleSelectPlacementPreset}
           onUpdateDates={handleUpdatePlacementModalDates}
           onConfirm={handleConfirmPlacementModal}
@@ -3174,6 +3320,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       initialFileName: cleanName,
                       sourceFileToCopy: undefined,
                       initialReadTime: matchingItem?.approximateReadTime,
+                      initialIsAutoReadTime: matchingItem?.isAutoReadTime,
                       targetGateId: originSnap?.gateId || null,
                       targetGateIndex: originSnap?.gateIndex,
                       targetItemIndex: originSnap?.itemIndex,
@@ -3220,6 +3367,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       initialFileName: undefined,
                       sourceFileToCopy: cleanName,
                       initialReadTime: matchingItem?.approximateReadTime,
+                      initialIsAutoReadTime: matchingItem?.isAutoReadTime,
                       targetGateId: originSnap?.gateId || null,
                       targetGateIndex: originSnap?.gateIndex,
                       targetItemIndex: originSnap?.itemIndex,
@@ -3401,12 +3549,15 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto flex-1">
+            <div className="p-4 overflow-y-auto flex-1 space-y-3">
               <div className="bg-slate-900 text-slate-100 rounded-lg p-3 font-mono text-xs space-y-1.5 leading-relaxed border border-slate-800">
                 {folderCheckModal.lines.map((line, idx) => {
                   const isError = line.startsWith('[Error]') || line.startsWith('[Warning]');
                   const isFixed = line.startsWith('[Fixed]');
-                  const isNotice = line.startsWith('[Notice]');
+                  const isNotice =
+                    line.startsWith('[Notice]') ||
+                    line.startsWith('  media_evergreens/') ||
+                    line.startsWith('  media_shows/');
                   const isOk =
                     line.startsWith('[Validated]') ||
                     line.startsWith('[OK]') ||
@@ -3438,9 +3589,115 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                   </div>
                 )}
               </div>
+
+              {!folderCheckModal.isRunning &&
+                folderCheckModal.extraFolders.length > 0 &&
+                shows.some(s => !s?.isDeleted && String(s?.nameShort || '').trim().length > 0) && (
+                  <div className="bg-sky-50 border border-sky-200 rounded-lg p-3 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-black uppercase tracking-wider text-sky-900">
+                        Merge Stranded Folder into Show
+                      </span>
+                      <span className="text-[11px] font-bold text-sky-700">
+                        Moves non-duplicate files &amp; removes empty folder
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold uppercase text-slate-600 block">
+                          Stranded Folder
+                        </label>
+                        <select
+                          value={selectedStrandedKey}
+                          onChange={e => {
+                            setSelectedStrandedKey(e.target.value);
+                            setConfirmMergeStrandedOpen(false);
+                          }}
+                          disabled={isMergingStranded}
+                          className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-bold text-slate-800 outline-none focus:border-blue-500"
+                        >
+                          {folderCheckModal.extraFolders.map(ef => {
+                            const key = `${ef.category}/${ef.name}`;
+                            return (
+                              <option key={key} value={key}>
+                                {key}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold uppercase text-slate-600 block">
+                          Target Show Folder
+                        </label>
+                        <select
+                          value={selectedMergeTargetShortName}
+                          onChange={e => {
+                            setSelectedMergeTargetShortName(e.target.value);
+                            setConfirmMergeStrandedOpen(false);
+                          }}
+                          disabled={isMergingStranded}
+                          className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 outline-none focus:border-blue-500"
+                        >
+                          {shows
+                            .filter(s => !s?.isDeleted && String(s?.nameShort || '').trim().length > 0)
+                            .map(s => (
+                              <option key={s.id} value={s.nameShort}>
+                                {s.name} ({s.nameShort})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {!confirmMergeStrandedOpen ? (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={isMergingStranded || !selectedStrandedKey || !selectedMergeTargetShortName}
+                          onClick={() => setConfirmMergeStrandedOpen(true)}
+                          className="px-3 py-1.5 bg-sky-700 hover:bg-sky-800 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50"
+                        >
+                          Merge into Show Folder...
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="p-2.5 bg-amber-50 border border-amber-300 rounded flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-amber-950">
+                          Move files from <span className="font-mono">{selectedStrandedKey}</span> into{' '}
+                          <span className="font-mono">
+                            {selectedStrandedKey.split('/')[0]}/{selectedMergeTargetShortName}
+                          </span>
+                          ?
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0 justify-end">
+                          <button
+                            type="button"
+                            disabled={isMergingStranded}
+                            onClick={() => setConfirmMergeStrandedOpen(false)}
+                            className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isMergingStranded}
+                            onClick={handleMergeStrandedFolder}
+                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase cursor-pointer flex items-center gap-1"
+                          >
+                            {isMergingStranded && <RefreshCw className="w-3 h-3 animate-spin" />}
+                            <span>{isMergingStranded ? 'Merging...' : 'Confirm Merge'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
             </div>
 
-            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
               <span className="text-xs font-bold text-slate-500">
                 {folderCheckModal.isRunning
                   ? 'Checking folders...'
@@ -3448,14 +3705,43 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                     ? 'Completed with issues'
                     : 'Verification complete'}
               </span>
-              <button
-                type="button"
-                disabled={folderCheckModal.isRunning}
-                onClick={() => setFolderCheckModal(null)}
-                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {folderCheckModal.isRunning ? 'Checking...' : 'Close'}
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {onOpenLocalStationFolder && (
+                  <button
+                    type="button"
+                    disabled={folderCheckModal.isRunning}
+                    onClick={() => onOpenLocalStationFolder()}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Open default station folder in Finder / Windows Explorer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-slate-600" />
+                    <span>Open in Finder / Explorer</span>
+                  </button>
+                )}
+                {onOpenLocationsModal && (
+                  <button
+                    type="button"
+                    disabled={folderCheckModal.isRunning}
+                    onClick={() => {
+                      setFolderCheckModal(null);
+                      onOpenLocationsModal();
+                    }}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Open Storage Folders settings"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Folders</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={folderCheckModal.isRunning}
+                  onClick={() => setFolderCheckModal(null)}
+                  className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {folderCheckModal.isRunning ? 'Checking...' : 'Close'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3474,6 +3760,8 @@ export default React.memo(CalendarTab, (prev, next) => {
     prev.driveMP3s === next.driveMP3s &&
     prev.isDriveActive === next.isDriveActive &&
     prev.currentViewMode === next.currentViewMode &&
-    prev.showPixelRuler === next.showPixelRuler
+    prev.showPixelRuler === next.showPixelRuler &&
+    prev.onOpenLocationsModal === next.onOpenLocationsModal &&
+    prev.onOpenLocalStationFolder === next.onOpenLocalStationFolder
   );
 });

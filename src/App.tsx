@@ -49,7 +49,7 @@ import LiveDevTab from "./components/LiveDevTab";
 import LiveReadPopout from "./components/LiveReadPopout";
 import { ReadOnlyCompatibilityBanner } from "./components/ReadOnlyCompatibilityBanner";
 import { AppOverlays, OptimizationConfig } from "./components/app/AppOverlays";
-import { assessDataCompatibility, CompatibilityReport, getStationNow, getAdminContactInfo } from "./lib/compatibility";
+import { assessDataCompatibility, CompatibilityReport, CURRENT_APP_VERSION, getStationNow, getAdminContactInfo } from "./lib/compatibility";
 import { getInitialTheme, applyTheme, ThemeId } from "./lib/theme";
 import { cn, getSortedShows, getShowShade, isTimeInShow, normalizeAnnouncements, getActiveMp3ForSlot, formatExportTimeAmPm, buildUpNextPromoAnnouncements, getAnnouncementsForSlot } from "./lib/utils";
 import {
@@ -427,6 +427,15 @@ export default function App() {
   const [syncTime, setSyncTime] = useState(new Date());
   const [scrollTrigger, setScrollTrigger] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [hasCompletedInitialFetch, setHasCompletedInitialFetch] = useState(false);
+  const [hasCompletedInitialCache, setHasCompletedInitialCache] = useState(false);
+  const [minSplashElapsed, setMinSplashElapsed] = useState(false);
+  const [startupPhaseLabel, setStartupPhaseLabel] = useState<string>("Initializing AMP...");
+
+  useEffect(() => {
+    const timer = setTimeout(() => setMinSplashElapsed(true), 500);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Prerecord & Playlist States
   const [playMode, setPlayMode] = useState<"Live" | "Prerecord" | "Playlist">(
@@ -600,6 +609,7 @@ export default function App() {
     setCachingTargetMode,
     cachingProgress,
     setCachingProgress,
+    isInitialAudioCaching,
     triggerCachingForMode,
   } = useAudioCacheController({
     announcements,
@@ -612,7 +622,31 @@ export default function App() {
     activeTab,
     playMode,
     setScrollTrigger,
+    suppressModalOnInitialPass: !hasCompletedInitialCache,
+    onInitialCacheSettled: () => setHasCompletedInitialCache(true),
   });
+
+  useEffect(() => {
+    if (!hasCompletedInitialFetch || hasCompletedInitialCache || isInitialAudioCaching) return;
+    const timer = setTimeout(() => {
+      setHasCompletedInitialCache(true);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [hasCompletedInitialFetch, hasCompletedInitialCache, isInitialAudioCaching]);
+
+  const requiresStartupUserAction = Boolean(
+    showLocationsModal ||
+      showUpgradeModal ||
+      showNewerVersionModal ||
+      localPathsUnavailable ||
+      connectionError ||
+      (!loading && !isDriveValidated)
+  );
+
+  const isInitialStartupComplete =
+    minSplashElapsed &&
+    (requiresStartupUserAction ||
+      (!loading && hasCompletedInitialFetch && hasCompletedInitialCache));
 
   const effectiveAnnouncements = React.useMemo(
     () => [...announcements, ...buildUpNextPromoAnnouncements(shows, upNextPromoConfig)],
@@ -883,9 +917,12 @@ export default function App() {
           setIsDriveActive(false);
           setIsDriveValidated(false);
           setLocalPathsUnavailable(true);
+          setHasCompletedInitialFetch(true);
+          setHasCompletedInitialCache(true);
           setLoading(false);
           setShowLocationsModal(true);
         } else {
+          setStartupPhaseLabel("Verifying station folders...");
           verifyStartup(settings)
             .then((gateResult) => {
               setIsDriveActive(false);
@@ -896,6 +933,8 @@ export default function App() {
               } else {
                 setIsDriveValidated(false);
                 setLocalPathsUnavailable(true);
+                setHasCompletedInitialFetch(true);
+                setHasCompletedInitialCache(true);
                 setLoading(false);
                 setShowLocationsModal(true);
               }
@@ -904,6 +943,8 @@ export default function App() {
               setIsDriveActive(false);
               setIsDriveValidated(false);
               setLocalPathsUnavailable(true);
+              setHasCompletedInitialFetch(true);
+              setHasCompletedInitialCache(true);
               setLoading(false);
               setShowLocationsModal(true);
             });
@@ -921,6 +962,7 @@ export default function App() {
           setToken(tokenStr);
 
           if (uSettings.mode === "Drive" || uSettings.mode === "Demo") {
+            setStartupPhaseLabel("Connecting to Google Drive...");
             setIsDriveActive(true);
             setIsValidatingDrive(true);
             setDriveValidationError(null);
@@ -1011,12 +1053,15 @@ export default function App() {
     }
     const hasValidLocalConfig = resolveEffectiveLocalPaths(settings).hasValidLocalConfig;
     if (settings.mode === "Local" && !hasValidLocalConfig) {
+      setHasCompletedInitialFetch(true);
+      setHasCompletedInitialCache(true);
       setLoading(false);
       setIsSyncing(false);
       return;
     }
     fetchInProgressRef.current = true;
     setIsSyncing(true);
+    setStartupPhaseLabel("Loading schedule & logs...");
     try {
       if (settings.mode === "Local") {
         const fetchLocalDataEndpoints = async () => {
@@ -1242,6 +1287,7 @@ export default function App() {
     } finally {
       setIsSyncing(false);
       setLoading(false);
+      setHasCompletedInitialFetch(true);
       fetchInProgressRef.current = false;
     }
   };
@@ -1408,13 +1454,29 @@ export default function App() {
     setShowPrerecordModal(true);
   };
 
-  // On Studio version of the app, prompt user with the prerecord show selector when opened
+  // On Studio version of the app, prompt user with the prerecord show selector once initial startup completes
   useEffect(() => {
-    if (isStudioApp && !loading && !initialStudioPromptRef.current) {
+    if (
+      isStudioApp &&
+      isInitialStartupComplete &&
+      !showLocationsModal &&
+      !localPathsUnavailable &&
+      !showUpgradeModal &&
+      !showNewerVersionModal &&
+      !initialStudioPromptRef.current
+    ) {
       initialStudioPromptRef.current = true;
       handleOpenTimeframeModal("Prerecord", shows);
     }
-  }, [isStudioApp, loading, shows]);
+  }, [
+    isStudioApp,
+    isInitialStartupComplete,
+    showLocationsModal,
+    localPathsUnavailable,
+    showUpgradeModal,
+    showNewerVersionModal,
+    shows,
+  ]);
 
   const updatePlaylistModalData = async (isInitial: boolean = false, overrideTime?: Date) => {
     if (isInitial) {
@@ -2196,18 +2258,72 @@ export default function App() {
     }
   };
 
-  if (loading) {
+  if (!isInitialStartupComplete) {
+    const editionLabel = isLiveApp ? "AMP Live" : isStudioApp ? "AMP Studio" : "AMP Admin";
+    const splashStatusText = isInitialAudioCaching
+      ? cachingProgress.total > 0
+        ? `Caching live audio assets (${cachingProgress.current} / ${cachingProgress.total})...`
+        : "Caching live audio assets..."
+      : startupStatus === "VERIFY_PATHS" || startupStatus === "VERIFY_FILES"
+        ? startupMessage || startupPhaseLabel
+        : startupPhaseLabel;
+
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 gap-4">
-        <RefreshCw
-          className={cn(
-            "w-8 h-8 animate-spin",
-            isPre ? "text-purple-600" : "text-blue-500",
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center min-h-screen bg-[#0F172A] text-slate-100 px-4 select-none",
+          (animationsDisabled || isAsleep || !isWindowFocused) && "disable-animations",
+        )}
+      >
+        <div className="flex flex-col items-center text-center max-w-[260px] w-full">
+          {appFlavorIconUrl && !appFlavorIconError ? (
+            <img
+              src={appFlavorIconUrl}
+              alt={editionLabel}
+              onError={() => setAppFlavorIconError(true)}
+              className="w-20 h-20 object-contain rounded-2xl shadow-lg mb-3.5 pointer-events-none"
+            />
+          ) : (
+            <div
+              className={cn(
+                "w-20 h-20 rounded-2xl flex items-center justify-center shadow-lg mb-3.5",
+                isLiveApp
+                  ? "bg-purple-600"
+                  : isStudioApp
+                    ? "bg-emerald-600"
+                    : "bg-blue-600",
+              )}
+            >
+              <Clock className="w-10 h-10 text-white" />
+            </div>
           )}
-        />
-        <p className="text-xs font-bold text-slate-500 tracking-wider animate-pulse select-none">
-          Connecting to Google Drive (Check for pop-up window)
-        </p>
+
+          <div className="text-lg font-black tracking-tight text-white leading-tight">
+            {editionLabel}
+          </div>
+
+          <div className="mt-1 inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-wider uppercase bg-slate-800/90 text-slate-300 border border-slate-700">
+            v{CURRENT_APP_VERSION}
+          </div>
+
+          <p className="mt-2.5 text-xs font-bold text-slate-300 tracking-tight leading-snug">
+            AMP = Announcement Media Player
+          </p>
+
+          <div className="mt-5 flex items-center justify-center gap-2 text-xs font-semibold text-slate-400">
+            <RefreshCw
+              className={cn(
+                "w-3.5 h-3.5 shrink-0 animate-spin",
+                isLiveApp
+                  ? "text-purple-400"
+                  : isStudioApp
+                    ? "text-emerald-400"
+                    : "text-blue-400",
+              )}
+            />
+            <span className="truncate">{splashStatusText}</span>
+          </div>
+        </div>
       </div>
     );
   }
@@ -2632,7 +2748,7 @@ export default function App() {
 
         {/* Missing Files Warning Banner */}
         {(() => {
-          if (connectionError) return null;
+          if (connectionError || !hasCompletedInitialFetch || isSyncing) return null;
 
           const isMissingAnnouncements = announcements.length === 0;
           const isMissingMP3s = driveMP3s.length === 0;
@@ -2836,6 +2952,12 @@ export default function App() {
                     currentViewMode={calendarSubTab}
                     onViewModeChange={(mode) => setCalendarSubTab(mode)}
                     showPixelRuler={showPixelRuler}
+                    onOpenLocationsModal={() => setShowLocationsModal(true)}
+                    onOpenLocalStationFolder={
+                      locationMode === "Local" && (localPathAmp || localPathMediaEvergreens || localPathMediaShows)
+                        ? () => handleOpenLocalPath(localPathAmp || localPathMediaEvergreens || localPathMediaShows)
+                        : undefined
+                    }
                   />
                 </motion.div>
               ) : (

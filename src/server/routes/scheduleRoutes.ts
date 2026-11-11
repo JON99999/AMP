@@ -317,25 +317,36 @@ export function registerScheduleRoutes(app: express.Express): void {
         scheduleWindow: updatedObj.scheduleWindow
       });
 
-      // Keep announcements.json _meta.scheduleWindow and data[0]._stationMeta synchronized with station settings
+      // Keep announcements.json _meta.scheduleWindow, data[0]._stationMeta, and Auto Live Read WPM estimates synchronized with station settings (#77)
+      let updatedAnnouncements: Announcement[] | undefined = undefined;
       try {
         const calPath = getCalendarFilePath();
         if (calPath && fs.existsSync(calPath)) {
           const calParsed = JSON.parse(fs.readFileSync(calPath, 'utf-8') || '{}');
           if (calParsed && typeof calParsed === 'object' && !Array.isArray(calParsed) && Array.isArray(calParsed.data)) {
-            if (calParsed._meta && updatedObj.scheduleWindow) {
-              calParsed._meta.scheduleWindow = updatedObj.scheduleWindow;
-            }
-            if (calParsed.data.length > 0 && calParsed.data[0] && typeof calParsed.data[0] === 'object') {
-              calParsed.data[0]._stationMeta = {
-                ...(calParsed.data[0]._stationMeta || {}),
+            const calCounter =
+              typeof calParsed.AnnouncementsBackupCounter === 'number'
+                ? Math.max(0, calParsed.AnnouncementsBackupCounter - 1)
+                : 0;
+            const migratedCal = migrateAnnouncementsPayload(
+              calParsed,
+              calParsed._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+              calCounter,
+              undefined,
+              resolveLocalAnnouncementScriptText,
+              updatedObj.scheduleWindow
+            );
+            if (migratedCal.envelope.data.length > 0 && migratedCal.envelope.data[0] && typeof migratedCal.envelope.data[0] === 'object') {
+              migratedCal.envelope.data[0]._stationMeta = {
+                ...(migratedCal.envelope.data[0]._stationMeta || {}),
                 stationTimezone: updatedObj.stationTimezone,
                 adminContactInfo: updatedObj.adminContactInfo ?? '',
                 upNextPromo: updatedObj.upNextPromo,
                 scheduleWindow: updatedObj.scheduleWindow
               };
             }
-            atomicWriteFileSync(calPath, JSON.stringify(calParsed, null, 2));
+            atomicWriteFileSync(calPath, JSON.stringify(migratedCal.envelope, null, 2));
+            updatedAnnouncements = migratedCal.data;
           }
         }
       } catch (_) {}
@@ -350,7 +361,11 @@ export function registerScheduleRoutes(app: express.Express): void {
         console.error('Shows backup copy failed:', e);
       }
 
-      res.json({ success: true, _meta: updatedObj._meta });
+      res.json({
+        success: true,
+        _meta: updatedObj._meta,
+        ...(updatedAnnouncements ? { announcements: updatedAnnouncements } : {})
+      });
     } catch (e: any) {
       console.error('Failed to save shows:', e);
       res.status(500).json({

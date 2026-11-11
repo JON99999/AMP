@@ -24,6 +24,8 @@ export interface UseAudioCacheControllerOptions {
   activeTab: "player" | "calendar" | "log" | "live_dev";
   playMode: "Live" | "Prerecord" | "Playlist";
   setScrollTrigger: React.Dispatch<React.SetStateAction<number>>;
+  suppressModalOnInitialPass?: boolean;
+  onInitialCacheSettled?: () => void;
 }
 
 export function useAudioCacheController({
@@ -37,8 +39,12 @@ export function useAudioCacheController({
   activeTab,
   playMode,
   setScrollTrigger,
+  suppressModalOnInitialPass = false,
+  onInitialCacheSettled,
 }: UseAudioCacheControllerOptions) {
   const [showCachingModal, setShowCachingModal] = useState(false);
+  const [isInitialAudioCaching, setIsInitialAudioCaching] = useState(false);
+  const hasCompletedInitialCacheRef = React.useRef(false);
   const [cachingTargetMode, setCachingTargetMode] = useState<
     "Live" | "Prerecord" | "Playlist" | null
   >(null);
@@ -56,7 +62,9 @@ export function useAudioCacheController({
   const triggerCachingForMode = async (
     targetMode: "Live" | "Prerecord" | "Playlist",
     additionalUrls?: string[],
+    options?: { silentUnlessError?: boolean },
   ) => {
+    const silentUnlessError = Boolean(options?.silentUnlessError);
     if (additionalUrls) {
       setCurrentPlaylistTrackUrls(additionalUrls);
     }
@@ -87,7 +95,9 @@ export function useAudioCacheController({
       additionalUrls === undefined &&
       (targetMode === "Playlist" || targetMode === "Prerecord")
     ) {
-      setShowCachingModal(true);
+      if (!silentUnlessError) {
+        setShowCachingModal(true);
+      }
       setCachingProgress({
         total: 0,
         completed: 0,
@@ -115,8 +125,12 @@ export function useAudioCacheController({
       return;
     }
 
-    // Uncached files exist -> show caching modal with background blurred immediately
-    setShowCachingModal(true);
+    // Uncached files exist -> show caching modal unless running silently behind initial splash screen
+    if (!silentUnlessError) {
+      setShowCachingModal(true);
+    } else {
+      setIsInitialAudioCaching(true);
+    }
     setCachingProgress({
       total: activeUrls.length,
       completed: activeUrls.length - uncachedUrls.length,
@@ -125,18 +139,27 @@ export function useAudioCacheController({
       isComplete: false,
     });
 
-    const report = await updateAudioCacheWithProgress(
-      activeUrls,
-      getAccessToken() || token,
-      (currentReport) => {
-        setCachingProgress(currentReport);
-      },
-    );
+    try {
+      const report = await updateAudioCacheWithProgress(
+        activeUrls,
+        getAccessToken() || token,
+        (currentReport) => {
+          setCachingProgress(currentReport);
+        },
+      );
 
-    if (report.isComplete) {
-      if (report.failed === 0) {
-        // Close card ASAP (no delay)
-        setShowCachingModal(false);
+      if (report.isComplete) {
+        if (report.failed === 0) {
+          // Close card ASAP (no delay)
+          setShowCachingModal(false);
+        } else if (silentUnlessError) {
+          // Surface modal if errors occurred during silent initial startup pass
+          setShowCachingModal(true);
+        }
+      }
+    } finally {
+      if (silentUnlessError) {
+        setIsInitialAudioCaching(false);
       }
     }
   };
@@ -151,6 +174,8 @@ export function useAudioCacheController({
       ) {
         return;
       }
+      const isFirstPass = !hasCompletedInitialCacheRef.current;
+
       // Find all MP3 files used in active announcements and loaded playlist tracks
       const announcementUrls = getAllRequiredMp3Urls(announcements);
 
@@ -171,21 +196,40 @@ export function useAudioCacheController({
         if (showCachingModal && cachingTargetMode === "Prerecord") {
           setShowCachingModal(false);
         }
+        if (isFirstPass) {
+          hasCompletedInitialCacheRef.current = true;
+          onInitialCacheSettled?.();
+        }
         return;
       }
 
       if (activeTab === "player") {
-        await triggerCachingForMode(playMode, currentPlaylistTrackUrls);
+        await triggerCachingForMode(playMode, currentPlaylistTrackUrls, {
+          silentUnlessError: isFirstPass && suppressModalOnInitialPass,
+        });
+        if (isFirstPass) {
+          hasCompletedInitialCacheRef.current = true;
+          onInitialCacheSettled?.();
+        }
         setScrollTrigger((prev) => prev + 1);
         return;
       }
 
       try {
+        if (isFirstPass && suppressModalOnInitialPass) {
+          setIsInitialAudioCaching(true);
+        }
         await updateAudioCache(activeUrls, getAccessToken() || token);
         // Force-refresh status representation to trigger card border transitions
         setScrollTrigger((prev) => prev + 1);
       } catch (err) {
         console.error("Failed to sync audio cache:", err);
+      } finally {
+        if (isFirstPass) {
+          setIsInitialAudioCaching(false);
+          hasCompletedInitialCacheRef.current = true;
+          onInitialCacheSettled?.();
+        }
       }
     };
 
@@ -206,6 +250,7 @@ export function useAudioCacheController({
   return {
     showCachingModal,
     setShowCachingModal,
+    isInitialAudioCaching,
     cachingTargetMode,
     setCachingTargetMode,
     currentPlaylistTrackUrls,

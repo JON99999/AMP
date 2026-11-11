@@ -5,7 +5,7 @@ const os = require('os');
 const net = require('net');
 const http = require('http');
 
-const APP_VERSION = '0.20.5';
+const APP_VERSION = '0.20.6';
 const AMP_GITHUB_REPO_URL = 'https://github.com/JON99999/AMP';
 
 // ==========================================================================================
@@ -837,7 +837,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: `Version 0.20.5\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.`
+              detail: 'Version 0.20.6\nAMP = Announcement Media Player\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.'
             });
           }
         }
@@ -930,6 +930,108 @@ function getAppIcon() {
   return undefined;
 }
 
+function renderInitialSplashWindow(win, appTitle, appIcon) {
+  if (!win || win.isDestroyed()) return;
+  let iconDataUrl = '';
+  try {
+    if (appIcon && typeof appIcon.toDataURL === 'function') {
+      iconDataUrl = appIcon.toDataURL();
+    }
+  } catch (_) {}
+
+  const accentBg =
+    appMode === 'Live'
+      ? '#9333ea'
+      : appMode === 'Studio'
+        ? '#059669'
+        : '#2563eb';
+
+  const iconMarkup = iconDataUrl
+    ? `<img src="${iconDataUrl}" alt="${appTitle}" style="width:80px;height:80px;object-fit:contain;user-select:none;-webkit-user-drag:none;filter:drop-shadow(0 8px 16px rgba(0,0,0,0.45));" />`
+    : `<div style="width:80px;height:80px;border-radius:18px;background:${accentBg};display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:900;color:#fff;letter-spacing:0.04em;box-shadow:0 8px 16px rgba(0,0,0,0.45);">AMP</div>`;
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${appTitle}</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #0F172A;
+      color: #F8FAFC;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      user-select: none;
+    }
+    .splash-card {
+      width: 100%;
+      max-width: 228px;
+      padding: 20px 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 12px;
+    }
+    .title {
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      color: #FFFFFF;
+      margin: 2px 0 0 0;
+      line-height: 1.15;
+    }
+    .version-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: #1E293B;
+      border: 1px solid #334155;
+      color: #93C5FD;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+    .desc {
+      font-size: 12px;
+      font-weight: 700;
+      color: #CBD5E1;
+      line-height: 1.35;
+      margin: 0;
+    }
+    .status {
+      margin-top: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #94A3B8;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div class="splash-card">
+    ${iconMarkup}
+    <div class="title">${appTitle}</div>
+    <div class="version-badge">v${APP_VERSION}</div>
+    <p class="desc">AMP = Announcement Media Player</p>
+    <div class="status">Starting local server...</div>
+  </div>
+</body>
+</html>`;
+
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  win.loadURL(dataUrl);
+}
+
 function createWindow() {
   const disableShadows = DISABLE_WINDOW_SHADOWS_FOR_INTEL_MAC && isIntelMac;
 
@@ -944,6 +1046,7 @@ function createWindow() {
   let windowOptions = {
     height: 800,
     title: appTitle,
+    backgroundColor: '#0F172A',
     fullscreenable: false,
     acceptsFirstMouse: true, // Allow direct first-click activation on unfocused/background windows (macOS)
     hasShadow: !disableShadows, // OPTION 3: Disable window shadows on Intel Macs to bypass expensive WindowServer calculations
@@ -985,6 +1088,9 @@ function createWindow() {
 
   mainWindow = new BrowserWindow(windowOptions);
   attachEditContextMenu(mainWindow);
+
+  // Immediately render branded opening splash screen while waiting for backend server
+  renderInitialSplashWindow(mainWindow, appTitle, appIcon);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) {
@@ -1051,6 +1157,24 @@ function createWindow() {
 }
 
 app.on('ready', async () => {
+  const editionName =
+    appMode === 'Live'
+      ? 'AMP Live'
+      : appMode === 'Studio'
+        ? 'AMP Studio'
+        : 'AMP Admin';
+
+  if (typeof app.setAboutPanelOptions === 'function') {
+    try {
+      app.setAboutPanelOptions({
+        applicationName: editionName,
+        applicationVersion: APP_VERSION,
+        version: APP_VERSION,
+        credits: 'AMP = Announcement Media Player\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.'
+      });
+    } catch (_) {}
+  }
+
   if (isMac && app.dock && typeof app.dock.setIcon === 'function') {
     const dockIcon = getAppIcon();
     if (dockIcon) {

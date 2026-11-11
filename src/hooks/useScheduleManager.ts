@@ -230,6 +230,9 @@ export function useScheduleManager({
         throw new Error(data.error || `Failed to write shows (Status ${res.status})`);
       }
       setShows(newShows);
+      if (Array.isArray(data.announcements)) {
+        setAnnouncements(normalizeAnnouncements(data.announcements));
+      }
       if (explicitAdminContactInfo !== undefined || targetContact) {
         setHasSavedAdminContact(true);
       }
