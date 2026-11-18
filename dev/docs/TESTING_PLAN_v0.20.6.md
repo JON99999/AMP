@@ -39,35 +39,35 @@
 
 ### Group W-B: `Calendar -> Announcements` & Time-Gate Editor (`#42`, `#53`, `#68`, `#71`, `#80`, `#81`, `#82`, `#86`)
 
-- **4. `#42` — Preserving Prior Scheduled Calendar History When Removing Days in Weekly Announcement Grid**
-  - `a.` In `Calendar -> Weekly Calendar`, pick an active announcement that has scheduled slots on a past day earlier this week.
-  - `b.` Open the **Announcement Editor**, uncheck that day column in the **Weekly Announcement** grid, and click **Save**.
-  - `c.` Return to `Calendar -> Weekly Calendar`: confirm **past** occurrences on the removed day still appear on the Calendar (and past played logs remain matched), while **future** occurrences on that day are removed (`#42`).
+- **4. `[SKIP — Passed on Mac & 100% OS-Agnostic]` `#42` — Preserving Prior Scheduled Calendar History When Removing Days in Weekly Announcement Grid**
+  - *Assessment*: Pure TypeScript date/revision array logic (`CalendarTab.tsx` / `scheduleEngine.ts`) with zero OS or filesystem dependency. Already passed on macOS in `v0.20.5`.
+  - `a.` *(Optional)* In `Calendar -> Weekly Calendar`, pick an active announcement that has scheduled slots on a past day earlier this week, uncheck that day column in the **Announcement Editor**, click **Save**, and confirm past occurrences remain on the Calendar while future occurrences are removed (`#42`).
 
-- **5. `#68` & `#80` — Open-Ended Gate End-Date Presets (`+1 Week`, `+1 Month`, `Announcement End`, `Custom`), Overall Announcement Window Banner, & `Ann. End` Quick-Fill**
-  - `a.` Open an announcement in the **Announcement Editor** whose current active gate (`Gate #1`) has a blank/open-ended **End** date, and confirm the parent Announcement has a `Start` date (and optionally set a parent `End` date to test `Announcement End`).
-  - `b.` Next to `Gate #1`'s blank `End` time input in the gate header, confirm the **`Ann. End`** quick-fill button appears whenever the parent Announcement has an `End` date; click it to verify it fills the gate's `End` date, then clear the gate's `End` date back to blank (`#80` Item 6).
+- **5. `[TEST ONCE — #80 New in v0.20.6 (Skip #68)]` `#68` & `#80` — Open-Ended Gate End-Date Presets (`+1 Week`, `+1 Month`, `Announcement End`, `Custom`), Overall Announcement Window Banner, & `Ann. End` Quick-Fill**
+  - *Assessment*: `#68` (no false `"Before #1 File"`) already passed on Mac and is 100% OS-agnostic. `#80` is new in `v0.20.6` (not yet tested on Mac) — test `#80` once here on Windows and skip it on Mac in Round 2.
+  - `a.` Open an announcement in the **Announcement Editor** whose current active gate (`Gate #1`) has a blank/open-ended **End** date, and confirm the parent Announcement has a `Start` date and an `End` date.
+  - `b.` Next to `Gate #1`'s blank `End` time input in the gate header, confirm the **`Ann. End`** quick-fill button appears; click it to verify it fills the gate's `End` date, then clear the gate's `End` date back to blank (`#80` Item 6).
   - `c.` Click **+ Add Announcement** inside `Announcement Gates` and select a file (`Use Selected (1)`) to open **Schedule Placement Options** (`PlacementPresetModal`):
     - Confirm the **`Announcement Window`** banner at the top of the modal clearly displays the overall Announcement's `Start` and `End` dates (`#80`).
-    - Confirm there is **no** false `"Before #1 File"` leading-gap option when `Gate #1` started today or in the past (`#68`).
-    - Under `After #1 <File> (Open-Ended)`, confirm the prompt **"When should Gate #1 (<File>) end?"** displays the 4 preset buttons: **`+1 Week`**, **`+1 Month`**, **`Announcement End`** (enabled when the parent Announcement has an End date), and **`Custom`** (`#80`).
-    - Click **`+1 Week`** (or **`+1 Month`**) and confirm `Gate #1`'s End date populates and `Gate #2`'s Start date auto-populates to `1 minute` later; click **Place** and confirm both gates are contiguous with no gap (`#68`, `#80`).
+    - *(Skip `#68` check — already passed on Mac)*
+    - Under `After #1 <File> (Open-Ended)`, confirm the prompt **"When should Gate #1 (<File>) end?"** displays the 4 preset buttons: **`+1 Week`**, **`+1 Month`**, **`Announcement End`**, and **`Custom`** (`#80`).
+    - Click **`+1 Week`** (or **`+1 Month`**) and confirm `Gate #1`'s End date populates and `Gate #2`'s Start date auto-populates to `1 minute` later; click **Place** (`#80`).
 
-- **6. `#71` & `#81` — Gate Header Warning Consolidation, Sequential Gate Validation, Past-Date Deferral, & `Past / Inactivated Gates` `Reuse`**
-  - `a.` In the **Announcement Editor** with two or more sequential gates (`Gate #1` and `Gate #2`):
+- **6. `[TEST ONCE — 6.a (#81) Only; Skip 6.b & 6.c (#71)]` `#71` & `#81` — Gate Header Warning Consolidation, Sequential Gate Validation, Past-Date Deferral, & `Past / Inactivated Gates` `Reuse`**
+  - *Assessment*: `6.b` and `6.c` (`#71` past-date deferral and `Past / Inactivated Gates` `Reuse`) already passed on Mac and are 100% OS-agnostic React state. Only test `6.a` (`#81`, new in `v0.20.6`) once here on Windows and skip on Mac in Round 2.
+  - `a.` **`[TEST ONCE — New in v0.20.6]`** In the **Announcement Editor** with two or more sequential gates (`Gate #1` and `Gate #2`):
     - Create a gap between `Gate #1` End and `Gate #2` Start (or set `Gate #2`'s Start/End out of order or outside the parent Announcement window).
     - Confirm **`"Gap detected"`** and all other gate validation errors/warnings appear **directly below each gate's `Start` / `End` header bar** (above the media rows) on **both** `Gate #1` and sequential `Gate #2` (`#81`).
-  - `b.` Change an active gate's **End** date to a date in the past: confirm the gate stays in **Active Gates** while editing and shows the amber warning banner directly below the gate header (`#71`, `#81`).
-  - `c.` Click **Save**, reopen the announcement, and expand **Past / Inactivated Gates**: confirm the gate is now in `Past / Inactivated Gates` (`Past (Locked)`), read-only except for **Preview**, **Reuse**, and **Reactivate** / **Delete** (when `0 plays`), and confirm clicking **Reuse** opens **Schedule Placement Options** (`#71`).
+  - `b.` **`[SKIP — Passed on Mac (#71)]`** *(Past-date End deferral while editing).*
+  - `c.` **`[SKIP — Passed on Mac (#71)]`** *(`Past / Inactivated Gates` lock state and `Reuse` button).*
 
-- **7. `#82`, `#53`, & `#86` — `"No file selected — add file to rotate (optional)"` Row, Gate/Media `Delete` vs. `Inactivate`, & Per-Media-Row `Past / Inactivated Media` Section**
-  - `a.` **`"No file selected"` Rotation Row (`#82`)**:
+- **7. `[TEST ONCE — 7.a (#82) & 7.c (#86) Only; Skip 7.b (#53)]` `#82`, `#53`, & `#86` — `"No file selected — add file to rotate (optional)"` Row, Gate/Media `Delete` vs. `Inactivate`, & Per-Media-Row `Past / Inactivated Media` Section**
+  - *Assessment*: `7.b` (`#53` unplayed `0 plays` Delete confirmations) already passed on Mac and is 100% OS-agnostic. Only test `7.a` (`#82`) and `7.c` (`#86`), which are new in `v0.20.6` (and then skip both on Mac in Round 2).
+  - `a.` **`[TEST ONCE — New in v0.20.6]` `"No file selected"` Rotation Row (`#82`)**:
     - Look at the bottom of any active gate that already has at least 1 media file: confirm the old standalone `+ Add File` button is replaced by a full media-style row reading **`"No file selected — add file to rotate (optional)"`** with right-aligned **`+ Create Live Read`** and **`Choose`** buttons.
     - Click **`Choose`** (or **`+ Create Live Read`**) on that optional row and confirm it appends a rotating media file to the gate.
-  - `b.` **Unplayed (`0 plays`) Delete Confirmations (`#53`)**:
-    - On a `0 plays` media row in a 1-item gate, click **Delete**: confirm the confirmation modal appears and confirming clears the slot to `No file selected (Required)` without deleting the gate.
-    - On a `0 plays` gate header, click the gate-level **Delete** button: confirm the *"Delete Gate #N?"* confirmation modal appears.
-  - `c.` **Per-Media-Row Inactivation & `Past / Inactivated Media` Section (`#86`)**:
+  - `b.` **`[SKIP — Passed on Mac (#53)]`** *(Unplayed `0 plays` media-row and gate-header Delete confirmations).*
+  - `c.` **`[TEST ONCE — New in v0.20.6]` Per-Media-Row Inactivation & `Past / Inactivated Media` Section (`#86`)**:
     - Locate (or log a test play on) a gate that has `> 0 plays` on a media row and has 2 rotating media files.
     - Click **Inactivate** on the played media row (`> 0 plays`):
       - Confirm **only that single media row** is inactivated and moves into the collapsible **`Past / Inactivated Media (1)`** subsection at the bottom of that same gate card — the gate itself and the other media row remain active (`#86`).
@@ -79,13 +79,15 @@
 
 ### Group W-C: `Calendar -> Shows` Validation & Folder Verification / Merge (`#66`, `#67`, `#84`, `#85`)
 
-- **8. `#66` & `#84` — Shows Manager (`Calendar -> Shows`) Required-Field Validation (Including Explicit `Short Name` Check) & In-App `Delete Show?` Modal**
-  - `a.` In `Calendar -> Shows`, click **+ Add Show** (or **Edit** an existing show), fill in **Show Name** and **Show Host**, then **delete the text in `Short Name (For Filenames)`** and click **Save Changes**:
+- **8. `[TEST ONCE — 8.a (#84) Only; Skip 8.b & 8.c (#66)]` `#66` & `#84` — Shows Manager (`Calendar -> Shows`) Required-Field Validation (Including Explicit `Short Name` Check) & In-App `Delete Show?` Modal**
+  - *Assessment*: `8.b` and `8.c` (`#66` general show validation and `Delete Show?` modal) already passed on Mac and are 100% OS-agnostic React state. Only test `8.a` (`#84`, new in `v0.20.6`) once here on Windows and skip on Mac in Round 2.
+  - `a.` **`[TEST ONCE — New in v0.20.6]`** In `Calendar -> Shows`, click **+ Add Show** (or **Edit** an existing show), fill in **Show Name** and **Show Host**, then **delete the text in `Short Name (For Filenames)`** and click **Save Changes**:
     - Confirm the red **Missing or Invalid Show Information** banner appears (`Short Name (For Filenames) is required.`) and highlights the `Short Name` input instead of silently auto-generating a short name (`#84`).
-  - `b.` Also test clearing **Show Name**, clearing **Show Host**, or setting **Duration** to `0 Hours 0 Mins` and clicking **Save Changes**: confirm the inline validation banner lists each missing field (`#66`).
-  - `c.` Click **Delete Show** on an existing show: confirm the in-app **Delete Show?** confirmation modal appears (`#66`).
+  - `b.` **`[SKIP — Passed on Mac (#66)]`** *(Clearing Show Name, Show Host, or setting Duration to `0h 0m`).*
+  - `c.` **`[SKIP — Passed on Mac (#66)]`** *(`Delete Show?` confirmation modal).*
 
-- **9. `#67` & `#85` — `Check Folders` Grouped `"Notice Extra folder(s) found"` Formatting, Quick `Folders` / Explorer Buttons, & Stranded Folder Merge**
+- **9. `[MUST TEST ON WIN — OS / Filesystem / Explorer Specific]` `#67` & `#85` — `Check Folders` Grouped `"Notice Extra folder(s) found"` Formatting, Quick `Folders` / Explorer Buttons, & Stranded Folder Merge**
+  - *Assessment*: Exercises Windows `path.join` (`\` vs `/`), `fs.mkdirSync`, `fs.renameSync` / `fs.rmSync` on NTFS, and Electron `shell.openPath` (`Open in Explorer`). Must be verified on Windows.
   - `a.` In Windows File Explorer, inside `Test_Station_Root\media_evergreens` (or `media_shows`), rename a show subfolder (e.g., `Show_1` -> `Show_1_Stranded`) and place a test `.mp3` file inside `Show_1_Stranded`.
   - `b.` In AMP `Calendar -> Shows`, click **Check Evergreen & Playlist Folders** (`Check Folders`) to open the **Folder Verification** modal:
     - Confirm the missing show folder is recreated and reported (`[Fixed] Created missing Evergreen folder: Show_1`) (`#67`).
@@ -97,25 +99,28 @@
 
 ### Group W-D: `Select Announcement` (`MediaPickerModal`) & `CopyEditorModal` (`#69`, `#72`, `#73`, `#79`, `#87`, `#89`)
 
-- **10. `#69` — Synchronous Script Load Gate in `CopyEditorModal` (`Edit` & `Copy`)**
-  - `a.` Repeatedly click **Edit** and **Copy** on `.txt` Live Reads (`5–10` times) from both Announcement Gates and `Select Announcement`: confirm `CopyEditorModal` waits for the script text before rendering the editor and populates `100%` of the time with zero blank loads.
+- **10. `[SKIP STANDALONE LOOP — Covered by Tests 11 & 12]` `#69` — Synchronous Script Load Gate in `CopyEditorModal` (`Edit` & `Copy`)**
+  - *Assessment*: Already passed `5–10x` loop on Mac in `v0.20.5`; opening `CopyEditorModal` during Tests 11 & 12 automatically verifies it on Windows without a separate loop.
 
-- **11. `#89` — New Live Read (`+ Create Live Read`) Default Filename Focus, `"Default name"` Badge, & Unedited Name Confirmation**
+- **11. `[TEST ONCE — New in v0.20.6 (OS-Agnostic)]` `#89` — New Live Read (`+ Create Live Read`) Default Filename Focus, `"Default name"` Badge, & Unedited Name Confirmation**
+  - *Assessment*: Pure React focus/modal state, new in `v0.20.6`. Test once here on Windows and skip on Mac in Round 2.
   - `a.` Inside an Announcement in the **Announcement Editor**, click **`+ Create Live Read`** on a gate row to open `CopyEditorModal`:
     - Confirm the keyboard focus is automatically placed inside the **File Name** input with the default announcement name selected, and confirm the amber **`Default name`** badge appears next to the `File Name` label (`#89`).
   - `b.` Type some script text without changing the default filename and click **Save**:
     - Confirm an inline confirmation prompt appears asking you to confirm saving with the unedited default filename (`Confirm & Save` vs. `Edit File Name`) (`#89`).
 
-- **12. `#73` & `#87` — `Select Announcement` Live Read `Copy` Returns to Picker, Highlights `New` With `Unused First`, & Auto-Increments `"Copy of ... (2)"`**
-  - `a.` Open **Select Announcement** (`MediaPickerModal`), ensure **`Unused First`** is checked (and also test unchecked), and click the **Copy** icon on a `.txt` Live Read:
+- **12. `[MUST TEST ON WIN — New in v0.20.6 + NTFS Case-Insensitive Collision Check]` `#73` & `#87` — `Select Announcement` Live Read `Copy` Returns to Picker, Highlights `New` With `Unused First`, & Auto-Increments `"Copy of ... (2)"`**
+  - *Assessment*: `#87` is new in `v0.20.6` and checks existing filenames on Windows' case-insensitive NTFS filesystem.
+  - `a.` Open **Select Announcement** (`MediaPickerModal`), ensure **`Unused First`** is checked, and click the **Copy** icon on a `.txt` Live Read:
     - Confirm the suggested filename is **`Copy of <stem>`** (single space, no double space) (`#87`).
     - Click **Save** and confirm `CopyEditorModal` returns to the open **Select Announcement** window, highlights the newly created `.txt` row with the **`New`** badge, and scrolls it into view (`#73`, `#87`).
   - `b.` Click the **Copy** icon a **second time** on that same original `.txt` file:
     - Confirm `CopyEditorModal` immediately detects that `Copy of <stem>.txt` already exists and pre-fills **`Copy of <stem> (2)`** so clicking **Save** succeeds immediately without a naming collision (`#87`).
 
-- **13. `#72` & `#79` — `Select Announcement` Unified Checkbox + `Use Selected (N)` Flow, Persistent Checked Rows When Filtering, & Column Fit**
+- **13. `[TEST ONCE — New in v0.20.6 + Quick Windows Scrollbar Glance]` `#72` & `#79` — `Select Announcement` Unified Checkbox + `Use Selected (N)` Flow, Persistent Checked Rows When Filtering, & Column Fit**
+  - *Assessment*: `#79` is new in `v0.20.6` (test once here on Windows, skip on Mac in Round 2). For `#72`, just glance that Windows scrollbar/font metrics do not cause a horizontal scrollbar.
   - `a.` Open **Select Announcement** (`MediaPickerModal`) in both single-select mode (e.g., clicking `Choose` on a single media row) and multi-select mode (e.g., clicking `+ Add Announcement`):
-    - Confirm all 5 columns (`Name`, `Type`, `File Date`, `Last Used`, and `Actions`) fit cleanly with no horizontal scrollbar, and confirm the header's `(.mp3, .txt, .pdf, .png, .jpg, and more)` text shows the 3-line categorized format tooltip on hover (`#72`).
+    - Glance that all 5 columns (`Name`, `Type`, `File Date`, `Last Used`, and `Actions`) fit cleanly with no horizontal scrollbar on Windows (`#72`).
     - Confirm the per-row `Select` button is **gone** from the `Actions` column (leaving only the compact `Preview/Stop`, `Copy`, and `Edit` icon buttons) (`#79`).
     - Confirm **every** mode uses the left-hand row checkboxes and the bottom-right **`Use Selected (N)`** button, and confirm the footer helper text matches the unified flow (`#79`).
   - `b.` **Persistent Checked Rows When Filtering (`#79`)**:
@@ -126,11 +131,11 @@
 
 ### Group W-E: `Prerecord` & `Export Show` (`#60`, `#74`, `#88`)
 
-- **14. `#60` — Auto-Close `Export Show` Popup When Selecting a New Show in `Prerecord` Mode**
-  - `a.` In `AMP Studio-0.20.6-Win.exe` (or `Admin`), switch **Mode:** to **Prerecord**, load a show, and click **Export** to open the `Export Show` popup.
-  - `b.` Leave `Export Show` open and click **Choose Show** in the Prerecord header — confirm the `Export Show` popup automatically closes (`#60`).
+- **14. `[SKIP — Passed on Both Win (v0.20.3) & Mac (v0.20.5) & 100% OS-Agnostic]` `#60` — Auto-Close `Export Show` Popup When Selecting a New Show in `Prerecord` Mode**
+  - *Assessment*: Pure React state in `PlayerTab.tsx`; already verified on both Windows and macOS.
 
-- **15. `#74` & `#88` — `Export Show -> Live Reads` Stylized Preview, Dual Rich/Plain Copy, Overlapping Markdown Stripping in `.txt` + `.rtf` Export, & Clean Stylized Paste**
+- **15. `[MUST TEST ON WIN — Windows Clipboard / WordPad / Notepad + .txt/.rtf Disk Export]` `#74` & `#88` — `Export Show -> Live Reads` Stylized Preview, Dual Rich/Plain Copy, Overlapping Markdown Stripping in `.txt` + `.rtf` Export, & Clean Stylized Paste**
+  - *Assessment*: Exercises Windows clipboard (`text/html` + `text/plain` into WordPad/Word and Notepad), Windows `.txt`/`.rtf` file writing, and `#88` (new in `v0.20.6`).
   - `a.` Create or edit a Live Read containing the overlapping markdown vehicle-donation test script (`-We wil*l take your car! ... Wate*__*rcr*____***aft! Bu***__***lldozer!***`).
   - `b.` In **Prerecord -> Export -> Live Reads**:
     - Confirm the preview renders visual **Bold**, *Italic*, and <u>Underline</u> with no raw `**`, `*`, or `__` markers (`#74`).
@@ -142,24 +147,16 @@
 
 ---
 
-## Round 2: Backup macOS Delta Test Plan (`AMP Admin / Studio / Live-0.20.6-Mac.dmg`)
+## Round 2: Streamlined Backup macOS Delta Test Plan (`AMP Admin / Studio / Live-0.20.6-Mac.dmg`)
 
-After completing Round 1 on Windows, install `AMP Admin / Studio / Live-0.20.6-Mac.dmg` on macOS and run this focused delta pass covering the 12 new `v0.20.6` items (`#76`, `#77`, `#79`–`#82`, `#84`–`#89`):
+Because all OS-agnostic `v0.20.6` UI items (`#77`, `#79`–`#82`, `#84`, `#86`, `#87`, `#88`, `#89`) are verified in Round 1 on Windows, **Round 2 on macOS only needs to test the 2 macOS-specific OS/window/Finder items (`M1` & `M4.b`)**:
 
-- **M1. `#76` — Branded Opening Splash Screen on macOS (`AMP Admin`, `Studio`, `Live`)**
+- **M1. `[MUST TEST ON MAC — Electron macOS Window/Splash Lifecycle]` `#76` — Branded Opening Splash Screen on macOS (`AMP Admin`, `Studio`, `Live`)**
   - `a.` Launch `AMP Admin-0.20.6-Mac.dmg`, `AMP Studio-0.20.6-Mac.dmg`, and `AMP Live-0.20.6-Mac.dmg`: confirm the dark `#0F172A` splash screen (`80x80` icon, `v0.20.6`, `AMP = Announcement Media Player`) holds cleanly until folder verification, initial schedule load, and silent audio pre-caching complete without flashing temporary startup modals.
-- **M2. `#77` — macOS WPM Direct Typing (`3.b`), `Est:` Box Right of `Auto` (`3.c`), & Auto Read-Time Recalculation (`3.d`)**
-  - `a.` In **Folders -> Help -> Section 6**, verify selecting all and typing `120` in the WPM input works smoothly on macOS, verify `Est: ~0mXXs` sits to the right of `Auto` (always visible) in `CopyEditorModal`, and verify saving WPM recalculates all `Auto` script durations across the schedule.
-- **M3. `#80`, `#81`, `#82`, & `#86` — macOS Gate Editor Refinements**
-  - `a.` Verify the `Ann. End` quick-fill button on blank gate End dates and the `Announcement Window` banner + 4 End-date presets (`+1 Week`, `+1 Month`, `Announcement End`, `Custom`) in `Schedule Placement Options` (`#80`).
-  - `b.` Verify `"Gap detected"` and sequential gate warnings appear directly below the gate `Start`/`End` header on `Gate #1` and `Gate #2+` (`#81`).
-  - `c.` Verify the `"No file selected — add file to rotate (optional)"` row replaces `+ Add File` at the bottom of active gates (`#82`).
-  - `d.` Verify clicking **Inactivate** on a single played media row moves only that media item into the gate's collapsible `Past / Inactivated Media (N)` section (and prompts when inactivating the last active media item in a gate) (`#86`).
-- **M4. `#84` & `#85` — macOS Shows `Short Name` Validation & `Check Folders` Merge / Finder Actions**
-  - `a.` In `Calendar -> Shows`, fill `Show Name` and `Show Host`, clear `Short Name (For Filenames)`, and click **Save Changes** — confirm validation fails with the inline error banner (`#84`).
-  - `b.` Click **Check Folders** with a stranded subfolder present: confirm grouped `[Notice] Notice Extra folder(s) found` (`media_evergreens/<folder>`), test `Open in Finder` and `Folders`, and test **Merge Stranded Folder into Show** (`#85`).
-- **M5. `#79`, `#87`, `#88`, & `#89` — macOS `Select Announcement`, `CopyEditorModal`, & `.txt` Export**
-  - `a.` In `Select Announcement`, confirm the per-row `Select` button is removed, row checkboxes + `Use Selected (N)` work in both single- and multi-select modes, and checked rows stay visible when filtering (`#79`).
-  - `b.` Copy a `.txt` file twice from `Select Announcement`: confirm the first copy highlights as `New` (even with `Unused First` checked) and the second copy automatically suggests `"Copy of <stem> (2)"` (`#87`).
-  - `c.` Click `+ Create Live Read` on a gate: confirm auto-focus on the default filename, the `Default name` badge, and the save confirmation prompt when unedited (`#89`).
-  - `d.` In **Prerecord -> Export -> Export Files...**, confirm the overlapping markdown vehicle-donation `.txt` file exports with zero leftover `*` or `_` characters on macOS (`#88`).
+- **M2. `[SKIP ON MAC IF PASSED ON WIN — 100% OS-Agnostic]` `#77` — WPM Direct Typing, `Est:` Box Right of `Auto`, & Auto Read-Time Recalculation**
+- **M3. `[SKIP ON MAC IF PASSED ON WIN — 100% OS-Agnostic]` `#80`, `#81`, `#82`, & `#86` — Gate Editor Refinements**
+- **M4. `[TEST M4.b ONLY ON MAC — Finder & APFS/HFS+ Folder Merge; Skip M4.a (#84)]` `#84` & `#85` — macOS `Check Folders` Merge / Finder Actions**
+  - `a.` **`[SKIP — 100% OS-Agnostic (#84)]`** *(Shows `Short Name` required validation).*
+  - `b.` **`[MUST TEST ON MAC]`** Click **Check Folders** with a stranded subfolder present: confirm grouped `[Notice] Notice Extra folder(s) found` (`media_evergreens/<folder>`), test **`Open in Finder`** and **`Folders`**, and test **Merge Stranded Folder into Show** on macOS (`#85`).
+- **M5. `[SKIP ON MAC IF PASSED ON WIN — 100% OS-Agnostic]` `#79`, `#87`, `#88`, & `#89` — `Select Announcement`, `CopyEditorModal`, & `.txt` Export**
+

@@ -778,6 +778,7 @@ export function PlayerPlaylistDeckView({
                         )}
                       >
                         <div
+                          title={formatRotatedAnnouncementName(s.name, activeMp3)}
                           className={cn(
                             'leading-tight break-words flex-1 flex flex-col justify-center',
                             isExpanded
@@ -792,7 +793,7 @@ export function PlayerPlaylistDeckView({
                                   : 'text-slate-800'
                           )}
                         >
-                          {formatRotatedAnnouncementName(s.name, activeMp3)}
+                          {s.name}
                         </div>
 
                         {isScript ? (
@@ -1166,12 +1167,13 @@ export function PlayerPlaylistDeckView({
 
                     <div className="flex items-center justify-between gap-2">
                       <div
+                        title={formatRotatedAnnouncementName(s.name, activeMp3)}
                         className={cn(
                           'text-xs font-bold leading-tight break-words line-clamp-2 flex-1',
                           isCurrentlyPlaying ? 'text-purple-700' : 'text-slate-800'
                         )}
                       >
-                        {formatRotatedAnnouncementName(s.name, activeMp3)}
+                        {s.name}
                       </div>
 
                       {isScript ? (

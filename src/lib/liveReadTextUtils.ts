@@ -60,7 +60,25 @@ export function stripFormattingMarkers(text: string): string {
 }
 
 /**
- * Parses a read time string (e.g., "0m30s", "0:30", "30s", "00 min 30 sec", "~0:45", "45") into total seconds.
+ * Checks whether a user-entered read time string is in a valid parseable format
+ * (e.g., "0m30s", "00m20s", "0:30", "30s", "1m", "00 min 30 sec", "~0:45", or bare integer seconds "20").
+ */
+export function isParseableReadTimeFormat(raw: string | undefined | null): boolean {
+  if (!raw) return false;
+  const cleaned = String(raw).replace(/^~\s*/, '').trim();
+  if (!cleaned) return false;
+  return (
+    /^\d+\s*m(?:in(?:ute)?s?)?\s*\d+\s*s(?:ec(?:ond)?s?)?$/i.test(cleaned) ||
+    /^\d*:\d{1,2}$/.test(cleaned) ||
+    /^\d+\s*s(?:ec(?:ond)?s?)?$/i.test(cleaned) ||
+    /^\d+\s*m(?:in(?:ute)?s?)?$/i.test(cleaned) ||
+    /^\d+$/.test(cleaned)
+  );
+}
+
+/**
+ * Parses a read time string (e.g., "0m30s", "0:30", "30s", "00 min 30 sec", "~0:45", "20") into total seconds.
+ * Bare integers are treated as seconds.
  */
 export function parseReadTimeToSeconds(raw: string | undefined | null): number {
   if (!raw) return 0;
@@ -91,6 +109,11 @@ export function parseReadTimeToSeconds(raw: string | undefined | null): number {
     return parseInt(onlySecMatch[1], 10) || 0;
   }
 
+  const bareIntMatch = cleaned.match(/^(\d+)$/);
+  if (bareIntMatch) {
+    return parseInt(bareIntMatch[1], 10) || 0;
+  }
+
   return 0;
 }
 
@@ -105,18 +128,13 @@ export function formatSecondsToMinSec(totalSeconds: number): string {
 }
 
 /**
- * Normalizes any stored or user-entered read-time string (e.g., "0m30s", "0:30", "30s", "~0:30", "00 min 30 sec") into "0m30s" display format.
+ * Normalizes any stored or user-entered read-time string (e.g., "0m30s", "0:30", "30s", "20", "~0:30", "00 min 30 sec") into "0m30s" display format.
  */
 export function normalizeReadTimeDisplay(raw: string | undefined | null): string {
   if (!raw) return '';
   const cleaned = String(raw).replace(/^~\s*/, '').trim();
   if (!cleaned) return '';
-  if (
-    /^\d+\s*m(?:in(?:ute)?s?)?\s*\d+\s*s(?:ec(?:ond)?s?)?$/i.test(cleaned) ||
-    /^\d*:\d{1,2}$/.test(cleaned) ||
-    /^\d+\s*s(?:ec(?:ond)?s?)?$/i.test(cleaned) ||
-    /^\d+\s*m(?:in(?:ute)?s?)?$/i.test(cleaned)
-  ) {
+  if (isParseableReadTimeFormat(cleaned)) {
     const secs = parseReadTimeToSeconds(cleaned);
     return formatSecondsToMinSec(secs);
   }

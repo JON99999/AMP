@@ -769,7 +769,7 @@ export const extractWaveformForUrl = async (url: string, sourceUrlOrBlob?: strin
       mp3DurationCache.set(resolvedUrl, formatted);
       if (mappedFileName) mp3DurationCache.set(mappedFileName, formatted);
       window.dispatchEvent(new CustomEvent('mp3-duration-cached', {
-        detail: { url, resolvedUrl, fileName: mappedFileName, duration: formatted }
+        detail: { name: mappedFileName || url, url, resolvedUrl, fileName: mappedFileName, duration: formatted }
       }));
     }
 
@@ -842,7 +842,7 @@ export const calculateDurationForUrl = (url: string, sourceUrl: string) => {
       mp3DurationCache.set(resolvedUrl, formatted);
       if (mappedFileName) mp3DurationCache.set(mappedFileName, formatted);
       window.dispatchEvent(new CustomEvent('mp3-duration-cached', {
-        detail: { url, resolvedUrl, fileName: mappedFileName, duration: formatted }
+        detail: { name: mappedFileName || url, url, resolvedUrl, fileName: mappedFileName, duration: formatted }
       }));
     }
   });
@@ -915,20 +915,27 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
       rawBlobCache.set(url, blob);
 
       if (isAudio) {
-        calculateDurationForUrl(url, blobUrl);
-        calculateDurationForUrl(resolvedUrl, blobUrl);
-
-        try {
-          await extractWaveformForUrl(url, blob);
-          await extractWaveformForUrl(resolvedUrl, blob);
-        } catch (e) {
-          console.warn('Waveform analysis failed during caching', e);
-        }
-
         try {
           const arrayBuf = await blob.arrayBuffer();
-          const meta = extractAudioMetadataBytes(new Uint8Array(arrayBuf), resolvedUrl);
-          if (meta && (meta.title || meta.artist || meta.albumArtist || meta.album)) {
+          const meta = extractAudioMetadataBytes(new Uint8Array(arrayBuf), resolvedUrl, blob.size);
+          if (meta?.durationSeconds && meta.durationSeconds > 0) {
+            const mins = Math.floor(meta.durationSeconds / 60);
+            const secs = Math.floor(meta.durationSeconds % 60);
+            const formatted = `${mins}:${String(secs).padStart(2, '0')}`;
+            const mappedFileName = driveFileNameCache.get(url) || driveFileNameCache.get(resolvedUrl);
+            mp3DurationCache.set(url, formatted);
+            mp3DurationCache.set(resolvedUrl, formatted);
+            if (mappedFileName) mp3DurationCache.set(mappedFileName, formatted);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('mp3-duration-cached', {
+                detail: { name: mappedFileName || url, url, resolvedUrl, fileName: mappedFileName, duration: formatted }
+              }));
+            }
+          } else {
+            calculateDurationForUrl(url, blobUrl);
+            calculateDurationForUrl(resolvedUrl, blobUrl);
+          }
+          if (meta && (meta.title || meta.artist || meta.albumArtist || meta.album || meta.durationSeconds)) {
             mp3MetadataCache.set(resolvedUrl, meta);
             mp3MetadataCache.set(url, meta);
             if (typeof window !== 'undefined') {
@@ -937,7 +944,17 @@ export const cacheMP3 = async (url: string, token: string): Promise<string> => {
               }));
             }
           }
-        } catch (_) {}
+        } catch (_) {
+          calculateDurationForUrl(url, blobUrl);
+          calculateDurationForUrl(resolvedUrl, blobUrl);
+        }
+
+        try {
+          await extractWaveformForUrl(url, blob);
+          await extractWaveformForUrl(resolvedUrl, blob);
+        } catch (e) {
+          console.warn('Waveform analysis failed during caching', e);
+        }
       }
 
       return blobUrl;
@@ -2037,6 +2054,17 @@ const readBrowserFileAsBase64 = (file: File | Blob): Promise<string> => {
   });
 };
 
+const uint8ArrayToDataUrl = (bytes: Uint8Array, mimeType: string): string => {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, sub as unknown as number[]);
+  }
+  const b64 = typeof btoa === 'function' ? btoa(binary) : '';
+  return `data:${mimeType || 'application/octet-stream'};base64,${b64}`;
+};
+
 /**
  * Unified helper to upload an announcement file (audio, .txt, .pdf, image) via `/api/announcements/upload-file`.
  * `server.ts` routes to Local `fs` in Desktop mode or Google Drive in AI Studio Drive mode.
@@ -2052,6 +2080,7 @@ export const uploadAnnouncementMediaFile = async (
   name: string;
   path: string;
   size: string;
+  duration?: string;
   mtimeMs: number;
   modifiedTime: string;
 }> => {
@@ -2065,7 +2094,25 @@ export const uploadAnnouncementMediaFile = async (
         ? (options.isDriveActive ? 'Drive' : 'Local')
         : undefined;
 
-  const base64 = await readBrowserFileAsBase64(file);
+  const isAudio = isAudioFile(targetName);
+  // Single read of `file` into memory: used for both upload payload and instant metadata/duration extraction
+  const arrayBuf = await file.arrayBuffer();
+  const fileBytes = new Uint8Array(arrayBuf);
+  const base64 = uint8ArrayToDataUrl(fileBytes, file.type || 'application/octet-stream');
+
+  let extractedMeta: ReturnType<typeof extractAudioMetadataBytes> = null;
+  let extractedDuration = '';
+  if (isAudio) {
+    try {
+      extractedMeta = extractAudioMetadataBytes(fileBytes, targetName, file.size);
+      if (extractedMeta?.durationSeconds && extractedMeta.durationSeconds > 0) {
+        const mins = Math.floor(extractedMeta.durationSeconds / 60);
+        const secs = Math.floor(extractedMeta.durationSeconds % 60);
+        extractedDuration = `${mins}:${String(secs).padStart(2, '0')}`;
+      }
+    } catch (_) {}
+  }
+
   const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, explicitMode);
   const res = await fetch('/api/announcements/upload-file', {
     method: 'POST',
@@ -2095,20 +2142,50 @@ export const uploadAnnouncementMediaFile = async (
   const savedName = data.name || targetName;
   const savedPath = data.path || `/api/media/stream?path=${encodeURIComponent(savedName)}`;
   const savedSize = data.size || `${Math.max(0.01, file.size / (1024 * 1024)).toFixed(2)} MB`;
+  const savedDuration = extractedDuration || data.duration || '';
 
-  registerSavedAnnouncementFileInCache({
-    name: savedName,
-    id: data.id,
-    path: savedPath,
-    size: savedSize,
-    mtimeMs: nowMs,
-    modifiedTime: nowIso
-  });
+  if (isAudio && typeof window !== 'undefined') {
+    try {
+      const blobUrl = URL.createObjectURL(file);
+      mp3BlobCache.set(savedName, blobUrl);
+      mp3BlobCache.set(savedPath, blobUrl);
+      rawBlobCache.set(savedName, file);
+      rawBlobCache.set(savedPath, file);
+      if (extractedMeta) {
+        mp3MetadataCache.set(savedName, extractedMeta);
+        mp3MetadataCache.set(savedPath, extractedMeta);
+      }
+      if (savedDuration) {
+        mp3DurationCache.set(savedName, savedDuration);
+        mp3DurationCache.set(savedPath, savedDuration);
+        window.dispatchEvent(
+          new CustomEvent('mp3-duration-cached', {
+            detail: { name: savedName, url: savedName, resolvedUrl: savedPath, fileName: savedName, duration: savedDuration }
+          })
+        );
+      } else {
+        calculateDurationForUrl(savedName, blobUrl);
+      }
+    } catch (_) {}
+  }
+
+  registerSavedAnnouncementFileInCache(
+    {
+      name: savedName,
+      id: data.id,
+      path: savedPath,
+      size: savedSize,
+      mtimeMs: nowMs,
+      modifiedTime: nowIso
+    },
+    savedDuration
+  );
 
   return {
     name: savedName,
     path: savedPath,
     size: savedSize,
+    ...(savedDuration ? { duration: savedDuration } : {}),
     mtimeMs: nowMs,
     modifiedTime: nowIso
   };
@@ -2218,9 +2295,39 @@ export const renameOrCopyAnnouncementMediaFile = async (params: {
   const nowIso = data.modifiedTime || new Date(nowMs).toISOString();
   const savedPath = data.path || `/api/media/stream?path=${encodeURIComponent(savedName)}`;
   const savedSize = data.size || availableFilesCache.get(cleanSource)?.size || '0.10 MB';
-  const prevDuration = availableFilesCache.get(cleanSource)?.duration || '';
+  const prevDuration =
+    mp3DurationCache.get(cleanSource) ||
+    availableFilesCache.get(cleanSource)?.duration ||
+    '';
   const action: 'noop' | 'copied' | 'renamed' =
     data.action === 'copied' || data.action === 'noop' ? data.action : 'renamed';
+
+  const prevBlobUrl = mp3BlobCache.get(cleanSource);
+  if (prevBlobUrl) {
+    mp3BlobCache.set(savedName, prevBlobUrl);
+    mp3BlobCache.set(savedPath, prevBlobUrl);
+  }
+  const prevRawBlob = rawBlobCache.get(cleanSource) || params.fileBlob;
+  if (prevRawBlob) {
+    rawBlobCache.set(savedName, prevRawBlob);
+    rawBlobCache.set(savedPath, prevRawBlob);
+  }
+  const prevMeta = mp3MetadataCache.get(cleanSource);
+  if (prevMeta) {
+    mp3MetadataCache.set(savedName, prevMeta);
+    mp3MetadataCache.set(savedPath, prevMeta);
+  }
+  if (prevDuration) {
+    mp3DurationCache.set(savedName, prevDuration);
+    mp3DurationCache.set(savedPath, prevDuration);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('mp3-duration-cached', {
+          detail: { name: savedName, url: savedName, resolvedUrl: savedPath, fileName: savedName, duration: prevDuration }
+        })
+      );
+    }
+  }
 
   registerSavedAnnouncementFileInCache(
     {

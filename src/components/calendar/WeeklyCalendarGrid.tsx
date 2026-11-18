@@ -14,6 +14,8 @@ import {
   formatHourShort12,
   formatRotatedAnnouncementName,
   formatRotatedFileName,
+  isUpNextPromoUrl,
+  formatUpNextPromoFilename,
 } from '../../lib/utils';
 import { evaluateScheduleDiagnostics } from '../../lib/scheduleDiagnostics';
 import { reconcileScheduleAndLogs, doesLogMatchLocalSlot } from '../../lib/temporalReconciliation';
@@ -31,6 +33,7 @@ export interface WeeklyCalendarGridProps {
   isWeekDayStacked: boolean;
   isNavStacked: boolean;
   isFilterModeSplit: boolean;
+  dropFilterModeLabels?: boolean;
   dropShowIssuesText: boolean;
   dropAuditWord: boolean;
   calendarTimeframe: 'weekly' | 'daily';
@@ -60,7 +63,11 @@ export interface WeeklyCalendarGridProps {
   getAnnouncementsForDateTime: (date: Date, hour: number) => Announcement[];
   setSelectedCalendarShow: (show: Show | null) => void;
   setPreviewScriptFile: (file: string | null) => void;
-  startEdit: (s: Announcement) => void;
+  startEdit: (
+    s: Announcement,
+    fromAudit?: boolean,
+    focusTarget?: { slotIso?: string; gateId?: string; itemIndex?: number; mp3Url?: string }
+  ) => void;
 }
 
 const MONTHS = [
@@ -81,6 +88,7 @@ export function WeeklyCalendarGrid({
   isWeekDayStacked,
   isNavStacked,
   isFilterModeSplit,
+  dropFilterModeLabels,
   dropShowIssuesText,
   dropAuditWord,
   calendarTimeframe,
@@ -180,20 +188,20 @@ export function WeeklyCalendarGrid({
       <div
         ref={controlsContainerRef}
         className={cn(
-          'mb-3 flex items-center justify-between gap-3 w-full min-w-0',
+          'mb-3 flex items-center justify-between gap-2 w-full min-w-0',
           isCell3Below ? 'flex-wrap' : 'flex-nowrap'
         )}
       >
         <div
           className={cn(
-            'flex items-center gap-3 min-w-0',
+            'flex items-center gap-2 min-w-0',
             isCell3Below ? 'w-full justify-between' : 'shrink-0',
             isFullStacked && 'flex-col items-stretch gap-2'
           )}
         >
           <div
             className={cn(
-              'bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2.5 shrink-0 shadow-2xs',
+              'bg-slate-50 border border-slate-200 rounded-xl p-2 px-2.5 flex items-center gap-2 shrink-0 shadow-2xs',
               isFullStacked ? 'w-full justify-between min-w-0' : 'min-w-max',
               isIssuesAuditStacked && 'self-stretch'
             )}
@@ -202,7 +210,7 @@ export function WeeklyCalendarGrid({
               className={cn(
                 'inline-flex bg-slate-200/70 p-0.5 rounded border border-slate-300/40 font-black uppercase select-none shrink-0 gap-0.5',
                 controlsNavShort ? 'text-[11px]' : 'text-xs',
-                isWeekDayStacked ? 'flex-col' : 'flex-row mr-1'
+                isWeekDayStacked ? 'flex-col' : 'flex-row'
               )}
             >
               <button
@@ -240,8 +248,8 @@ export function WeeklyCalendarGrid({
             </div>
 
             {isNavStacked ? (
-              <div className={cn('flex flex-col gap-1.5', isFullStacked ? 'flex-1 min-w-0' : 'shrink-0')}>
-                <div className="flex items-center gap-1.5 w-full">
+              <div className={cn('flex flex-col gap-1', isFullStacked ? 'flex-1 min-w-0' : 'shrink-0')}>
+                <div className="flex items-center gap-1 w-full">
                   <button
                     type="button"
                     onClick={() => navigateCalendar(-1)}
@@ -280,7 +288,7 @@ export function WeeklyCalendarGrid({
                   onClick={jumpToToday}
                   className={cn(
                     'w-full rounded border border-slate-250 bg-white hover:bg-slate-50 text-slate-700 font-black cursor-pointer uppercase tracking-tighter whitespace-nowrap text-center transition-all',
-                    controlsNavShort ? 'px-2 py-0.5 text-[11px]' : 'px-3 py-1 text-xs'
+                    controlsNavShort ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'
                   )}
                 >
                   Today
@@ -310,7 +318,7 @@ export function WeeklyCalendarGrid({
                   onClick={jumpToToday}
                   className={cn(
                     'rounded border border-slate-250 bg-white hover:bg-slate-50 text-slate-700 font-black cursor-pointer uppercase tracking-tighter whitespace-nowrap text-center transition-all',
-                    controlsNavShort ? 'px-2 py-0.5 text-[11px]' : 'px-3 py-1 text-xs'
+                    controlsNavShort ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs'
                   )}
                 >
                   Today
@@ -339,12 +347,12 @@ export function WeeklyCalendarGrid({
           {isCell3Below && (
             <div
               className={cn(
-                'bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex text-xs font-black uppercase tracking-tighter shadow-2xs shrink-0',
+                'bg-slate-50 border border-slate-200 rounded-xl p-2 px-2.5 flex text-xs font-black uppercase tracking-tighter shadow-2xs shrink-0',
                 isFullStacked
                   ? 'w-full flex-row items-center justify-between gap-2'
                   : isIssuesAuditStacked
                     ? 'flex-col justify-between items-stretch gap-1.5 self-stretch'
-                    : 'items-center gap-2.5'
+                    : 'items-center gap-2'
               )}
             >
               <label className="flex items-center gap-1.5 text-slate-650 cursor-pointer select-none text-xs font-black uppercase tracking-tighter shrink-0">
@@ -368,7 +376,7 @@ export function WeeklyCalendarGrid({
                 type="button"
                 onClick={() => setIsScheduleAuditOpen(true)}
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-black uppercase tracking-tight transition-all cursor-pointer border shrink-0',
+                  'flex items-center gap-1.5 px-2 py-1 rounded text-xs font-black uppercase tracking-tight transition-all cursor-pointer border shrink-0',
                   isIssuesAuditStacked && !isFullStacked && 'justify-center',
                   scheduleDiagnostics.summary.total > 0
                     ? scheduleDiagnostics.summary.criticalCount > 0
@@ -408,21 +416,21 @@ export function WeeklyCalendarGrid({
 
         <div
           className={cn(
-            'flex items-center gap-3 min-w-0',
+            'flex items-center gap-2 min-w-0',
             isCell3Below ? 'w-full justify-start' : 'justify-end shrink-0',
             isFullStacked && 'w-full flex-col items-stretch'
           )}
         >
           <div
             className={cn(
-              'bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-tighter shadow-2xs min-w-0',
-              isFilterModeSplit ? 'flex-col items-start gap-2' : 'items-center',
+              'bg-slate-50 border border-slate-200 rounded-xl p-2 px-2.5 flex items-center gap-2 text-xs font-black uppercase tracking-tighter shadow-2xs min-w-0',
+              isFilterModeSplit ? 'flex-col items-stretch gap-1.5' : 'flex-nowrap items-center',
               isIssuesAuditStacked && 'self-stretch',
               isCell3Below && 'w-full justify-between'
             )}
           >
-            <div className="flex flex-wrap items-center gap-2 min-w-0 w-full sm:w-auto">
-              <span className="text-slate-450">Filter:</span>
+            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+              {!dropFilterModeLabels && <span className="text-slate-450">Filter:</span>}
               <select
                 value={calendarDate.getMonth()}
                 onChange={handleMonthChange}
@@ -451,14 +459,11 @@ export function WeeklyCalendarGrid({
                 <button
                   type="button"
                   onClick={() => setIsHoursDropdownOpen(!isHoursDropdownOpen)}
-                  className={cn(
-                    'bg-white border border-slate-250 rounded px-2 py-1 text-xs font-black text-slate-700 hover:bg-slate-50 cursor-pointer flex items-center gap-1 justify-between',
-                    isFullStacked ? 'min-w-[96px]' : 'min-w-[110px]'
-                  )}
+                  className="bg-white border border-slate-250 rounded px-2 py-1 text-xs font-black text-slate-700 hover:bg-slate-50 cursor-pointer flex items-center gap-1.5 justify-between min-w-[88px]"
                 >
                   <span className="truncate">
                     {selectedHours.length === 24
-                      ? 'All (24 Hours)'
+                      ? '24 Hours'
                       : selectedHours.length === 0
                         ? 'None selected'
                         : `${selectedHours.length} selected`}
@@ -528,9 +533,13 @@ export function WeeklyCalendarGrid({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
               <div className="flex items-center gap-1.5 shrink-0">
-                <span className={cn('text-slate-450', !isFullStacked && 'ml-1')}>Mode:</span>
+                {!dropFilterModeLabels && (
+                  <span className={cn('text-slate-450', !isFilterModeSplit && !isFullStacked && 'ml-0.5')}>
+                    Mode:
+                  </span>
+                )}
                 <div className="inline-flex bg-slate-200/70 p-0.5 rounded border border-slate-300/40 font-black text-xs uppercase select-none shrink-0 gap-0.5">
                   <button
                     type="button"
@@ -568,7 +577,7 @@ export function WeeklyCalendarGrid({
               <label
                 className={cn(
                   'flex items-center gap-1.5 text-slate-650 cursor-pointer select-none text-xs font-black uppercase tracking-tighter shrink-0',
-                  !isFullStacked && 'ml-1'
+                  !isFilterModeSplit && !isFullStacked && 'ml-0.5'
                 )}
               >
                 <input
@@ -585,9 +594,8 @@ export function WeeklyCalendarGrid({
           {!isCell3Below && (
             <div
               className={cn(
-                'bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex text-xs font-black uppercase tracking-tighter shadow-2xs shrink-0',
-                isIssuesAuditStacked ? 'flex-col justify-between items-stretch gap-1.5' : 'items-center gap-2.5',
-                isIssuesAuditStacked && 'self-stretch'
+                'bg-slate-50 border border-slate-200 rounded-xl p-2 px-2.5 flex text-xs font-black uppercase tracking-tighter shadow-2xs shrink-0',
+                isIssuesAuditStacked ? 'flex-col justify-between items-stretch gap-1.5 self-stretch' : 'items-center gap-2'
               )}
             >
               <label className="flex items-center gap-1.5 text-slate-650 cursor-pointer select-none text-xs font-black uppercase tracking-tighter shrink-0">
@@ -1078,8 +1086,11 @@ export function WeeklyCalendarGrid({
                             const hasSlotIssues = slotIssues.length > 0;
                             const hasCriticalIssue = slotIssues.some(iss => iss.severity === 'critical');
 
+                            const isUpNextPromoItem = Boolean(s.isUpNextPromo || isUpNextPromoUrl(activeUrl));
                             const fileLine = activeUrl
-                              ? `${isScript ? 'Script' : 'File'}: ${formatRotatedFileName(fileName, activeMp3)}`
+                              ? isUpNextPromoItem
+                                ? `Script: ${formatUpNextPromoFilename(activeUrl, s.name)}`
+                                : `${isScript ? 'Script' : 'File'}: ${formatRotatedFileName(fileName, activeMp3)}`
                               : 'File: None';
 
                             const backupLine = backupUrl
@@ -1124,16 +1135,27 @@ export function WeeklyCalendarGrid({
                               cellIsPast ? ' • Past' : ''
                             }${auditLine}${issuesSummary}`;
 
+                            const slotLocalIso = `${dayKey}T${hour.toString().padStart(2, '0')}:${formattedMin}`;
+                            const slotFocusTarget = {
+                              slotIso: slotLocalIso,
+                              gateId: activeMp3?.id,
+                              itemIndex:
+                                activeMp3?.rotationIndex && activeMp3.rotationIndex > 0
+                                  ? activeMp3.rotationIndex - 1
+                                  : 0,
+                              mp3Url: activeUrl,
+                            };
+
                             if (calendarLayoutMode === 'compact') {
                               return (
                                 <div key={s.id} className="inline-flex items-stretch gap-[2px]">
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      if (s.isUpNextPromo) {
-                                        if (activeUrl) setPreviewScriptFile(activeUrl);
+                                      if (isUpNextPromoItem && activeUrl) {
+                                        setPreviewScriptFile(activeUrl);
                                       } else {
-                                        startEdit(s);
+                                        startEdit(s, false, slotFocusTarget);
                                       }
                                     }}
                                     className={cn(
@@ -1183,10 +1205,10 @@ export function WeeklyCalendarGrid({
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (s.isUpNextPromo) {
-                                      if (activeUrl) setPreviewScriptFile(activeUrl);
+                                    if (isUpNextPromoItem && activeUrl) {
+                                      setPreviewScriptFile(activeUrl);
                                     } else {
-                                      startEdit(s);
+                                      startEdit(s, false, slotFocusTarget);
                                     }
                                   }}
                                   className={cn(

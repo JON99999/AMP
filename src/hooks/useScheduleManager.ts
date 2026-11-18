@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, Dispatch, SetStateAction } from 'react';
 import { Announcement, Show, LogEntry, UpNextPromoConfig } from '../types';
-import { normalizeAnnouncements, isTimeInShow, getActualShowStart, classifyMediaAsset, isUpNextPromoUrl } from '../lib/utils';
+import { normalizeAnnouncements, isTimeInShow, getActualShowStart, classifyMediaAsset, isUpNextPromoUrl, formatUpNextPromoFilename } from '../lib/utils';
 import {
   getStationTimezone,
   setStationTimezone,
@@ -402,7 +402,7 @@ export function useScheduleManager({
       : classifyMediaAsset(entry.mp3Name, entry.assetType);
 
     const cleanMp3Name = isUpNextPromoUrl(entry.mp3Name)
-      ? `${entry.announcementName || 'Up Next Promo'}.txt`
+      ? formatUpNextPromoFilename(entry.mp3Name, entry.announcementName)
       : entry.mp3Name;
 
     const actualExecutedIso = entry.executedAt || entry.logTimeStamp || new Date().toISOString();

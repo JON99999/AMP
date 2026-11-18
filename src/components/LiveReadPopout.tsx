@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { cn, parseCustomTimeText } from '../lib/utils';
+import { cn, parseCustomTimeText, isUpNextPromoUrl, formatUpNextPromoFilename } from '../lib/utils';
 import { applyTheme, ThemeId } from '../lib/theme';
 import { 
   X, 
@@ -34,7 +34,7 @@ import {
   Copy
 } from 'lucide-react';
 import { LogEntry } from '../types';
-import { getPlayableUrl, getSavedSettings, getStorageApiHeaders } from '../lib/driveService';
+import { getPlayableUrl, getSavedSettings, getStorageApiHeaders, cacheMP3, getAccessToken } from '../lib/driveService';
 import { renderFormattedTxtContent, stripHtmlComments } from '../lib/liveReadFormatting';
 
 interface LiveReadPopoutProps {
@@ -188,7 +188,7 @@ export default function LiveReadPopout({
     };
   }, []);
 
-  const handleTogglePreviewBackupMp3 = () => {
+  const handleTogglePreviewBackupMp3 = async () => {
     if (!backupMp3Url) return;
     if (backupAudioPlaying && backupAudioRef.current) {
       backupAudioRef.current.pause();
@@ -202,7 +202,15 @@ export default function LiveReadPopout({
         backupAudioRef.current = null;
       }
       const cleanName = backupMp3Url.includes('/') ? backupMp3Url.split('/').pop() : backupMp3Url;
-      const playableUrl = getPlayableUrl(backupMp3Url) || `/api/media/stream?path=${encodeURIComponent(cleanName || '')}`;
+      let playableUrl = getPlayableUrl(backupMp3Url) || `/api/media/stream?path=${encodeURIComponent(cleanName || '')}`;
+      if (playableUrl.includes('googleapis.com') && !playableUrl.startsWith('blob:')) {
+        try {
+          const cachedBlobUrl = await cacheMP3(backupMp3Url, getAccessToken() || '');
+          if (cachedBlobUrl) {
+            playableUrl = cachedBlobUrl;
+          }
+        } catch (_) {}
+      }
       const audio = new Audio(playableUrl);
       backupAudioRef.current = audio;
       audio.play().then(() => {
@@ -589,10 +597,9 @@ export default function LiveReadPopout({
     }
 
     const scheduledSlotIso = announcementTime || finalTimestamp;
-    const cleanScriptName =
-      fileName && fileName.startsWith('__up_next_promo__:')
-        ? `${announcementName || 'Up Next Promo'}.txt`
-        : fileName || 'Unknown Script';
+    const cleanScriptName = isUpNextPromoUrl(fileName)
+      ? formatUpNextPromoFilename(fileName, announcementName)
+      : fileName || 'Unknown Script';
     const logEntry: LogEntry = {
       timestamp: scheduledSlotIso,
       announcementTime: scheduledSlotIso,
@@ -796,10 +803,14 @@ export default function LiveReadPopout({
           </div>
           <div className="min-w-0">
             <h1 className="text-sm font-black uppercase tracking-wider text-slate-200 truncate leading-none">
-              {announcementName || 'Live Read Reader'}
+              {announcementName ||
+                (isUpNextPromoUrl(fileName) ? formatUpNextPromoFilename(fileName) : 'Live Read Reader')}
             </h1>
             <p className="text-xs text-slate-400 truncate mt-1 font-mono font-bold">
-              File: {fileName}
+              File:{' '}
+              {isUpNextPromoUrl(fileName)
+                ? formatUpNextPromoFilename(fileName, announcementName)
+                : fileName}
             </p>
           </div>
         </div>

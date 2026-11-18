@@ -419,6 +419,7 @@ export function LiveToBeCard({
           )}
         >
           <div
+            title={formatRotatedAnnouncementName(s.name, activeMp3)}
             className={cn(
               'leading-tight break-words flex-1 flex flex-col justify-center',
               isExpanded
@@ -437,7 +438,7 @@ export function LiveToBeCard({
                       : 'text-slate-800'
             )}
           >
-            {formatRotatedAnnouncementName(s.name, activeMp3)}
+            {s.name}
           </div>
 
           {isScript ? (
@@ -916,6 +917,7 @@ export function PrerecordAnnouncementCard({
           )}
         >
           <div
+            title={formatRotatedAnnouncementName(s.name, activeMp3)}
             className={cn(
               'leading-tight break-words flex-1 flex flex-col justify-center',
               isExpanded

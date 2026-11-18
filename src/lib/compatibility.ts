@@ -4,43 +4,45 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.6";
+export const CURRENT_APP_VERSION = "0.20.7";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 
 export interface StationTimezoneOption {
   value: string;
   offsetLabel: string;
+  commonName: string;
+  shortCode: string;
   label: string;
 }
 
 export const STATION_TIMEZONE_OPTIONS: StationTimezoneOption[] = [
-  { value: 'Etc/GMT+12', offsetLabel: 'UTC-12', label: 'UTC-12 — Baker Island Time' },
-  { value: 'Pacific/Pago_Pago', offsetLabel: 'UTC-11', label: 'UTC-11 — Samoa Time (Pago Pago)' },
-  { value: 'Pacific/Honolulu', offsetLabel: 'UTC-10', label: 'UTC-10 — Hawaii Time (Honolulu)' },
-  { value: 'America/Anchorage', offsetLabel: 'UTC-9', label: 'UTC-9 — Alaska Time (Anchorage)' },
-  { value: 'America/Los_Angeles', offsetLabel: 'UTC-8', label: 'UTC-8 — Pacific Time (Los Angeles)' },
-  { value: 'America/Denver', offsetLabel: 'UTC-7', label: 'UTC-7 — Mountain Time (Denver)' },
-  { value: 'America/Chicago', offsetLabel: 'UTC-6', label: 'UTC-6 — Central Time (Chicago)' },
-  { value: 'America/New_York', offsetLabel: 'UTC-5', label: 'UTC-5 — Eastern Time (New York)' },
-  { value: 'America/Halifax', offsetLabel: 'UTC-4', label: 'UTC-4 — Atlantic Time (Halifax)' },
-  { value: 'America/Argentina/Buenos_Aires', offsetLabel: 'UTC-3', label: 'UTC-3 — South America East (Buenos Aires)' },
-  { value: 'America/Noronha', offsetLabel: 'UTC-2', label: 'UTC-2 — Mid-Atlantic Time' },
-  { value: 'Atlantic/Azores', offsetLabel: 'UTC-1', label: 'UTC-1 — Azores Time' },
-  { value: 'UTC', offsetLabel: 'UTC+0', label: 'UTC+0 — Coordinated Universal Time (UTC / London)' },
-  { value: 'Europe/London', offsetLabel: 'UTC+0/BST', label: 'UTC+0 — UK / British Time (London)' },
-  { value: 'Europe/Paris', offsetLabel: 'UTC+1', label: 'UTC+1 — Central European Time (Paris / Berlin)' },
-  { value: 'Europe/Athens', offsetLabel: 'UTC+2', label: 'UTC+2 — Eastern European Time (Athens / Cairo)' },
-  { value: 'Europe/Istanbul', offsetLabel: 'UTC+3', label: 'UTC+3 — East Africa / Arabia Time (Nairobi / Riyadh)' },
-  { value: 'Asia/Dubai', offsetLabel: 'UTC+4', label: 'UTC+4 — Gulf Time (Dubai)' },
-  { value: 'Asia/Karachi', offsetLabel: 'UTC+5', label: 'UTC+5 — West Asia Time (Karachi)' },
-  { value: 'Asia/Dhaka', offsetLabel: 'UTC+6', label: 'UTC+6 — Central Asia Time (Dhaka)' },
-  { value: 'Asia/Bangkok', offsetLabel: 'UTC+7', label: 'UTC+7 — Indochina Time (Bangkok)' },
-  { value: 'Asia/Singapore', offsetLabel: 'UTC+8', label: 'UTC+8 — Singapore / AWST (Singapore / Perth)' },
-  { value: 'Asia/Tokyo', offsetLabel: 'UTC+9', label: 'UTC+9 — Japan / Korea Time (Tokyo / Seoul)' },
-  { value: 'Australia/Sydney', offsetLabel: 'UTC+10', label: 'UTC+10 — Australian Eastern Time (Sydney)' },
-  { value: 'Pacific/Guadalcanal', offsetLabel: 'UTC+11', label: 'UTC+11 — Solomon Islands Time' },
-  { value: 'Pacific/Auckland', offsetLabel: 'UTC+12', label: 'UTC+12 — New Zealand Time (Auckland)' }
+  { value: 'Etc/GMT+12', offsetLabel: 'UTC-12', commonName: 'Baker Island', shortCode: 'BIT', label: 'UTC-12 — Baker Island Time' },
+  { value: 'Pacific/Pago_Pago', offsetLabel: 'UTC-11', commonName: 'Samoa', shortCode: 'SST', label: 'UTC-11 — Samoa Time (Pago Pago)' },
+  { value: 'Pacific/Honolulu', offsetLabel: 'UTC-10', commonName: 'Hawaii', shortCode: 'HT', label: 'UTC-10 — Hawaii Time (Honolulu)' },
+  { value: 'America/Anchorage', offsetLabel: 'UTC-9', commonName: 'Alaska', shortCode: 'AKT', label: 'UTC-9 — Alaska Time (Anchorage)' },
+  { value: 'America/Los_Angeles', offsetLabel: 'UTC-8', commonName: 'Pacific', shortCode: 'PT', label: 'UTC-8 — Pacific Time (Los Angeles)' },
+  { value: 'America/Denver', offsetLabel: 'UTC-7', commonName: 'Mountain', shortCode: 'MT', label: 'UTC-7 — Mountain Time (Denver)' },
+  { value: 'America/Chicago', offsetLabel: 'UTC-6', commonName: 'Central', shortCode: 'CT', label: 'UTC-6 — Central Time (Chicago)' },
+  { value: 'America/New_York', offsetLabel: 'UTC-5', commonName: 'Eastern', shortCode: 'ET', label: 'UTC-5 — Eastern Time (New York)' },
+  { value: 'America/Halifax', offsetLabel: 'UTC-4', commonName: 'Atlantic', shortCode: 'AT', label: 'UTC-4 — Atlantic Time (Halifax)' },
+  { value: 'America/Argentina/Buenos_Aires', offsetLabel: 'UTC-3', commonName: 'Argentina', shortCode: 'ART', label: 'UTC-3 — South America East (Buenos Aires)' },
+  { value: 'America/Noronha', offsetLabel: 'UTC-2', commonName: 'Mid-Atlantic', shortCode: 'FNT', label: 'UTC-2 — Mid-Atlantic Time' },
+  { value: 'Atlantic/Azores', offsetLabel: 'UTC-1', commonName: 'Azores', shortCode: 'AZOT', label: 'UTC-1 — Azores Time' },
+  { value: 'UTC', offsetLabel: 'UTC+0', commonName: 'Universal', shortCode: 'UTC', label: 'UTC+0 — Coordinated Universal Time (UTC / London)' },
+  { value: 'Europe/London', offsetLabel: 'UTC+0/BST', commonName: 'British', shortCode: 'UK', label: 'UTC+0 — UK / British Time (London)' },
+  { value: 'Europe/Paris', offsetLabel: 'UTC+1', commonName: 'Central European', shortCode: 'CET', label: 'UTC+1 — Central European Time (Paris / Berlin)' },
+  { value: 'Europe/Athens', offsetLabel: 'UTC+2', commonName: 'Eastern European', shortCode: 'EET', label: 'UTC+2 — Eastern European Time (Athens / Cairo)' },
+  { value: 'Europe/Istanbul', offsetLabel: 'UTC+3', commonName: 'Arabia', shortCode: 'AST', label: 'UTC+3 — East Africa / Arabia Time (Nairobi / Riyadh)' },
+  { value: 'Asia/Dubai', offsetLabel: 'UTC+4', commonName: 'Gulf', shortCode: 'GST', label: 'UTC+4 — Gulf Time (Dubai)' },
+  { value: 'Asia/Karachi', offsetLabel: 'UTC+5', commonName: 'West Asia', shortCode: 'PKT', label: 'UTC+5 — West Asia Time (Karachi)' },
+  { value: 'Asia/Dhaka', offsetLabel: 'UTC+6', commonName: 'Central Asia', shortCode: 'BST', label: 'UTC+6 — Central Asia Time (Dhaka)' },
+  { value: 'Asia/Bangkok', offsetLabel: 'UTC+7', commonName: 'Indochina', shortCode: 'ICT', label: 'UTC+7 — Indochina Time (Bangkok)' },
+  { value: 'Asia/Singapore', offsetLabel: 'UTC+8', commonName: 'Singapore', shortCode: 'SGT', label: 'UTC+8 — Singapore / AWST (Singapore / Perth)' },
+  { value: 'Asia/Tokyo', offsetLabel: 'UTC+9', commonName: 'Japan', shortCode: 'JST', label: 'UTC+9 — Japan / Korea Time (Tokyo / Seoul)' },
+  { value: 'Australia/Sydney', offsetLabel: 'UTC+10', commonName: 'Australian Eastern', shortCode: 'AET', label: 'UTC+10 — Australian Eastern Time (Sydney)' },
+  { value: 'Pacific/Guadalcanal', offsetLabel: 'UTC+11', commonName: 'Solomon', shortCode: 'SBT', label: 'UTC+11 — Solomon Islands Time' },
+  { value: 'Pacific/Auckland', offsetLabel: 'UTC+12', commonName: 'New Zealand', shortCode: 'NZT', label: 'UTC+12 — New Zealand Time (Auckland)' }
 ];
 
 export function detectSystemStationTimezone(): string {
@@ -63,10 +65,14 @@ export function detectSystemStationTimezone(): string {
 export function getStationTimezoneOption(tz: string = getStationTimezone()): StationTimezoneOption {
   const exact = STATION_TIMEZONE_OPTIONS.find(o => o.value.toLowerCase() === (tz || '').toLowerCase());
   if (exact) return exact;
+  const fallbackVal = tz || DEFAULT_STATION_TIMEZONE;
+  const shortPart = fallbackVal.includes('/') ? fallbackVal.split('/').pop()!.replace(/_/g, ' ') : fallbackVal;
   return {
-    value: tz || DEFAULT_STATION_TIMEZONE,
-    offsetLabel: tz || DEFAULT_STATION_TIMEZONE,
-    label: `${tz || DEFAULT_STATION_TIMEZONE}`
+    value: fallbackVal,
+    offsetLabel: fallbackVal,
+    commonName: shortPart,
+    shortCode: shortPart.slice(0, 3).toUpperCase(),
+    label: `${fallbackVal}`
   };
 }
 
@@ -1010,7 +1016,9 @@ export function migrateAnnouncementsPayload(
         ? { isAutoReadTime: finalIsAutoReadTime }
         : {}),
       duration: mItem?.duration ?? gateItem?.duration ?? '',
-      fileSize: mItem?.fileSize ?? gateItem?.fileSize ?? ''
+      fileSize: mItem?.fileSize ?? gateItem?.fileSize ?? '',
+      ...(mItem?.inactivated ? { inactivated: true } : {}),
+      ...(mItem?.inactivated && mItem?.inactivatedAt ? { inactivatedAt: String(mItem.inactivatedAt) } : {})
     };
   };
 
@@ -1052,7 +1060,7 @@ export function migrateAnnouncementsPayload(
     const mediaItems = rawMediaItems.map((mItem: any) =>
       normalizeMediaItemInSlot(mItem, tItem, parentItem)
     );
-    const primaryItem = mediaItems[0];
+    const primaryItem = mediaItems.find((mi: any) => !mi?.inactivated) || mediaItems[0];
 
     return {
       id: gateId,

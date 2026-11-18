@@ -6,7 +6,14 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.6
+### Current Release: v0.20.7
+- **App Version**: `0.20.7`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.6**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Application, Schedule Editor, Audit, Media Picker, & Folder Verification Cycle (`Batches 1–4`, `#90`–`#108`, `#112`, `#37.1`–`#37.7`, `#38.8`–`#38.12`)**: 6-second branded splash hold (`#90`), global Light/Dark intermediate slate CSS overrides (`#93`, `#103`), inline gate/interstitial placement and 2-month visual gate calendar picker (`#94`–`#98`, `#107`, `#108`), Admin-only `(x/y)` rotation badges (`#112`), active-at-slot `Issues Audit` filtering and phrase grouping (`#106`), `CopyEditorModal` duration coercion/overwrite/unsaved prompts and `<stem> (x)` copy naming (`#91`, `#102`, `#104`), `Select Announcement` icon/name/date/action column alignment (`#105`), Shows `Short Name` `Auto` checkbox (`#99`), and `Check Folders` / `Merge Stranded Folder` 2-column listbox redesign with Windows Cloud Drive fallback (`#100`, `#101`). Full Schema v1 compatibility maintained across all stores.
+
+### v0.20.6
 - **App Version**: `0.20.6`
 - **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
 - **Changes vs. v0.20.5**:

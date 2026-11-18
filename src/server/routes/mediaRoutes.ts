@@ -19,6 +19,9 @@ import {
   serverDriveUploadFileContent,
   resolveServerDriveAnnouncementsFolderId,
   listServerDriveAnnouncementMedia,
+  serverDriveFindAnnouncementFileAnyBucket,
+  listServerDriveAnnouncementFileManager,
+  moveServerDriveAnnouncementFiles,
   streamServerDriveFile
 } from '../storage/driveProvider';
 
@@ -263,7 +266,7 @@ export async function getMp3ServerMetadata(filePath: string): Promise<{ title?: 
             const album = parsed.common.album?.trim();
             const durationSeconds = parsed.format?.duration ? Math.round(parsed.format.duration) : undefined;
 
-            if (title || artist || album) {
+            if (title || artist || album || durationSeconds) {
               return {
                 title: title || undefined,
                 artist: artist || undefined,
@@ -361,12 +364,14 @@ export async function getMp3ServerMetadata(filePath: string): Promise<{ title?: 
           await handle.close();
           handle = null;
 
-          if (meta) {
+          const fallbackDurSec = await getMp3DurationSecondsAsync(filePath);
+          if (meta || fallbackDurSec > 0) {
             return {
-              title: meta.title,
-              artist: meta.artist,
-              albumArtist: meta.albumArtist || meta.artist,
-              album: meta.album
+              title: meta?.title,
+              artist: meta?.artist,
+              albumArtist: meta?.albumArtist || meta?.artist,
+              album: meta?.album,
+              durationSeconds: fallbackDurSec > 0 ? fallbackDurSec : undefined
             };
           }
 
@@ -909,10 +914,17 @@ export function registerMediaRoutes(app: express.Express): void {
               cloudSyncPending: true
             };
           }
+          let durationStr = '—';
+          if (!isScript) {
+            const durSec = await getMp3DurationSecondsAsync(fullPath);
+            const mins = Math.floor(durSec / 60);
+            const secs = Math.floor(durSec % 60);
+            durationStr = `${mins}:${String(secs).padStart(2, '0')}`;
+          }
           return {
             name: f,
             size: `${(stats.size / (1024 * 1024)).toFixed(1)} MB`,
-            duration: isScript ? '—' : '0:15',
+            duration: durationStr,
             path: `/api/media/stream?path=${encodeURIComponent(f)}`,
             mtimeMs: stats.mtimeMs,
             modifiedTime: stats.mtime.toISOString(),
@@ -929,6 +941,312 @@ export function registerMediaRoutes(app: express.Express): void {
 
   app.get('/api/local-mp3s', handleListMediaFiles);
   app.get('/api/media/list', handleListMediaFiles);
+
+  // API - List all announcement files across active, archived, and deleted_in_AMP_OK_to_purge for File Manager (#26)
+  app.get('/api/media/file-manager', async (req: express.Request, res: express.Response) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      if (isServerDriveStorageRequest(req)) {
+        const driveResult = await listServerDriveAnnouncementFileManager(req);
+        return res.json(driveResult);
+      }
+
+      const announcementsDir = getAmpMediaAnnouncementsDir(currentSettings);
+      if (!announcementsDir) {
+        return res.json({
+          files: [],
+          folderPaths: { active: '', archived: '', deleted: '' }
+        });
+      }
+
+      const archivedDir = path.join(announcementsDir, 'archived');
+      const deletedDir = path.join(announcementsDir, 'deleted_in_AMP_OK_to_purge');
+      for (const dirPath of [announcementsDir, archivedDir, deletedDir]) {
+        try {
+          if (!fs.existsSync(dirPath)) {
+            fs.mkdirSync(dirPath, { recursive: true });
+          }
+        } catch (mkdirErr) {
+          console.warn(`[FileManager] Could not ensure directory ${dirPath}:`, mkdirErr);
+        }
+      }
+
+      const allowedExtensions = [
+        '.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac',
+        '.txt', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.md'
+      ];
+
+      const scanBucket = async (
+        dirPath: string,
+        folderBucket: 'active' | 'archived' | 'deleted'
+      ) => {
+        if (!dirPath || !fs.existsSync(dirPath)) return [];
+        let entries: fs.Dirent[] = [];
+        try {
+          entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        } catch (_) {
+          return [];
+        }
+        const fileNames = entries
+          .filter(e => e.isFile() && allowedExtensions.includes(path.extname(e.name).toLowerCase()))
+          .map(e => e.name);
+
+        return Promise.all(
+          fileNames.map(async (f) => {
+            const fullPath = path.join(dirPath, f);
+            const ext = path.extname(f).toLowerCase();
+            const isScript = ['.txt', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.md'].includes(ext);
+            const { stats, cloudSyncPending } = await statFileWithCloudCatchUp(fullPath);
+            if (!stats || cloudSyncPending) {
+              return {
+                name: f,
+                duration: isScript ? '—' : '',
+                path: `/api/media/stream?path=${encodeURIComponent(f)}`,
+                cloudSyncPending: true,
+                folderBucket
+              };
+            }
+            let durationStr = '—';
+            if (!isScript) {
+              const durSec = await getMp3DurationSecondsAsync(fullPath);
+              const mins = Math.floor(durSec / 60);
+              const secs = Math.floor(durSec % 60);
+              durationStr = `${mins}:${String(secs).padStart(2, '0')}`;
+            }
+            return {
+              name: f,
+              size: `${(stats.size / (1024 * 1024)).toFixed(1)} MB`,
+              duration: durationStr,
+              path: `/api/media/stream?path=${encodeURIComponent(f)}`,
+              mtimeMs: stats.mtimeMs,
+              modifiedTime: stats.mtime.toISOString(),
+              cloudSyncPending: false,
+              folderBucket
+            };
+          })
+        );
+      };
+
+      const [activeFiles, archivedFiles, deletedFiles] = await Promise.all([
+        scanBucket(announcementsDir, 'active'),
+        scanBucket(archivedDir, 'archived'),
+        scanBucket(deletedDir, 'deleted')
+      ]);
+
+      return res.json({
+        files: [...activeFiles, ...archivedFiles, ...deletedFiles],
+        folderPaths: {
+          active: announcementsDir,
+          archived: archivedDir,
+          deleted: deletedDir
+        }
+      });
+    } catch (e: any) {
+      console.error('Failed to list File Manager media files:', e);
+      return res.status(500).json({
+        error: e.message || 'Failed to read File Manager directories',
+        files: [],
+        folderPaths: { active: '', archived: '', deleted: '' }
+      });
+    }
+  });
+
+  // API - Move announcement files between active, archived, and deleted_in_AMP_OK_to_purge (#26)
+  app.post('/api/media/move-files', async (req: express.Request, res: express.Response) => {
+    try {
+      if (isServerDriveStorageRequest(req)) {
+        const driveRes = await moveServerDriveAnnouncementFiles(req, req.body || {});
+        if ((driveRes as any)?.collision) {
+          return res.status(409).json(driveRes);
+        }
+        return res.json(driveRes);
+      }
+
+      const { fileNames, targetBucket, collisionResolution = 'prompt' } = req.body || {};
+      if (!Array.isArray(fileNames) || fileNames.length === 0) {
+        return res.status(400).json({ error: 'fileNames array is required' });
+      }
+      if (targetBucket !== 'active' && targetBucket !== 'archived' && targetBucket !== 'deleted') {
+        return res.status(400).json({ error: 'Invalid targetBucket. Expected active, archived, or deleted.' });
+      }
+
+      const announcementsDir = getAmpMediaAnnouncementsDir(currentSettings);
+      if (!announcementsDir) {
+        return res.status(400).json({ error: 'Media Announcements folder is not configured' });
+      }
+      const archivedDir = path.join(announcementsDir, 'archived');
+      const deletedDir = path.join(announcementsDir, 'deleted_in_AMP_OK_to_purge');
+      const bucketDirs: Record<'active' | 'archived' | 'deleted', string> = {
+        active: announcementsDir,
+        archived: archivedDir,
+        deleted: deletedDir
+      };
+
+      for (const dirPath of [announcementsDir, archivedDir, deletedDir]) {
+        if (!fs.existsSync(dirPath)) {
+          fs.mkdirSync(dirPath, { recursive: true });
+        }
+      }
+
+      const findFileInBucket = (dirPath: string, targetName: string): { fullPath: string; actualName: string } | null => {
+        if (!fs.existsSync(dirPath)) return null;
+        const cleanLower = targetName.toLowerCase();
+        try {
+          const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isFile() && entry.name.toLowerCase() === cleanLower) {
+              return { fullPath: path.join(dirPath, entry.name), actualName: entry.name };
+            }
+          }
+        } catch (_) {}
+        return null;
+      };
+
+      const findFileAcrossBuckets = (
+        rawName: string
+      ): { fullPath: string; actualName: string; bucket: 'active' | 'archived' | 'deleted' } | null => {
+        const cleanName = path.basename(String(rawName || '').trim());
+        if (!cleanName) return null;
+        for (const b of ['active', 'archived', 'deleted'] as const) {
+          const hit = findFileInBucket(bucketDirs[b], cleanName);
+          if (hit) {
+            return { ...hit, bucket: b };
+          }
+        }
+        return null;
+      };
+
+      const targetDir = bucketDirs[targetBucket as 'active' | 'archived' | 'deleted'];
+      const conflicts: string[] = [];
+      const results: Array<{
+        sourceName: string;
+        finalName?: string;
+        status: 'moved' | 'already_in_target' | 'missing_external' | 'conflict';
+        fromBucket?: 'active' | 'archived' | 'deleted';
+        toBucket?: 'active' | 'archived' | 'deleted';
+        message?: string;
+      }> = [];
+
+      const pendingMoves: Array<{
+        cleanName: string;
+        sourceFullPath: string;
+        actualName: string;
+        fromBucket: 'active' | 'archived' | 'deleted';
+        existingTargetHit: { fullPath: string; actualName: string } | null;
+      }> = [];
+
+      for (const rawName of fileNames) {
+        const cleanName = path.basename(String(rawName || '').trim());
+        if (!cleanName) continue;
+        const found = findFileAcrossBuckets(cleanName);
+        if (!found) {
+          results.push({
+            sourceName: cleanName,
+            status: 'missing_external',
+            message: `File "${cleanName}" was moved, renamed, or deleted outside AMP.`
+          });
+          continue;
+        }
+        if (found.bucket === targetBucket) {
+          results.push({
+            sourceName: cleanName,
+            finalName: found.actualName,
+            status: 'already_in_target',
+            fromBucket: found.bucket,
+            toBucket: targetBucket
+          });
+          continue;
+        }
+        const existingInTarget = findFileInBucket(targetDir, found.actualName);
+        if (existingInTarget && collisionResolution === 'prompt') {
+          conflicts.push(found.actualName);
+        }
+        pendingMoves.push({
+          cleanName,
+          sourceFullPath: found.fullPath,
+          actualName: found.actualName,
+          fromBucket: found.bucket,
+          existingTargetHit: existingInTarget
+        });
+      }
+
+      if (conflicts.length > 0 && collisionResolution === 'prompt') {
+        return res.status(409).json({
+          collision: true,
+          conflicts,
+          targetBucket
+        });
+      }
+
+      const removeFileResilientSync = (filePathToRemove: string) => {
+        if (!fs.existsSync(filePathToRemove)) return;
+        try {
+          fs.chmodSync(filePathToRemove, 0o666);
+        } catch (_) {}
+        try {
+          fs.rmSync(filePathToRemove, { force: true });
+        } catch (_) {
+          fs.unlinkSync(filePathToRemove);
+        }
+      };
+
+      const moveFileResilientSync = (srcPath: string, destPath: string) => {
+        try {
+          fs.renameSync(srcPath, destPath);
+        } catch (_) {
+          fs.copyFileSync(srcPath, destPath);
+          removeFileResilientSync(srcPath);
+        }
+      };
+
+      for (const item of pendingMoves) {
+        if (!fs.existsSync(item.sourceFullPath)) {
+          results.push({
+            sourceName: item.cleanName,
+            status: 'missing_external',
+            message: `File "${item.cleanName}" was moved, renamed, or deleted outside AMP just before transfer.`
+          });
+          continue;
+        }
+
+        let finalTargetName = item.actualName;
+        const currentCollision = findFileInBucket(targetDir, finalTargetName);
+        if (currentCollision && currentCollision.fullPath !== item.sourceFullPath) {
+          if (collisionResolution === 'overwrite') {
+            removeFileResilientSync(currentCollision.fullPath);
+          } else if (collisionResolution === 'rename') {
+            const ext = path.extname(item.actualName);
+            const stem = ext ? item.actualName.slice(0, -ext.length) : item.actualName;
+            let counter = 2;
+            while (findFileInBucket(targetDir, `${stem} (${counter})${ext}`)) {
+              counter++;
+            }
+            finalTargetName = `${stem} (${counter})${ext}`;
+          }
+        }
+
+        const destFullPath = path.join(targetDir, finalTargetName);
+        moveFileResilientSync(item.sourceFullPath, destFullPath);
+
+        results.push({
+          sourceName: item.cleanName,
+          finalName: finalTargetName,
+          status: 'moved',
+          fromBucket: item.fromBucket,
+          toBucket: targetBucket
+        });
+      }
+
+      return res.json({
+        success: true,
+        targetBucket,
+        results
+      });
+    } catch (e: any) {
+      console.error('Failed to move announcement files:', e);
+      return res.status(500).json({ error: e.message || 'Failed to move announcement files' });
+    }
+  });
 
   // Universal HTTP 206 Partial Content Streaming Engine (Local FS + AI Studio Drive Proxy Fallback)
   async function streamMediaFile(req: express.Request, res: express.Response) {
@@ -1046,12 +1364,12 @@ export function registerMediaRoutes(app: express.Express): void {
 
       // AI Studio Google Drive Provider
       if (isServerDriveStorageRequest(req)) {
-        const folderId = await resolveServerDriveAnnouncementsFolderId(req);
         const cleanName = path.basename(String(file).trim());
-        const found = await serverDriveFindFileCaseInsensitive(req, cleanName, folderId);
-        if (!found) {
+        const foundAny = await serverDriveFindAnnouncementFileAnyBucket(req, cleanName);
+        if (!foundAny) {
           return res.status(404).json({ error: `File "${cleanName}" not found in Google Drive Media Announcements` });
         }
+        const found = foundAny.file;
         const resolvedName = found.name || cleanName;
         const ext = path.extname(resolvedName).toLowerCase();
         const isText = ext === '.txt' || ext === '.md';
@@ -1159,7 +1477,9 @@ export function registerMediaRoutes(app: express.Express): void {
         return res.status(400).json({ error: 'Invalid filename' });
       }
       const existingExt = path.extname(safeBase);
-      const stem = existingExt ? safeBase.slice(0, -existingExt.length).trim() : safeBase;
+      const stem = (existingExt ? safeBase.slice(0, -existingExt.length) : safeBase)
+        .replace(/\s{2,}/g, ' ')
+        .trim();
       if (!stem) {
         return res.status(400).json({ error: 'Filename stem cannot be empty' });
       }
@@ -1258,7 +1578,8 @@ export function registerMediaRoutes(app: express.Express): void {
       if (isServerDriveStorageRequest(req)) {
         const folderId = await resolveServerDriveAnnouncementsFolderId(req);
         const cleanSource = path.basename(rawSource);
-        const sourceFile = await serverDriveFindFileCaseInsensitive(req, cleanSource, folderId);
+        const foundSource = await serverDriveFindAnnouncementFileAnyBucket(req, cleanSource);
+        const sourceFile = foundSource?.file || null;
         if (!sourceFile) {
           return res.status(404).json({
             error: `Source file "${cleanSource}" not found in Google Drive Media Announcements`
@@ -1266,10 +1587,13 @@ export function registerMediaRoutes(app: express.Express): void {
         }
         const sourceExt = path.extname(sourceFile.name || cleanSource) || path.extname(rawTarget);
         const targetExt = path.extname(safeTargetBase);
-        const stem =
+        const stem = (
           targetExt && targetExt.toLowerCase() === sourceExt.toLowerCase()
-            ? safeTargetBase.slice(0, -targetExt.length).trim()
-            : safeTargetBase;
+            ? safeTargetBase.slice(0, -targetExt.length)
+            : safeTargetBase
+        )
+          .replace(/\s{2,}/g, ' ')
+          .trim();
         if (!stem) {
           return res.status(400).json({ error: 'Target filename stem cannot be empty' });
         }
@@ -1327,20 +1651,19 @@ export function registerMediaRoutes(app: express.Express): void {
 
       const sourceExt = path.extname(sourceFilePath) || path.extname(rawSource);
       const targetExt = path.extname(safeTargetBase);
-      const stem =
+      const stem = (
         targetExt && targetExt.toLowerCase() === sourceExt.toLowerCase()
-          ? safeTargetBase.slice(0, -targetExt.length).trim()
-          : safeTargetBase;
+          ? safeTargetBase.slice(0, -targetExt.length)
+          : safeTargetBase
+      )
+        .replace(/\s{2,}/g, ' ')
+        .trim();
       if (!stem) {
         return res.status(400).json({ error: 'Target filename stem cannot be empty' });
       }
 
       const finalFileName = `${stem}${sourceExt}`;
-      let targetFilePath = path.join(announcementsDir, finalFileName);
-      const existingResolved = findAnnouncementSourceFile(announcementsDir, finalFileName);
-      if (existingResolved && fs.existsSync(existingResolved)) {
-        targetFilePath = existingResolved;
-      }
+      const targetFilePath = path.join(announcementsDir, finalFileName);
 
       if (fs.existsSync(targetFilePath) && !allowOverwrite) {
         return res.status(409).json({
@@ -1397,7 +1720,7 @@ export function registerMediaRoutes(app: express.Express): void {
         });
       }
 
-      const stem = safeBase.slice(0, -ext.length).trim();
+      const stem = safeBase.slice(0, -ext.length).replace(/\s{2,}/g, ' ').trim();
       if (!stem) {
         return res.status(400).json({ error: 'Filename stem cannot be empty' });
       }
@@ -1513,8 +1836,16 @@ export function registerMediaRoutes(app: express.Express): void {
         const folderId = await resolveServerDriveAnnouncementsFolderId(req);
         const allFiles = await serverDriveListFolderFiles(req, folderId);
         const cleanSource = path.basename(rawSource);
-        const sourceFile =
+        let sourceFile =
           allFiles.find(f => String(f.name || '').toLowerCase() === cleanSource.toLowerCase()) || null;
+        let sourceBucket: 'active' | 'archived' | 'deleted' = 'active';
+        if (!sourceFile) {
+          const anyBucketHit = await serverDriveFindAnnouncementFileAnyBucket(req, cleanSource);
+          if (anyBucketHit) {
+            sourceFile = anyBucketHit.file;
+            sourceBucket = anyBucketHit.bucket;
+          }
+        }
         if (!sourceFile && (!contentBase64 || typeof contentBase64 !== 'string')) {
           return res.status(404).json({
             error: `Source file "${cleanSource}" not found in Google Drive Media Announcements`
@@ -1564,7 +1895,7 @@ export function registerMediaRoutes(app: express.Express): void {
         let sizeMb = 0.1;
         let actionTaken: 'copied' | 'renamed' = isUsedElsewhere ? 'copied' : 'renamed';
 
-        if (!isUsedElsewhere && sourceFile && !existingTarget) {
+        if (!isUsedElsewhere && sourceFile && !existingTarget && sourceBucket === 'active') {
           await serverDriveFetch(req, `drive/v3/files/${sourceFile.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -1670,9 +2001,9 @@ export function registerMediaRoutes(app: express.Express): void {
       }
 
       let targetFilePath = path.join(announcementsDir, finalFileName);
-      const existingResolved = findAnnouncementSourceFile(announcementsDir, finalFileName);
-      if (existingResolved && fs.existsSync(existingResolved)) {
-        targetFilePath = existingResolved;
+      if (!forceCopy) {
+        const sourceDir = hasSourceOnDisk ? path.dirname(sourceFilePath) : announcementsDir;
+        targetFilePath = path.join(sourceDir, finalFileName);
       }
 
       if (fs.existsSync(targetFilePath) && !allowOverwrite) {

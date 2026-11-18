@@ -55,6 +55,7 @@ export interface CopyEditorModalOpenState {
   sourceFileToCopy?: string;
   initialReadTime?: string;
   initialIsAutoReadTime?: boolean;
+  initialBackupMp3Url?: string;
   targetGateId?: string | null;
   targetGateIndex?: number;
   targetItemIndex?: number;
@@ -97,89 +98,103 @@ export function getAnnouncementSummary(s: Announcement): string {
     return 'No windows selected';
   }
 
-  const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-  const activeDays = new Set<number>();
-  const activeHours = new Set<number>();
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const activeDaysSet = new Set<number>();
+  const hoursByDay = new Map<number, number[]>();
 
   s.gridRules.forEach(rule => {
     const [d, h] = rule.split('-').map(Number);
-    activeDays.add(d);
-    activeHours.add(h);
+    if (isNaN(d) || isNaN(h)) return;
+    activeDaysSet.add(d);
+    const list = hoursByDay.get(d) || [];
+    if (!list.includes(h)) list.push(h);
+    hoursByDay.set(d, list);
   });
 
-  const fullDays: string[] = [];
-  days.forEach((day, i) => {
-    let allHoursActive = true;
-    for (let h = 0; h < 24; h++) {
-      if (!s.gridRules?.includes(`${i}-${h}`)) {
-        allHoursActive = false;
+  const sortedActiveDays = Array.from(activeDaysSet).sort((a, b) => a - b);
+  sortedActiveDays.forEach(d => {
+    const list = hoursByDay.get(d);
+    if (list) list.sort((a, b) => a - b);
+  });
+
+  if (sortedActiveDays.length === 0) {
+    return 'No windows selected';
+  }
+
+  const firstDayHours = hoursByDay.get(sortedActiveDays[0]) || [];
+  const firstDayHoursKey = firstDayHours.join(',');
+  const isUniformAcrossActiveDays = sortedActiveDays.every(
+    d => (hoursByDay.get(d) || []).join(',') === firstDayHoursKey
+  );
+
+  const fmtHourShort = (h: number) => `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`;
+
+  const formatDayGroup = (dayNums: number[]): string => {
+    if (dayNums.length === 7) return 'Daily';
+    if (dayNums.join(',') === '1,2,3,4,5') return 'Mon–Fri';
+    if (dayNums.join(',') === '0,6') return 'Sat–Sun';
+    let isContiguous = dayNums.length >= 3;
+    for (let i = 1; i < dayNums.length; i++) {
+      if (dayNums[i] !== dayNums[i - 1] + 1) {
+        isContiguous = false;
         break;
       }
     }
-    if (allHoursActive) fullDays.push(day);
-  });
-
-  const fullHourNums: number[] = [];
-  for (let h = 0; h < 24; h++) {
-    let allDaysActive = true;
-    for (let d = 0; d < 7; d++) {
-      if (!s.gridRules?.includes(`${d}-${h}`)) {
-        allDaysActive = false;
-        break;
-      }
+    if (isContiguous) {
+      return `${days[dayNums[0]]}–${days[dayNums[dayNums.length - 1]]}`;
     }
-    if (allDaysActive) fullHourNums.push(h);
-  }
+    return dayNums.map(d => days[d]).join(', ');
+  };
 
-  if (fullDays.length === 7 && fullHourNums.length === 24) return 'Always Active';
-  if (fullDays.length > 0 && fullDays.length === activeDays.size && fullHourNums.length === 0) {
-    return `Days: ${fullDays.join(', ')}`;
-  }
-  if (fullHourNums.length > 0 && fullHourNums.length === activeHours.size && fullDays.length === 0) {
-    const fmtHourShort = (h: number) => `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`;
-    if (fullHourNums.length >= 3) {
-      const step = fullHourNums[1] - fullHourNums[0];
+  const formatHoursGroup = (hourNums: number[]): string => {
+    if (hourNums.length === 24) return '24 Hours';
+    if (hourNums.length === 1) return fmtHourShort(hourNums[0]);
+    if (hourNums.length >= 2) {
+      const step = hourNums[1] - hourNums[0];
       let isUniformStep = step > 0;
-      for (let i = 2; i < fullHourNums.length; i++) {
-        if (fullHourNums[i] - fullHourNums[i - 1] !== step) {
+      for (let i = 2; i < hourNums.length; i++) {
+        if (hourNums[i] - hourNums[i - 1] !== step) {
           isUniformStep = false;
           break;
         }
       }
       if (isUniformStep) {
+        if (step === 1) {
+          return `${fmtHourShort(hourNums[0])}–${fmtHourShort(hourNums[hourNums.length - 1])}`;
+        }
         if (step === 2) {
-          const parity = fullHourNums[0] % 2 === 1 ? 'Odd' : 'Even';
-          if (fullHourNums.length === 12) {
-            return `Hours: ${parity} hours`;
+          const parity = hourNums[0] % 2 === 1 ? 'Odd' : 'Even';
+          if (hourNums.length === 12) return `${parity} hours`;
+          return `${parity} hours (${fmtHourShort(hourNums[0])}–${fmtHourShort(hourNums[hourNums.length - 1])})`;
+        }
+        if (step >= 3) {
+          if (hourNums[0] < step && hourNums[hourNums.length - 1] + step >= 24) {
+            return `Every ${step}h from ${fmtHourShort(hourNums[0])}`;
           }
-          if (fullHourNums.length >= 4) {
-            return `Hours: ${parity} hours (${fmtHourShort(fullHourNums[0])}–${fmtHourShort(fullHourNums[fullHourNums.length - 1])})`;
-          }
-        } else if (step >= 3) {
-          if (fullHourNums[0] < step && fullHourNums[fullHourNums.length - 1] + step >= 24) {
-            return `Hours: Every ${step} hours starting at ${fmtHourShort(fullHourNums[0])}`;
-          }
-          return `Hours: Every ${step} hours (${fmtHourShort(fullHourNums[0])}–${fmtHourShort(fullHourNums[fullHourNums.length - 1])})`;
-        } else if (step === 1 && fullHourNums.length >= 4) {
-          return `Hours: ${fmtHourShort(fullHourNums[0])}–${fmtHourShort(fullHourNums[fullHourNums.length - 1])}`;
+          return `Every ${step}h (${fmtHourShort(hourNums[0])}–${fmtHourShort(hourNums[hourNums.length - 1])})`;
         }
       }
     }
+    if (hourNums.length <= 4) {
+      return hourNums.map(fmtHourShort).join(', ');
+    }
+    return `${hourNums.length} hrs/day`;
+  };
 
-    const amNums = fullHourNums.filter(h => h < 12).map(h => h % 12 || 12);
-    const pmNums = fullHourNums.filter(h => h >= 12).map(h => h % 12 || 12);
-    const formatMeridiemGroup = (nums: number[], meridiem: 'AM' | 'PM') => {
-      if (nums.length === 0) return '';
-      if (nums.length === 1) return `${nums[0]} ${meridiem}`;
-      if (nums.length === 2) return `${nums[0]} and ${nums[1]} ${meridiem}`;
-      return `${nums.slice(0, -1).join(', ')}, and ${nums[nums.length - 1]} ${meridiem}`;
-    };
-    const parts = [
-      formatMeridiemGroup(amNums, 'AM'),
-      formatMeridiemGroup(pmNums, 'PM'),
-    ].filter(Boolean);
-    return `Hours: ${parts.join(' and ')}`;
+  if (isUniformAcrossActiveDays) {
+    if (sortedActiveDays.length === 7 && firstDayHours.length === 24) {
+      return 'Always Active';
+    }
+    const dayLabel = formatDayGroup(sortedActiveDays);
+    const hourLabel = formatHoursGroup(firstDayHours);
+    if (sortedActiveDays.length === 7) {
+      return `Daily · ${hourLabel}`;
+    }
+    if (firstDayHours.length === 24) {
+      return `${dayLabel} · 24 Hours`;
+    }
+    return `${dayLabel} · ${hourLabel}`;
   }
 
-  return 'Open for details';
+  return `${s.gridRules.length} weekly slot${s.gridRules.length === 1 ? '' : 's'}`;
 }

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Plus, Trash2, Save, FileText, Calendar, Clock, CheckCircle, AlertCircle, AlertTriangle, ShieldAlert, Copy, Check, XCircle, X, FolderOpen, Music, Search, Play, Square, ChevronUp, ChevronDown, RefreshCw, Eye, User, BookOpen, ArrowRight, Edit3, ListChecks, CheckSquare } from 'lucide-react';
+import { Plus, Trash2, Save, FileText, Calendar, Clock, CheckCircle, AlertCircle, AlertTriangle, ShieldAlert, Copy, Check, XCircle, X, FolderOpen, Music, Search, Play, Square, ChevronUp, ChevronDown, RefreshCw, Eye, User, BookOpen, ArrowRight, Edit3, ListChecks, CheckSquare, HelpCircle } from 'lucide-react';
 import { Announcement, AnnouncementRevision, AnnouncementType, AnnouncementMetadata, MediaAssetFile, Show, ShowRevision, TimeGatedMediaItem, TimeGatedMp3, ScheduleIssue, LogEntry, UpNextPromoConfig } from '../types';
-import { cn, getMP3Status, formatDuration, getFilenameFromUrlOrPath, isTimeInShow, getSortedShows, getShowShade, readMp3ID3Metadata, parseID3Bytes, normalizeAnnouncement, normalizeAnnouncements, formatToDatetimeLocal, getCurrentDatetimeLocal, getDatePart, getTimePart, sortMp3sByStartDate, findFirstGapOrEnd, validateTimeGatedMp3s, getActiveMp3ForSlot, getGatedAssetType, isContiguousMidnightTransition, computeBackfilledEndTime, getNextGapAutoFillStart, formatTime12, formatDatetime12, formatHour12, formatHourShort12, isAudioFile, isScriptFile, classifyMediaAsset, AUDIO_EXTENSIONS, SCRIPT_EXTENSIONS, buildUpNextPromoAnnouncements, getGateMediaItems, formatRotatedAnnouncementName, formatRotatedFileName, DAYS_ORDER, isAnnouncementWithinDateBounds, isAnnouncementRuleMatch } from '../lib/utils';
+import { cn, getMP3Status, formatDuration, getFilenameFromUrlOrPath, isTimeInShow, getSortedShows, getShowShade, readMp3ID3Metadata, parseID3Bytes, normalizeAnnouncement, normalizeAnnouncements, formatToDatetimeLocal, getCurrentDatetimeLocal, getDatePart, getTimePart, sortMp3sByStartDate, findFirstGapOrEnd, validateTimeGatedMp3s, getActiveMp3ForSlot, getGatedAssetType, isGateExpiredOrInactivated, isContiguousMidnightTransition, computeBackfilledEndTime, getNextGapAutoFillStart, formatTime12, formatDatetime12, formatHour12, formatHourShort12, isAudioFile, isScriptFile, classifyMediaAsset, AUDIO_EXTENSIONS, SCRIPT_EXTENSIONS, buildUpNextPromoAnnouncements, getGateMediaItems, formatRotatedAnnouncementName, formatRotatedFileName, DAYS_ORDER, isAnnouncementWithinDateBounds, isAnnouncementRuleMatch, isUpNextPromoUrl, formatUpNextPromoFilename } from '../lib/utils';
 import { evaluateScheduleDiagnostics } from '../lib/scheduleDiagnostics';
 import { getPlayableUrl, DRIVE_FOLDERS, getSavedSettings, getStorageApiHeaders, cacheMP3, getAccessToken } from '../lib/driveService';
-import { availableFilesCache, driveFileNameCache, upsertMediaCatalogFile, syncMediaCatalogFiles } from '../lib/audioCache';
+import { availableFilesCache, driveFileNameCache, mp3DurationCache, upsertMediaCatalogFile, syncMediaCatalogFiles } from '../lib/audioCache';
 import { reconcileScheduleAndLogs, calculateGatedTrackAudit, resolveAnnouncementsForDate, resolveShowsForDate, GatedTrackAuditMetrics, toCanonicalDateString, doesLogMatchLocalSlot } from '../lib/temporalReconciliation';
 import { STATION_TIMEZONE_OPTIONS, getStationTimezone, setStationTimezone, getStationTimezoneOption, isLogPrerecordOrExport, toStationDateParts, getStationNow, getAdminContactInfo, setAdminContactInfo } from '../lib/compatibility';
 import LiveReadPopout from './LiveReadPopout';
@@ -46,6 +46,7 @@ import { ShowEditorForm, ShowsManagerList } from './calendar/ShowsManagerView';
 import { WeeklyCalendarGrid } from './calendar/WeeklyCalendarGrid';
 import { AnnouncementsListView } from './calendar/AnnouncementsListView';
 import { AnnouncementEditorView } from './calendar/AnnouncementEditorView';
+import { FileManagerView, FileManagerBucket } from './calendar/FileManagerView';
 
 export type { SchedulePresetOption, AnnouncementPlacementModalState, AnnouncementConflict, ShowConflict, AnnouncementGap, ShowGap };
 export { computeSchedulePlacementOptions, addSoftHyphensForFirstLine, getAnnouncementConflicts, getShowConflicts, formatGridRulesSummary, getAnnouncementGaps, getShowGaps, formatMetadataDate, getAnnouncementSummary };
@@ -68,14 +69,18 @@ interface CalendarTabProps {
   onSaveAdminContactInfo?: (newContact: string) => Promise<boolean | void> | void;
   upNextPromoConfig?: UpNextPromoConfig;
   logs?: LogEntry[];
-  currentViewMode?: 'list' | 'calendar' | 'shows';
-  onViewModeChange?: (mode: 'list' | 'calendar' | 'shows') => void;
+  currentViewMode?: 'list' | 'calendar' | 'shows' | 'files';
+  onViewModeChange?: (mode: 'list' | 'calendar' | 'shows' | 'files') => void;
   showPixelRuler?: boolean;
+  showLocationsModal?: boolean;
   onOpenLocationsModal?: () => void;
   onOpenLocalStationFolder?: () => void;
+  onOpenAnnouncementsFolder?: (bucket: FileManagerBucket, resolvedLocalPath?: string, resolvedDriveId?: string) => void;
+  onOpenEvergreensFolder?: (resolvedLocalPath?: string, resolvedDriveId?: string) => void;
+  onOpenShowsFolder?: (resolvedLocalPath?: string, resolvedDriveId?: string) => void;
 }
 
-function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _liveNow, driveMP3s: propDriveMP3s = [], isDriveActive = false, onRefresh, shows = [], onSaveShows, stationTimezone, onSaveStationTimezone, adminContactInfo, hasSavedAdminContact = false, onSaveAdminContactInfo, upNextPromoConfig, logs = [], currentViewMode, onViewModeChange, showPixelRuler = false, onOpenLocationsModal, onOpenLocalStationFolder }: CalendarTabProps) {
+function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _liveNow, driveMP3s: propDriveMP3s = [], isDriveActive = false, onRefresh, shows = [], onSaveShows, stationTimezone, onSaveStationTimezone, adminContactInfo, hasSavedAdminContact = false, onSaveAdminContactInfo, upNextPromoConfig, logs = [], currentViewMode, onViewModeChange, showPixelRuler = false, showLocationsModal = false, onOpenLocationsModal, onOpenLocalStationFolder, onOpenAnnouncementsFolder, onOpenEvergreensFolder, onOpenShowsFolder }: CalendarTabProps) {
   const [localSavedMediaFiles, setLocalSavedMediaFiles] = useState<MediaAssetFile[]>([]);
   const driveMP3s = useMemo<MediaAssetFile[]>(() => {
     const base = propDriveMP3s || [];
@@ -123,11 +128,30 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const [initialFormDataJson, setInitialFormDataJson] = useState<string>('');
   const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);
   const [openedFromAudit, setOpenedFromAudit] = useState<boolean>(false);
+  const [openedFromFileManagerFile, setOpenedFromFileManagerFile] = useState<string | null>(null);
+  const [fileManagerReturnFocusFile, setFileManagerReturnFocusFile] = useState<string | null>(null);
+  const [fileManagerRefreshTrigger, setFileManagerRefreshTrigger] = useState<number>(0);
+  const [fileManagerSearchQuery, setFileManagerSearchQuery] = useState<string>('');
 
   const isFormModified = useMemo(() => {
     if (!editingId || !initialFormDataJson) return false;
     return JSON.stringify(formData) !== initialFormDataJson;
   }, [editingId, formData, initialFormDataJson]);
+
+  const finishReturnToFileManager = () => {
+    if (openedFromFileManagerFile) {
+      const targetFile = openedFromFileManagerFile;
+      setOpenedFromFileManagerFile(null);
+      setViewMode('files');
+      setFileManagerReturnFocusFile(targetFile);
+      setFileManagerRefreshTrigger(prev => prev + 1);
+      if (onRefresh) {
+        Promise.resolve(onRefresh()).catch(() => {});
+      }
+      return true;
+    }
+    return false;
+  };
 
   const handleCancelEdit = () => {
     if (isSavingAnnouncement) return;
@@ -135,6 +159,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       setShowCancelConfirm(true);
     } else {
       setEditingId(null);
+      if (finishReturnToFileManager()) {
+        return;
+      }
       if (openedFromAudit) {
         setOpenedFromAudit(false);
         setIsScheduleAuditOpen(true);
@@ -178,6 +205,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     sourceFileToCopy?: string;
     initialReadTime?: string;
     initialIsAutoReadTime?: boolean;
+    initialBackupMp3Url?: string;
     targetGateId?: string | null;
     targetGateIndex?: number;
     targetItemIndex?: number;
@@ -185,6 +213,21 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     fromPicker?: boolean;
   }>({ isOpen: false });
   const [pickerHighlightedFileName, setPickerHighlightedFileName] = useState<string | null>(null);
+  const [pickerExternalConfirmSelection, setPickerExternalConfirmSelection] = useState<{
+    file: { name: string; duration?: string | number; path?: string; size?: string };
+    options?: {
+      pairedBackupAudioFile?: string;
+      doNotAttachBackup?: boolean;
+      approximateReadTime?: string;
+      isAutoReadTime?: boolean;
+    };
+  } | null>(null);
+  const [directReplacePlayedConfirm, setDirectReplacePlayedConfirm] = useState<{
+    priorFileName: string;
+    newFileName: string;
+    playCount: number;
+    onConfirm: () => Promise<void> | void;
+  } | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const handleAddMp3 = () => {
@@ -196,12 +239,17 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     setIsPickerOpen(true);
   };
 
-  const handleReuseGate = (gate: TimeGatedMp3) => {
-    const items = getGateMediaItems(gate).map(mi => ({ ...mi }));
+  const handleReuseGate = (gate: TimeGatedMp3): string | undefined => {
+    const items = getGateMediaItems(gate).map(mi => {
+      const nextMi = { ...mi };
+      delete nextMi.inactivated;
+      delete nextMi.inactivatedAt;
+      return nextMi;
+    });
     const first = items[0];
     const firstFileName = first?.mp3Url ? getFilenameFromUrlOrPath(first.mp3Url) : 'Reused Gate Media';
     const inferredType = first?.mp3Url ? classifyMediaAsset(first.mp3Url, first.assetType) : undefined;
-    applyAddMp3WithDateChecks(
+    return applyAddMp3WithDateChecks(
       {
         name: firstFileName,
         duration: first?.duration,
@@ -225,7 +273,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     },
     inferredAssetType?: 'audio' | 'script',
     overrideMediaItems?: TimeGatedMediaItem[]
-  ) => {
+  ): string => {
     setPickerTarget('main');
     const current = formData.timeGatedMp3s || [];
     const mp3Name = selectedFile ? selectedFile.name : '';
@@ -250,14 +298,19 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             }
           ];
 
-    // 1.a: If there are no MP3s, default to the start and end date of the Announcement
-    if (current.length === 0) {
-      const defaultStart = formData.startDate 
-        ? formatToDatetimeLocal(formData.startDate) 
-        : getCurrentDatetimeLocal();
-      const defaultEnd = formData.endDate 
-        ? formatToDatetimeLocal(formData.endDate) 
-        : undefined;
+    const nowIso = getCurrentDatetimeLocal();
+    const activeGates = sortMp3sByStartDate(
+      current.filter(
+        m => !m.inactivated && (!m.endDate || !m.endDate.trim() || formatToDatetimeLocal(m.endDate) >= nowIso)
+      )
+    );
+
+    if (activeGates.length === 0) {
+      const formStartIso = formData.startDate ? formatToDatetimeLocal(formData.startDate) : '';
+      const defaultStart =
+        current.length > 0 || !formStartIso || formStartIso < nowIso ? nowIso : formStartIso;
+      const formEndIso = formData.endDate ? formatToDatetimeLocal(formData.endDate) : '';
+      const defaultEnd = formEndIso && formEndIso > defaultStart ? formEndIso : undefined;
 
       const gateId = `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       const newEntry: TimeGatedMp3 = {
@@ -266,40 +319,40 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         endDate: defaultEnd,
         mediaItems: resolvedItems
       };
-      const sorted = sortMp3sByStartDate([newEntry]);
+      const sorted = sortMp3sByStartDate([...current, newEntry]);
       setFormData({
         ...formData,
         timeGatedMp3s: sorted
       });
-      return;
+      return gateId;
     }
 
-    const { presets } = computeSchedulePlacementOptions(
-      current,
-      formData.startDate,
-      formData.endDate
-    );
+    const lastActive = activeGates[activeGates.length - 1];
+    let nextStart = '';
+    let nextEnd: string | undefined = undefined;
+    if (lastActive.endDate && lastActive.endDate.trim()) {
+      nextStart = getNextGapAutoFillStart(lastActive.endDate).startIso;
+      const parentEndLocal = formData.endDate ? formatToDatetimeLocal(formData.endDate) : '';
+      if (parentEndLocal && parentEndLocal > nextStart) {
+        nextEnd = parentEndLocal;
+      }
+    }
 
-    // Always show the pop-up modal offering detected gaps (including now() -> first startDate),
-    // subsequent gaps, the open-ended transition prompt or trailing end check, and "enter my own"
-    const defaultPreset = presets[0] || presets[presets.length - 1];
-    setPlacementModal({
-      pendingFile: selectedFile,
-      pendingMediaItems: resolvedItems,
-      inferredAssetType,
-      nextIndex: current.length + 1,
-      presets,
-      selectedPresetId: defaultPreset.id,
-      startDate: defaultPreset.startDate,
-      startTime: defaultPreset.startTime,
-      endDate: defaultPreset.endDate,
-      endTime: defaultPreset.endTime,
-      transitionMp3Id: defaultPreset.transitionMp3Id,
-      transitionMp3Index: defaultPreset.transitionMp3Index,
-      transitionMp3Title: defaultPreset.transitionMp3Title,
-      previousGateEndDate: '',
-      previousGateEndTime: ''
+    const gateId = `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newEntry: TimeGatedMp3 = {
+      id: gateId,
+      startDate: nextStart,
+      endDate: nextEnd,
+      mediaItems: resolvedItems
+    };
+    const nextList = nextStart
+      ? sortMp3sByStartDate([...current, newEntry])
+      : [...current, newEntry];
+    setFormData({
+      ...formData,
+      timeGatedMp3s: nextList
     });
+    return gateId;
   };
 
   const handleSelectPlacementPreset = (preset: SchedulePresetOption) => {
@@ -315,8 +368,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         transitionMp3Id: preset.transitionMp3Id,
         transitionMp3Index: preset.transitionMp3Index,
         transitionMp3Title: preset.transitionMp3Title,
-        previousGateEndDate: '',
-        previousGateEndTime: ''
+        previousGateEndDate: preset.defaultPreviousGateEndDate || '',
+        previousGateEndTime: preset.defaultPreviousGateEndTime || ''
       };
     });
   };
@@ -329,10 +382,35 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       endTime: string;
       previousGateEndDate: string;
       previousGateEndTime: string;
+      adjacentGateUpdate: {
+        gateId: string;
+        startDate?: string;
+        startTime?: string;
+        endDate?: string;
+        endTime?: string;
+      };
     }>
   ) => {
     setPlacementModal(prev => {
       if (!prev) return null;
+
+      if (updates.adjacentGateUpdate) {
+        const { gateId, startDate, startTime, endDate, endTime } = updates.adjacentGateUpdate;
+        const nextActiveGates = (prev.activeGates || []).map(g => {
+          if (g.id !== gateId) return g;
+          return {
+            ...g,
+            startDate: startDate !== undefined ? startDate : g.startDate,
+            startTime: startTime !== undefined ? startTime : g.startTime,
+            endDate: endDate !== undefined ? endDate : g.endDate,
+            endTime: endTime !== undefined ? endTime : g.endTime,
+          };
+        });
+        return {
+          ...prev,
+          activeGates: nextActiveGates,
+        };
+      }
 
       // If user edited the open-ended previous gate's End date/time directly,
       // automatically set the new gate's Start date/time to 1 minute later (#68).
@@ -461,6 +539,25 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     }
 
     let updatedCurrent = [...current];
+    if (placementModal.activeGates && placementModal.activeGates.length > 0) {
+      const editedGates = placementModal.activeGates;
+      updatedCurrent = updatedCurrent.map(m => {
+        const edited = editedGates.find(g => g.id === m.id);
+        if (!edited) return m;
+        const editedStart = edited.startDate
+          ? `${edited.startDate}T${edited.startTime || '00:00'}`
+          : m.startDate;
+        const editedEnd = edited.endDate
+          ? `${edited.endDate}T${edited.endTime || '23:59'}`
+          : undefined;
+        return {
+          ...m,
+          startDate: editedStart,
+          endDate: editedEnd,
+        };
+      });
+    }
+
     if (placementModal.transitionMp3Id && startIso) {
       const explicitPrevEnd =
         placementModal.previousGateEndDate
@@ -470,7 +567,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         m.id === placementModal.transitionMp3Id ? { ...m, endDate: explicitPrevEnd } : m
       );
     } else {
-      const sortedCurrent = sortMp3sByStartDate(current);
+      const sortedCurrent = sortMp3sByStartDate(updatedCurrent);
       const last = sortedCurrent[sortedCurrent.length - 1];
       if (last && (!last.endDate || !last.endDate.trim()) && startIso > (last.startDate || '')) {
         const backfillEnd = computeBackfilledEndTime(startIso);
@@ -591,8 +688,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const hideCalendarIcon = headerContainerWidth < 780;
   const hideAnnouncementsIcons = headerContainerWidth < 780;
   const hideShowsIcon = headerContainerWidth < 780;
-  const addTextShort = headerContainerWidth < (isCalendarView ? 1040 : 900) && headerContainerWidth >= (isCalendarView ? 920 : 800);
-  const addTextIconOnly = headerContainerWidth < (isCalendarView ? 920 : 800);
+  const addTextShort = headerContainerWidth < (isCalendarView ? 1040 : 900) && headerContainerWidth >= (isCalendarView ? 880 : 760);
+  const addTextIconOnly = headerContainerWidth < (isCalendarView ? 880 : 760);
   const halfFilter = headerContainerWidth < (isCalendarView ? 980 : 840);
   const modeIconsOnly = headerContainerWidth < 520;
   const isHeaderStacked = headerContainerWidth < (isCalendarView ? 640 : 540);
@@ -602,30 +699,29 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
   const listCardCollapsePreviewText = headerContainerWidth < 520;
   const listCardCollapseCopyText = headerContainerWidth < 460;
+  const listCardCollapseDetailsText = headerContainerWidth < 440;
   const listCardCollapseViewEditText = headerContainerWidth < 420;
   const listCardHideSummaryTag = headerContainerWidth < 480;
   const listCardHideTypeTag = headerContainerWidth < 420;
 
   const activeTriggerWidth = isCalendarView ? controlsContainerWidth : headerContainerWidth;
 
-  const dropShowIssuesText = controlsContainerWidth < 1360;
-  const dropAuditWord = controlsContainerWidth < 1180;
+  const dropFilterModeLabels = controlsContainerWidth < 1140;
+  const dropShowIssuesText = controlsContainerWidth < 1080;
+  const controlsNavShort = controlsContainerWidth < 990;
+  const dropAuditWord = controlsContainerWidth < 920;
 
-  const isCell3Below = controlsContainerWidth < 630;
+  const isFilterModeSplit = controlsContainerWidth < 860;
+  const isIssuesAuditStacked = controlsContainerWidth < 860;
 
-  const isFilterModeSplit = controlsContainerWidth < 1130;
-  const isIssuesAuditStacked = controlsContainerWidth < 1130;
+  const isWeekDayStacked = controlsContainerWidth < 720;
+  const isNavStacked = controlsContainerWidth < 720;
 
-  const controlsNavShort = controlsContainerWidth < 1300;
-
-  const controlsNavIconOnly = controlsContainerWidth < 690;
+  const isCell3Below = controlsContainerWidth < 560;
+  const controlsNavIconOnly = controlsContainerWidth < 480;
+  const isFullStacked = controlsContainerWidth < 390;
 
   const showsCardsCollapse = headerContainerWidth < 450;
-
-  const isWeekDayStacked = controlsContainerWidth < 1130;
-
-  const isNavStacked = controlsContainerWidth < 1130;
-  const isFullStacked = controlsContainerWidth < 390;
 
   // Shows related states
   const [showFilterQuery, setShowFilterQuery] = useState('');
@@ -641,11 +737,81 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     hasError: boolean;
     lines: string[];
     extraFolders: Array<{ category: 'media_evergreens' | 'media_shows'; name: string }>;
+    evergreensPath?: string;
+    playlistsPath?: string;
+    evergreensFolderId?: string;
+    playlistsFolderId?: string;
   } | null>(null);
+  const [isReadoutCollapsed, setIsReadoutCollapsed] = useState<boolean>(false);
   const [selectedStrandedKey, setSelectedStrandedKey] = useState<string>('');
+  const [mergeTargetCategory, setMergeTargetCategory] = useState<'media_shows' | 'media_evergreens'>('media_shows');
   const [selectedMergeTargetShortName, setSelectedMergeTargetShortName] = useState<string>('');
   const [isMergingStranded, setIsMergingStranded] = useState<boolean>(false);
   const [confirmMergeStrandedOpen, setConfirmMergeStrandedOpen] = useState<boolean>(false);
+  const mergeTargetListRef = useRef<HTMLDivElement | null>(null);
+  const lastLocationsSaveAtOnOpenRef = useRef<number>(0);
+
+  const sortedActiveShowsWithShortName = useMemo(() => {
+    return [...shows]
+      .filter(s => !s?.isDeleted && String(s?.nameShort || '').trim().length > 0)
+      .sort((a, b) =>
+        String(a.nameShort || '').localeCompare(String(b.nameShort || ''), undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        })
+      );
+  }, [shows]);
+
+  const findClosestShowShortName = (rawStrandedName: string): string => {
+    if (sortedActiveShowsWithShortName.length === 0) return '';
+    const cleanSource = rawStrandedName.replace(/^media_(evergreens|shows)\//i, '').toLowerCase();
+    const commonPrefixLen = (a: string, b: string) => {
+      const minLen = Math.min(a.length, b.length);
+      let i = 0;
+      while (i < minLen && a[i] === b[i]) {
+        i++;
+      }
+      return i;
+    };
+    let bestShortName = sortedActiveShowsWithShortName[0].nameShort || '';
+    let bestScore = 0;
+    for (const s of sortedActiveShowsWithShortName) {
+      const shortLower = String(s.nameShort || '').toLowerCase();
+      const nameCleanLower = cleanNameShort(s.name || '').toLowerCase();
+      const score = Math.max(
+        commonPrefixLen(cleanSource, shortLower),
+        commonPrefixLen(cleanSource, nameCleanLower)
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestShortName = s.nameShort || '';
+      }
+    }
+    return bestShortName;
+  };
+
+  useEffect(() => {
+    if (!selectedMergeTargetShortName || !mergeTargetListRef.current) return;
+    const container = mergeTargetListRef.current;
+    const targetBtn = container.querySelector<HTMLElement>(
+      `[data-target-short="${CSS.escape(selectedMergeTargetShortName)}"]`
+    );
+    if (targetBtn) {
+      targetBtn.scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedMergeTargetShortName, selectedStrandedKey, folderCheckModal?.extraFolders.length]);
+
+  useEffect(() => {
+    if (showLocationsModal) {
+      lastLocationsSaveAtOnOpenRef.current = Number((window as any).__ampLastLocationsSaveAt || 0);
+    } else if (folderCheckModal?.isOpen && !folderCheckModal.isRunning) {
+      const latestSaveAt = Number((window as any).__ampLastLocationsSaveAt || 0);
+      if (latestSaveAt > lastLocationsSaveAtOnOpenRef.current) {
+        lastLocationsSaveAtOnOpenRef.current = latestSaveAt;
+        handleVerifyEvergreens();
+      }
+    }
+  }, [showLocationsModal]);
 
   // Global unsaved changes listener for top-level navigation and auto-refresh guards
   useEffect(() => {
@@ -674,6 +840,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       setInactivateEndModal(null);
       setShowCancelConfirm(false);
       setOpenedFromAudit(false);
+      setOpenedFromFileManagerFile(null);
     };
     return () => {
       window.ampHasUnsavedChanges = undefined;
@@ -703,9 +870,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     const showsWithShortNameCount = showsWithShortName.length;
 
     setIsVerifyingEvergreens(true);
+    setIsReadoutCollapsed(false);
     setConfirmMergeStrandedOpen(false);
     setSelectedStrandedKey('');
-    setSelectedMergeTargetShortName(showsWithShortName[0]?.nameShort || '');
+    setSelectedMergeTargetShortName(sortedActiveShowsWithShortName[0]?.nameShort || showsWithShortName[0]?.nameShort || '');
     setFolderCheckModal({
       isOpen: true,
       isRunning: true,
@@ -722,6 +890,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         isRunning?: boolean;
         hasError?: boolean;
         extraFolders?: Array<{ category: 'media_evergreens' | 'media_shows'; name: string }>;
+        evergreensPath?: string;
+        playlistsPath?: string;
+        evergreensFolderId?: string;
+        playlistsFolderId?: string;
       }
     ) => {
       setFolderCheckModal(prev => {
@@ -731,6 +903,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           ...(updates?.isRunning !== undefined ? { isRunning: updates.isRunning } : {}),
           ...(updates?.hasError !== undefined ? { hasError: updates.hasError } : {}),
           ...(updates?.extraFolders !== undefined ? { extraFolders: updates.extraFolders } : {}),
+          ...(updates?.evergreensPath !== undefined ? { evergreensPath: updates.evergreensPath } : {}),
+          ...(updates?.playlistsPath !== undefined ? { playlistsPath: updates.playlistsPath } : {}),
+          ...(updates?.evergreensFolderId !== undefined ? { evergreensFolderId: updates.evergreensFolderId } : {}),
+          ...(updates?.playlistsFolderId !== undefined ? { playlistsFolderId: updates.playlistsFolderId } : {}),
           lines: [...prev.lines, ...newLines]
         };
       });
@@ -768,7 +944,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         '[Validated] Base media folders verified:',
         `  • Evergreens: ${data.evergreensPath || 'Verified'}`,
         `  • Playlists: ${data.playlistsPath || 'Verified'}`,
-        `  • Announcements: ${data.announcementsPath || 'Verified'}`
+        `  • Announcements: ${data.announcementsPath || 'Verified'} (+ archived, deleted_in_AMP_OK_to_purge)`
       ];
 
       if (data.evergreensFolderCreated) {
@@ -779,6 +955,13 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       }
       if (data.announcementsFolderCreated) {
         resultLines.push(`[Fixed] Created missing base Announcements folder: ${data.announcementsPath || 'media_announcements'}`);
+      }
+
+      const createdAnnouncementSubfolders: string[] = Array.isArray(data.createdAnnouncementSubfolders)
+        ? data.createdAnnouncementSubfolders
+        : [];
+      for (const subFolder of createdAnnouncementSubfolders) {
+        resultLines.push(`[Fixed] Created missing Announcements subfolder: media_announcements/${subFolder}`);
       }
 
       if (data.announcementsReadonlyError) {
@@ -806,7 +989,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         : [];
 
       const anyBaseFolderCreated = Boolean(
-        data.evergreensFolderCreated || data.playlistsFolderCreated || data.announcementsFolderCreated
+        data.evergreensFolderCreated ||
+          data.playlistsFolderCreated ||
+          data.announcementsFolderCreated ||
+          createdAnnouncementSubfolders.length > 0
       );
 
       if (createdEvergreens.length > 0 || createdPlaylists.length > 0) {
@@ -822,7 +1008,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         }
       } else if (!data.announcementsReadonlyError && !anyBaseFolderCreated) {
         resultLines.push(
-          '[OK] All show Evergreen and Playlist folders were already present. No fixes needed.'
+          '[OK] All show Evergreen, Playlist, and Announcement (archived / deleted_in_AMP_OK_to_purge) folders were already present. No fixes needed.'
         );
       }
 
@@ -836,14 +1022,24 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         for (const extra of discoveredExtras) {
           resultLines.push(`  ${extra.category}/${extra.name}`);
         }
-        setSelectedStrandedKey(`${discoveredExtras[0].category}/${discoveredExtras[0].name}`);
+        const firstExtra = discoveredExtras[0];
+        setSelectedStrandedKey(`${firstExtra.category}/${firstExtra.name}`);
+        setMergeTargetCategory(firstExtra.category);
+        const bestMatch = findClosestShowShortName(firstExtra.name);
+        if (bestMatch) {
+          setSelectedMergeTargetShortName(bestMatch);
+        }
       }
 
       resultLines.push('[Complete] Folder verification finished.');
       appendLines(resultLines, {
         isRunning: false,
         hasError: Boolean(data.announcementsReadonlyError),
-        extraFolders: discoveredExtras
+        extraFolders: discoveredExtras,
+        evergreensPath: typeof data.evergreensPath === 'string' ? data.evergreensPath : undefined,
+        playlistsPath: typeof data.playlistsPath === 'string' ? data.playlistsPath : undefined,
+        evergreensFolderId: typeof data.evergreensFolderId === 'string' ? data.evergreensFolderId : undefined,
+        playlistsFolderId: typeof data.playlistsFolderId === 'string' ? data.playlistsFolderId : undefined,
       });
     } catch (err: any) {
       appendLines(
@@ -858,12 +1054,24 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     }
   };
 
+  const handleSelectStrandedItem = (ef: { category: 'media_evergreens' | 'media_shows'; name: string }) => {
+    const key = `${ef.category}/${ef.name}`;
+    setSelectedStrandedKey(key);
+    setMergeTargetCategory(ef.category);
+    const bestMatch = findClosestShowShortName(ef.name);
+    if (bestMatch) {
+      setSelectedMergeTargetShortName(bestMatch);
+    }
+    setConfirmMergeStrandedOpen(false);
+  };
+
   const handleMergeStrandedFolder = async () => {
     if (!folderCheckModal || isMergingStranded || !selectedStrandedKey || !selectedMergeTargetShortName) return;
     const slashIdx = selectedStrandedKey.indexOf('/');
     if (slashIdx <= 0) return;
     const folderCategory = selectedStrandedKey.slice(0, slashIdx) as 'media_evergreens' | 'media_shows';
     const sourceFolderName = selectedStrandedKey.slice(slashIdx + 1);
+    const targetFolderCategory = mergeTargetCategory || folderCategory;
     const targetShowShortName = selectedMergeTargetShortName.trim();
     if (!sourceFolderName || !targetShowShortName) return;
 
@@ -875,6 +1083,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         headers,
         body: JSON.stringify({
           folderCategory,
+          targetFolderCategory,
           sourceFolderName,
           targetShowShortName
         })
@@ -888,7 +1097,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       const skippedCount = typeof data.skippedCount === 'number' ? data.skippedCount : 0;
       const removedSourceFolder = Boolean(data.removedSourceFolder);
 
-      const summaryLine = `[Fixed] Merged ${folderCategory}/${sourceFolderName} -> ${folderCategory}/${targetShowShortName} (${movedCount} file${movedCount === 1 ? '' : 's'} moved${skippedCount > 0 ? `, ${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped` : ''}${removedSourceFolder ? ', stranded folder removed' : ''}).`;
+      const summaryLine = `[Fixed] Merged ${folderCategory}/${sourceFolderName} -> ${targetFolderCategory}/${targetShowShortName} (${movedCount} file${movedCount === 1 ? '' : 's'} moved${skippedCount > 0 ? `, ${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped` : ''}${removedSourceFolder ? ', stranded folder removed' : ''}).`;
 
       setFolderCheckModal(prev => {
         if (!prev) return prev;
@@ -898,7 +1107,16 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             )
           : prev.extraFolders;
         const nextFirst = remainingExtras[0];
-        setSelectedStrandedKey(nextFirst ? `${nextFirst.category}/${nextFirst.name}` : '');
+        if (nextFirst) {
+          setSelectedStrandedKey(`${nextFirst.category}/${nextFirst.name}`);
+          setMergeTargetCategory(nextFirst.category);
+          const bestMatch = findClosestShowShortName(nextFirst.name);
+          if (bestMatch) {
+            setSelectedMergeTargetShortName(bestMatch);
+          }
+        } else {
+          setSelectedStrandedKey('');
+        }
         return {
           ...prev,
           extraFolders: remainingExtras,
@@ -950,7 +1168,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
   const startEditShow = (show: Show) => {
     setEditingShowId(show.id);
-    setIsNameShortManuallyEdited(false);
+    setIsNameShortManuallyEdited(
+      Boolean(show.nameShort && show.nameShort !== cleanNameShort(show.name || ''))
+    );
     setShowValidationErrors([]);
     setShowFormData({ ...show });
   };
@@ -1188,30 +1408,88 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const [pickerDurations, setPickerDurations] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    const handleDurationCached = (e: Event) => {
+      const custom = e as CustomEvent<{
+        name?: string;
+        fileName?: string;
+        url?: string;
+        resolvedUrl?: string;
+        duration?: string;
+      }>;
+      const rawName =
+        custom.detail?.name ||
+        custom.detail?.fileName ||
+        custom.detail?.url ||
+        custom.detail?.resolvedUrl ||
+        '';
+      const name = rawName ? getFilenameFromUrlOrPath(rawName) : '';
+      const duration = custom.detail?.duration || '';
+      if (name && duration) {
+        setPickerDurations(prev => (prev[name] === duration ? prev : { ...prev, [name]: duration }));
+      }
+    };
+    window.addEventListener('mp3-duration-cached', handleDurationCached as EventListener);
+    return () => {
+      window.removeEventListener('mp3-duration-cached', handleDurationCached as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
     const soundLibrary = driveMP3s || [];
     const tgFiles = (formData.timeGatedMp3s || [])
       .flatMap(m => getGateMediaItems(m).flatMap(mi => [mi.mp3Url, mi.backupMp3Url]))
-      .filter(Boolean) as string[];
-    const allFileNames = Array.from(new Set([...soundLibrary.map(f => f.name), ...tgFiles]));
-    
-    allFileNames.forEach(filename => {
-      if (filename && isAudioFile(filename) && !pickerDurations[filename]) {
+      .map(u => (u ? getFilenameFromUrlOrPath(u) : ''))
+      .filter(Boolean);
+
+    // 1. Seed known durations synchronously from catalog and mp3DurationCache without network fetches
+    const seededUpdates: Record<string, string> = {};
+    for (const f of soundLibrary) {
+      if (f?.name && f.duration && !pickerDurations[f.name]) {
+        seededUpdates[f.name] = String(f.duration);
+      }
+    }
+    for (const fname of [...tgFiles, ...soundLibrary.map(f => f.name)]) {
+      if (!fname || pickerDurations[fname] || seededUpdates[fname]) continue;
+      const fromDurCache = mp3DurationCache.get(fname) || availableFilesCache.get(fname)?.duration;
+      if (fromDurCache) {
+        seededUpdates[fname] = fromDurCache;
+      }
+    }
+    if (Object.keys(seededUpdates).length > 0) {
+      setPickerDurations(prev => ({ ...prev, ...seededUpdates }));
+    }
+
+    // 2. Only probe audio duration via browser Audio element for attached gate files (or picker files when picker is open)
+    const candidateFiles = isPickerOpen
+      ? Array.from(new Set([...tgFiles, ...soundLibrary.slice(0, 25).map(f => f.name)]))
+      : Array.from(new Set(tgFiles));
+
+    candidateFiles.forEach(filename => {
+      if (
+        filename &&
+        isAudioFile(filename) &&
+        !pickerDurations[filename] &&
+        !seededUpdates[filename]
+      ) {
         try {
           const playableUrl = getPlayableUrl(filename);
           if (playableUrl) {
-            const audio = new Audio(playableUrl);
+            const audio = new Audio();
+            audio.preload = 'metadata';
             const handleLoaded = () => {
               const d = audio.duration;
               if (!isNaN(d) && d > 0) {
                 const formatted = formatDuration(d);
+                mp3DurationCache.set(filename, formatted);
                 setPickerDurations(prev => ({
                   ...prev,
                   [filename]: formatted
                 }));
               }
             };
-            audio.addEventListener('loadedmetadata', handleLoaded);
-            audio.addEventListener('error', () => {});
+            audio.addEventListener('loadedmetadata', handleLoaded, { once: true });
+            audio.addEventListener('error', () => {}, { once: true });
+            audio.src = playableUrl;
           }
         } catch (e) {
           console.error("Failed to load metadata for " + filename, e);
@@ -1224,12 +1502,13 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     if (driveMP3s && driveMP3s.length > 0) {
       driveMP3s.forEach(f => {
         if (f && f.name) {
+          const existing = availableFilesCache.get(f.name);
           availableFilesCache.set(f.name, {
-            path: f.path || f.name,
-            size: f.size || '0.1 MB',
-            duration: f.duration || '',
-            mtimeMs: f.mtimeMs,
-            modifiedTime: f.modifiedTime
+            path: f.path || existing?.path || f.name,
+            size: f.size || existing?.size || '0.1 MB',
+            duration: f.duration || existing?.duration || mp3DurationCache.get(f.name) || '',
+            mtimeMs: f.mtimeMs ?? existing?.mtimeMs,
+            modifiedTime: f.modifiedTime ?? existing?.modifiedTime
           });
           if (f.path) {
             driveFileNameCache.set(f.path, f.name);
@@ -1240,30 +1519,48 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   }, [driveMP3s]);
 
   useEffect(() => {
-    if (!isPickerOpen) return;
-    
-    const soundLibrary = driveMP3s;
-    soundLibrary.slice(0, 40).forEach(file => {
+    if (!isPickerOpen && !editingId) return;
+
+    const tgAudioFiles = (formData.timeGatedMp3s || [])
+      .flatMap(m => getGateMediaItems(m).flatMap(mi => [mi.mp3Url, mi.backupMp3Url]))
+      .map(u => (u ? getFilenameFromUrlOrPath(u) : ''))
+      .filter(fname => Boolean(fname && isAudioFile(fname)));
+
+    const pickerAudioFiles = isPickerOpen
+      ? (driveMP3s || []).filter(f => f?.name && isAudioFile(f.name)).slice(0, 20).map(f => f.name)
+      : [];
+
+    const filesToInspect = Array.from(new Set([...tgAudioFiles, ...pickerAudioFiles]));
+    filesToInspect.forEach(fileName => {
       let alreadyFetched = false;
       setMetadataCache(current => {
-        if (current[file.name] !== undefined) {
+        if (current[fileName] !== undefined) {
           alreadyFetched = true;
         }
         return current;
       });
-      
+
       if (alreadyFetched) return;
 
-      setMetadataCache(prev => ({ ...prev, [file.name]: {} }));
+      setMetadataCache(prev => ({ ...prev, [fileName]: {} }));
 
-      const playableUrl = getPlayableUrl(file.name);
+      const playableUrl = getPlayableUrl(fileName);
       readMp3ID3Metadata(playableUrl).then(meta => {
         if (meta) {
-          setMetadataCache(prev => ({ ...prev, [file.name]: meta }));
+          setMetadataCache(prev => ({ ...prev, [fileName]: meta }));
+          if (meta.durationSeconds && meta.durationSeconds > 0) {
+            const formatted = formatDuration(meta.durationSeconds);
+            if (formatted) {
+              mp3DurationCache.set(fileName, formatted);
+              setPickerDurations(prev =>
+                prev[fileName] === formatted ? prev : { ...prev, [fileName]: formatted }
+              );
+            }
+          }
         }
       });
     });
-  }, [isPickerOpen, driveMP3s, isDriveActive]);
+  }, [isPickerOpen, editingId, formData.timeGatedMp3s, driveMP3s, isDriveActive]);
 
   // States and helper for interactive clock-style dialing
   const [isDraggingClock, setIsDraggingClock] = useState(false);
@@ -1303,9 +1600,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   };
 
   // Calendar View states
-  const [viewMode, setViewModeState] = useState<'list' | 'calendar' | 'shows'>(currentViewMode || 'calendar');
+  const [viewMode, setViewModeState] = useState<'list' | 'calendar' | 'shows' | 'files'>(currentViewMode || 'calendar');
 
-  const setViewMode = (mode: 'list' | 'calendar' | 'shows') => {
+  const setViewMode = (mode: 'list' | 'calendar' | 'shows' | 'files') => {
     setViewModeState(mode);
     if (onViewModeChange) onViewModeChange(mode);
   };
@@ -1638,7 +1935,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       const currentMp3s = formData.timeGatedMp3s || [];
       const updatedMp3s = currentMp3s.map(m => {
         if (m.id === pickerMp3Id) {
-          const existingItems = getGateMediaItems(m);
+          const existingItems = getGateMediaItems(m).filter(
+            mi => Boolean(mi.mp3Url && mi.mp3Url.trim()) || Boolean(mi.inactivated)
+          );
           const newItem: TimeGatedMediaItem = {
             mp3Url: file.name,
             assetType: inferredAssetType,
@@ -1671,19 +1970,45 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       const updatedMp3s = currentMp3s.map(m => {
         if (m.id !== pickerMp3Id) return m;
         const items = getGateMediaItems(m);
-        const nextItems = items.map((mi, idx) => {
+        const nextItems: TimeGatedMediaItem[] = [];
+        items.forEach((mi, idx) => {
           if (idx === targetIdx) {
-            return {
+            const oldFileLower = getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase();
+            const newFileLower = getFilenameFromUrlOrPath(file.name).toLowerCase();
+            const existingPlays =
+              oldFileLower && oldFileLower !== newFileLower
+                ? calculateGatedTrackAudit(editingId || formData.id || '', mi.mp3Url || '', logs, {
+                    gate: m,
+                    announcement: formData,
+                    itemIndex: idx,
+                    referenceNow: now,
+                  }).totalPlays
+                : 0;
+            const replacementItem: TimeGatedMediaItem = {
               ...mi,
               mp3Url: file.name,
               assetType: inferredAssetType,
-              duration: inferredAssetType === 'audio' ? (pickerDurations[file.name] || file.duration || mi.duration) : undefined,
+              duration:
+                inferredAssetType === 'audio'
+                  ? pickerDurations[file.name] || file.duration || mi.duration
+                  : undefined,
               ...(resolvedApproxReadTime ? { approximateReadTime: resolvedApproxReadTime } : {}),
               ...(resolvedIsAutoReadTime !== undefined ? { isAutoReadTime: resolvedIsAutoReadTime } : {}),
-              ...(suggestedBackupAudio && !mi.backupMp3Url ? { backupMp3Url: suggestedBackupAudio } : {})
+              ...(suggestedBackupAudio && !mi.backupMp3Url ? { backupMp3Url: suggestedBackupAudio } : {}),
+              inactivated: undefined,
+              inactivatedAt: undefined,
             };
+            if (existingPlays > 0) {
+              nextItems.push({
+                ...mi,
+                inactivated: true,
+                inactivatedAt: getCurrentDatetimeLocal(),
+              });
+            }
+            nextItems.push(replacementItem);
+          } else {
+            nextItems.push(mi);
           }
-          return mi;
         });
         return {
           ...m,
@@ -1855,10 +2180,44 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       const currentMp3s = formData.timeGatedMp3s || [];
       const updatedMp3s = currentMp3s.map(m => {
         if (m.id !== pickerMp3Id) return m;
-        const existingItems = getGateMediaItems(m).filter(mi => mi.mp3Url && mi.mp3Url.trim() !== '');
+        const existingItems = getGateMediaItems(m).filter(
+          mi => Boolean(mi.mp3Url && mi.mp3Url.trim()) || Boolean(mi.inactivated)
+        );
         return {
           ...m,
           mediaItems: [...existingItems, ...builtItems],
+        };
+      });
+      const sorted = sortMp3sByStartDate(updatedMp3s);
+      setFormData({
+        ...formData,
+        timeGatedMp3s: sorted,
+      });
+      setIsPickerOpen(false);
+      setPickerTarget('main');
+      setPickerItemIndex(null);
+    } else if (pickerTarget === 'timeGated' && pickerMp3Id) {
+      const currentMp3s = formData.timeGatedMp3s || [];
+      const targetIdx = pickerItemIndex ?? 0;
+      const updatedMp3s = currentMp3s.map(m => {
+        if (m.id !== pickerMp3Id) return m;
+        const items = getGateMediaItems(m);
+        const nextItems: TimeGatedMediaItem[] = [];
+        let replaced = false;
+        items.forEach((mi, idx) => {
+          if (idx === targetIdx) {
+            nextItems.push(...builtItems);
+            replaced = true;
+          } else if (Boolean(mi.mp3Url && mi.mp3Url.trim()) || Boolean(mi.inactivated)) {
+            nextItems.push(mi);
+          }
+        });
+        if (!replaced) {
+          nextItems.unshift(...builtItems);
+        }
+        return {
+          ...m,
+          mediaItems: nextItems,
         };
       });
       const sorted = sortMp3sByStartDate(updatedMp3s);
@@ -1879,13 +2238,25 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     applyAddMp3WithDateChecks(undefined, undefined, [{ mp3Url: '' }]);
   };
 
-  const startEdit = (s: Announcement, fromAudit: boolean = false) => {
+  const [initialEditorFocusTarget, setInitialEditorFocusTarget] = useState<{
+    slotIso?: string;
+    gateId?: string;
+    itemIndex?: number;
+    mp3Url?: string;
+  } | null>(null);
+
+  const startEdit = (
+    s: Announcement,
+    fromAudit: boolean = false,
+    focusTarget?: { slotIso?: string; gateId?: string; itemIndex?: number; mp3Url?: string }
+  ) => {
     const canonical = announcements.find(a => a.id === s.id) || s;
     const norm = normalizeAnnouncement(canonical);
     setEditingId(canonical.id);
     setFormData(norm);
     setInitialFormDataJson(JSON.stringify(norm));
     setOpenedFromAudit(fromAudit);
+    setInitialEditorFocusTarget(focusTarget || null);
   };
 
   const getNextIdFromList = (list: Announcement[]) => {
@@ -1980,6 +2351,26 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     }
 
     const normS = normalizeAnnouncement(s);
+    const copiedGates: TimeGatedMp3[] = (normS.timeGatedMp3s || []).map((g, gIdx) => {
+      const allItems = getGateMediaItems(g);
+      const activeOnly = allItems.filter(mi => !mi.inactivated);
+      const baseItems = activeOnly.length > 0 ? activeOnly : allItems;
+      return {
+        ...g,
+        id: `gate-copy-${Date.now()}-${gIdx}`,
+        startDate:
+          g.startDate && formatToDatetimeLocal(g.startDate) < nowIso ? nowIso : g.startDate,
+        endDate:
+          g.endDate && formatToDatetimeLocal(g.endDate) < nowIso ? undefined : g.endDate,
+        inactivated: undefined,
+        inactivatedAt: undefined,
+        mediaItems: baseItems.map(mi => ({
+          ...mi,
+          inactivated: undefined,
+          inactivatedAt: undefined,
+        })),
+      };
+    });
     const newSchedule: Announcement = normalizeAnnouncement({
       ...normS,
       id,
@@ -1987,6 +2378,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       enabled: true, // Reset to active as requested
       startDate: newStartDate,
       endDate: newEndDate,
+      timeGatedMp3s: copiedGates,
       validFrom: '1970-01-01T00:00:00.000Z',
       validTo: null,
       isDeleted: false,
@@ -2034,6 +2426,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     }
 
     const currentMp3s = formData.timeGatedMp3s || [];
+    const nowSaveCheck = getCurrentDatetimeLocal();
     const validation = validateTimeGatedMp3s(currentMp3s, undefined, effectiveEndDate, formData.startDate);
     if (!forceSaveAnyway && validation.hasErrors) {
       const warningMessages: string[] = [];
@@ -2041,6 +2434,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         warningMessages.push('At least one Announcement Gate is required.');
       } else {
         validation.sorted.forEach((gate, idx) => {
+          // Do not include anything from Past or Inactivated gates in Save validation warnings
+          if (isGateExpiredOrInactivated(gate, nowSaveCheck)) return;
           const gateNum = idx + 1;
           const gateErrors = validation.errors[gate.id] || [];
           const gateWarnings = validation.warnings[gate.id] || [];
@@ -2131,7 +2526,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         (existingAnnouncement.endDate || '') !== (resolvedEndDate || '') ||
         sortNumArr(existingAnnouncement.days) !== sortNumArr(formData.days) ||
         sortNumArr(existingAnnouncement.hours) !== sortNumArr(formData.hours) ||
-        sortStrArr(existingAnnouncement.gridRules) !== sortStrArr(formData.gridRules);
+        sortStrArr(existingAnnouncement.gridRules) !== sortStrArr(formData.gridRules) ||
+        JSON.stringify(existingAnnouncement.timeGatedMp3s || []) !== JSON.stringify(sortedMp3s);
 
       if (hasScheduleChanged) {
         const prevValidFrom =
@@ -2217,7 +2613,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       const result = await onSave(finalNewAnnouncements);
       if (result !== false) {
         setEditingId(null);
-        if (openedFromAudit) {
+        if (!finishReturnToFileManager() && openedFromAudit) {
           setOpenedFromAudit(false);
           setIsScheduleAuditOpen(true);
         }
@@ -2231,12 +2627,20 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
   const deleteAnnouncement = async (id: string) => {
     if (isSavingAnnouncement) return;
+    if (!announcements.some(s => s.id === id)) {
+      setEditingId(null);
+      if (!finishReturnToFileManager() && openedFromAudit) {
+        setOpenedFromAudit(false);
+        setIsScheduleAuditOpen(true);
+      }
+      return;
+    }
     setIsSavingAnnouncement(true);
     try {
       const result = await onSave(announcements.filter(s => s.id !== id));
       if (result !== false) {
         setEditingId(null);
-        if (openedFromAudit) {
+        if (!finishReturnToFileManager() && openedFromAudit) {
           setOpenedFromAudit(false);
           setIsScheduleAuditOpen(true);
         }
@@ -2553,6 +2957,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               isWeekDayStacked={isWeekDayStacked}
               isNavStacked={isNavStacked}
               isFilterModeSplit={isFilterModeSplit}
+              dropFilterModeLabels={dropFilterModeLabels}
               dropShowIssuesText={dropShowIssuesText}
               dropAuditWord={dropAuditWord}
               calendarTimeframe={calendarTimeframe}
@@ -2597,9 +3002,119 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               showsFolderCheckMinimal={showsFolderCheckMinimal}
               showsFolderCheckShort={showsFolderCheckShort}
             />
+          ) : viewMode === 'files' ? (
+            <FileManagerView
+              announcements={announcements}
+              fallbackFiles={driveMP3s}
+              pickerDurations={pickerDurations}
+              metadataCache={metadataCache}
+              previewUrl={previewUrl}
+              onTogglePreview={togglePreview}
+              onPreviewScript={(name) => {
+                setPreviewScriptOrigin(null);
+                setPreviewScriptFromPicker(false);
+                setPreviewScriptFile(name);
+              }}
+              onNewCopy={() => {
+                setCopyEditorState({
+                  isOpen: true,
+                  initialFileName: undefined,
+                  sourceFileToCopy: undefined,
+                  initialReadTime: undefined,
+                  targetGateId: null,
+                  targetItemIndex: undefined,
+                  targetAnnouncementId: null,
+                  fromPicker: false,
+                });
+              }}
+              onEditScript={(name) => {
+                const allMediaItems = announcements.flatMap(a =>
+                  (a.timeGatedMp3s || []).flatMap(m => getGateMediaItems(m))
+                );
+                const matchingItem = allMediaItems.find(
+                  mi => getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === name.toLowerCase()
+                );
+                setCopyEditorState({
+                  isOpen: true,
+                  initialFileName: name,
+                  sourceFileToCopy: undefined,
+                  initialReadTime: matchingItem?.approximateReadTime,
+                  initialIsAutoReadTime: matchingItem?.isAutoReadTime,
+                  initialBackupMp3Url: matchingItem?.backupMp3Url,
+                  targetGateId: null,
+                  targetItemIndex: undefined,
+                  targetAnnouncementId: null,
+                  fromPicker: false,
+                });
+              }}
+              onCopyScript={(name) => {
+                const allMediaItems = announcements.flatMap(a =>
+                  (a.timeGatedMp3s || []).flatMap(m => getGateMediaItems(m))
+                );
+                const matchingItem = allMediaItems.find(
+                  mi => getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === name.toLowerCase()
+                );
+                setCopyEditorState({
+                  isOpen: true,
+                  initialFileName: undefined,
+                  sourceFileToCopy: name,
+                  initialReadTime: matchingItem?.approximateReadTime,
+                  initialIsAutoReadTime: matchingItem?.isAutoReadTime,
+                  initialBackupMp3Url: matchingItem?.backupMp3Url,
+                  targetGateId: null,
+                  targetItemIndex: undefined,
+                  targetAnnouncementId: null,
+                  fromPicker: false,
+                });
+              }}
+              onFileUploaded={(uploaded) => {
+                const nowMs = uploaded.mtimeMs || Date.now();
+                const nowIso = uploaded.modifiedTime || new Date(nowMs).toISOString();
+                const resolvedDuration =
+                  (uploaded as any).duration || mp3DurationCache.get(uploaded.name) || '';
+                if (resolvedDuration) {
+                  setPickerDurations(prev => ({ ...prev, [uploaded.name]: resolvedDuration }));
+                }
+                upsertMediaCatalogFile({
+                  name: uploaded.name,
+                  path: uploaded.path || uploaded.name,
+                  size: uploaded.size || '0.1 MB',
+                  duration: resolvedDuration,
+                  mtimeMs: nowMs,
+                  modifiedTime: nowIso,
+                });
+                setLocalSavedMediaFiles(prev => [
+                  {
+                    name: uploaded.name,
+                    path: uploaded.path || uploaded.name,
+                    size: uploaded.size || '0.1 MB',
+                    duration: resolvedDuration,
+                    mtimeMs: nowMs,
+                    modifiedTime: nowIso,
+                  },
+                  ...prev.filter(f => f.name.toLowerCase() !== uploaded.name.toLowerCase()),
+                ]);
+              }}
+              onRefreshParent={onRefresh}
+              isDriveActive={isDriveActive}
+              externalSearchQuery={fileManagerSearchQuery}
+              onExternalSearchQueryChange={setFileManagerSearchQuery}
+              onJumpToAnnouncement={(announcementId, sourceFileName) => {
+                const targetAnn = announcements.find(a => a.id === announcementId);
+                if (targetAnn) {
+                  setOpenedFromFileManagerFile(sourceFileName);
+                  startEdit(targetAnn, false, { mp3Url: sourceFileName });
+                }
+              }}
+              returnFocusFileName={fileManagerReturnFocusFile}
+              onClearReturnFocusFileName={() => setFileManagerReturnFocusFile(null)}
+              refreshTrigger={fileManagerRefreshTrigger}
+              onOpenFolder={onOpenAnnouncementsFolder}
+            />
           ) : (
             <AnnouncementsListView
               announcements={announcements}
+              logs={logs}
               now={now}
               announcementFilterQuery={announcementFilterQuery}
               inactiveSortMode={inactiveSortMode}
@@ -2607,11 +3122,83 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               selectedListMediaByAnnId={selectedListMediaByAnnId}
               setSelectedListMediaByAnnId={setSelectedListMediaByAnnId}
               startEdit={startEdit}
+              createNew={createNew}
               duplicate={duplicate}
+              onInactivateOrReactivate={async (s, nextEnabled, e) => {
+                e.stopPropagation();
+                if (isSavingAnnouncement) return;
+                const nowLocal = getCurrentDatetimeLocal();
+                if (!nextEnabled && s.type !== AnnouncementType.ONE_TIME && (!s.endDate || !s.endDate.trim())) {
+                  startEdit(s);
+                  setFormData(prev => ({ ...prev, enabled: false }));
+                  setInactivateEndModal({
+                    date: getDatePart(nowLocal),
+                    time: getTimePart(nowLocal) || '00:00',
+                  });
+                  return;
+                }
+                const nowUtc = new Date().toISOString();
+                const updatedList = normalizeAnnouncements(
+                  announcements.map(item => {
+                    if (item.id !== s.id) return item;
+                    const existingRevs: AnnouncementRevision[] = Array.isArray(item.revisions)
+                      ? [...item.revisions]
+                      : [];
+                    const prevValidFrom =
+                      !item.validFrom ||
+                      (item.validFrom === '2026-08-01T00:00:00.000Z' && existingRevs.length === 0)
+                        ? '1970-01-01T00:00:00.000Z'
+                        : item.validFrom;
+                    existingRevs.push({
+                      name: item.name,
+                      type: item.type,
+                      enabled: item.enabled,
+                      minute: item.minute,
+                      ...(item.date !== undefined ? { date: item.date } : {}),
+                      ...(item.time !== undefined ? { time: item.time } : {}),
+                      ...(item.days !== undefined ? { days: [...item.days] } : {}),
+                      ...(item.hours !== undefined ? { hours: [...item.hours] } : {}),
+                      ...(item.gridRules !== undefined ? { gridRules: [...item.gridRules] } : {}),
+                      ...(item.startDate !== undefined ? { startDate: item.startDate } : {}),
+                      ...(item.endDate !== undefined ? { endDate: item.endDate } : {}),
+                      ...(item.timeGatedMp3s !== undefined ? { timeGatedMp3s: item.timeGatedMp3s } : {}),
+                      validFrom: prevValidFrom,
+                      validTo: nowUtc,
+                    });
+                    const shouldClearPastEndOnReactivate = Boolean(
+                      nextEnabled && item.endDate && formatToDatetimeLocal(item.endDate) <= nowLocal
+                    );
+                    return {
+                      ...item,
+                      enabled: nextEnabled,
+                      ...(shouldClearPastEndOnReactivate ? { endDate: undefined } : {}),
+                      validFrom: nowUtc,
+                      revisions: existingRevs,
+                      metadata: {
+                        createdBy: item.metadata?.createdBy || 'Admin',
+                        createdDate: item.metadata?.createdDate || nowUtc,
+                        lastModifiedBy: item.metadata?.lastModifiedBy || 'Admin',
+                        lastModifiedDate: nowUtc,
+                      },
+                    };
+                  })
+                );
+                setIsSavingAnnouncement(true);
+                try {
+                  await onSave(updatedList);
+                } finally {
+                  setIsSavingAnnouncement(false);
+                }
+              }}
+              onDeleteAnnouncementCard={(s, e) => {
+                e.stopPropagation();
+                setDeleteConfirmId(s.id);
+              }}
               listCardHideTypeTag={listCardHideTypeTag}
               listCardHideSummaryTag={listCardHideSummaryTag}
               listCardCollapseViewEditText={listCardCollapseViewEditText}
               listCardCollapseCopyText={listCardCollapseCopyText}
+              listCardCollapseDetailsText={listCardCollapseDetailsText}
               listCardCollapsePreviewText={listCardCollapsePreviewText}
               previewUrl={previewUrl}
               togglePreview={togglePreview}
@@ -2635,6 +3222,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           handleClockInteraction={handleClockInteraction}
           handleAddMp3={handleAddMp3}
           onReuseGate={handleReuseGate}
+          initialFocusTarget={initialEditorFocusTarget}
+          onClearInitialFocusTarget={() => setInitialEditorFocusTarget(null)}
           logs={logs}
           pickerDurations={pickerDurations}
           metadataCache={metadataCache}
@@ -2658,6 +3247,35 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           handleCancelEdit={handleCancelEdit}
           saveEdit={saveEdit}
           isFormValid={isFormValid}
+          isDriveActive={isDriveActive}
+          existingFileNames={existingFileNames}
+          onFileUploaded={(uploaded) => {
+            const nowMs = uploaded.mtimeMs || Date.now();
+            const nowIso = uploaded.modifiedTime || new Date(nowMs).toISOString();
+            const resolvedDuration = uploaded.duration || mp3DurationCache.get(uploaded.name) || '';
+            if (resolvedDuration) {
+              setPickerDurations(prev => ({ ...prev, [uploaded.name]: resolvedDuration }));
+            }
+            upsertMediaCatalogFile({
+              name: uploaded.name,
+              path: uploaded.path || uploaded.name,
+              size: uploaded.size || '0.1 MB',
+              duration: resolvedDuration,
+              mtimeMs: nowMs,
+              modifiedTime: nowIso,
+            });
+            setLocalSavedMediaFiles(prev => [
+              {
+                name: uploaded.name,
+                path: uploaded.path || uploaded.name,
+                size: uploaded.size || '0.1 MB',
+                duration: resolvedDuration,
+                mtimeMs: nowMs,
+                modifiedTime: nowIso
+              },
+              ...prev.filter(f => f.name.toLowerCase() !== uploaded.name.toLowerCase())
+            ]);
+          }}
         />
       )}
 
@@ -2708,6 +3326,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             sourceFileToCopy: undefined,
             initialReadTime: matchingItem?.approximateReadTime,
             initialIsAutoReadTime: matchingItem?.isAutoReadTime,
+            initialBackupMp3Url: matchingItem?.backupMp3Url,
             targetGateId: pickerMp3Id,
             targetItemIndex: pickerItemIndex ?? undefined,
             targetAnnouncementId: editingId || formData.id || null,
@@ -2725,6 +3344,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             sourceFileToCopy: name,
             initialReadTime: matchingItem?.approximateReadTime,
             initialIsAutoReadTime: matchingItem?.isAutoReadTime,
+            initialBackupMp3Url: matchingItem?.backupMp3Url,
             targetGateId: pickerMp3Id,
             targetItemIndex: pickerItemIndex ?? undefined,
             targetAnnouncementId: editingId || formData.id || null,
@@ -2732,16 +3352,176 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           });
         }}
          onSelectFile={handleSelectFileFromPicker}
-        allowMultiSelect={pickerTarget === 'newTimeGated' || pickerTarget === 'addGateFile'}
+        allowMultiSelect={
+          pickerTarget === 'newTimeGated' ||
+          pickerTarget === 'addGateFile' ||
+          (pickerTarget === 'timeGated' &&
+            (() => {
+              const targetGate = (formData.timeGatedMp3s || []).find(m => m.id === pickerMp3Id);
+              const items = targetGate ? getGateMediaItems(targetGate) : [];
+              const targetItem = items[pickerItemIndex ?? 0];
+              return !targetItem || !targetItem.mp3Url || !targetItem.mp3Url.trim();
+            })())
+        }
         allowProceedEmpty={pickerTarget === 'newTimeGated'}
         onSelectMultipleFiles={handleSelectMultipleFilesFromPicker}
         onProceedWithoutFile={handleProceedWithoutFileFromPicker}
         highlightedFileName={pickerHighlightedFileName}
+        externalPendingConfirmSelection={pickerExternalConfirmSelection}
+        onClearExternalPendingConfirmSelection={() => setPickerExternalConfirmSelection(null)}
+        pickerContextInfo={(() => {
+          const annName = formData.name?.trim() || 'Unnamed Announcement';
+          const annId = editingId || formData.id || 'New';
+          const playtimeLabel =
+            formData.type === AnnouncementType.ONE_TIME
+              ? 'One-Time'
+              : `:${String(formData.minute ?? 0).padStart(2, '0')}m`;
+          const annPrefix = `${annName} (ID: ${annId} • ${playtimeLabel})`;
+          const allGates = formData.timeGatedMp3s || [];
+          const gateIdx = pickerMp3Id ? allGates.findIndex(m => m.id === pickerMp3Id) : -1;
+          const targetGate = gateIdx >= 0 ? allGates[gateIdx] : null;
+          const gateRangeLabel = targetGate
+            ? `${
+                targetGate.startDate
+                  ? formatDatetime12(formatToDatetimeLocal(targetGate.startDate))
+                  : 'Unset Start'
+              } – ${
+                targetGate.endDate
+                  ? formatDatetime12(formatToDatetimeLocal(targetGate.endDate))
+                  : 'Open-ended'
+              }`
+            : '';
+
+          if (pickerTarget === 'newTimeGated') {
+            return {
+              mode: 'choose' as const,
+              contextDescription: `${annPrefix} • Adding New Gate #${allGates.length + 1}`,
+              currentFile: null,
+            };
+          }
+
+          if (pickerTarget === 'addGateFile') {
+            const activeCount = targetGate
+              ? getGateMediaItems(targetGate).filter(
+                  mi => !mi.inactivated && Boolean(mi.mp3Url && mi.mp3Url.trim())
+                ).length
+              : 0;
+            return {
+              mode: 'choose' as const,
+              contextDescription: `${annPrefix} • Gate #${gateIdx + 1}${
+                gateRangeLabel ? ` (${gateRangeLabel})` : ''
+              } • Adding Rotation File (${activeCount + 1}/${activeCount + 1})`,
+              currentFile: null,
+            };
+          }
+
+          if (pickerTarget === 'backup') {
+            const items = targetGate ? getGateMediaItems(targetGate) : [];
+            const targetIdx = pickerItemIndex ?? 0;
+            const targetItem = items[targetIdx];
+            const hasBackup = Boolean(targetItem?.backupMp3Url && targetItem.backupMp3Url.trim());
+            const scriptName = targetItem?.mp3Url
+              ? getFilenameFromUrlOrPath(targetItem.mp3Url)
+              : 'Live Read';
+            return {
+              mode: (hasBackup ? 'replace' : 'choose') as 'choose' | 'replace',
+              contextDescription: `${annPrefix} • Gate #${gateIdx + 1}${
+                gateRangeLabel ? ` (${gateRangeLabel})` : ''
+              } • Backup Audio for "${scriptName}"`,
+              currentFile:
+                hasBackup && targetItem?.backupMp3Url
+                  ? {
+                      name: getFilenameFromUrlOrPath(targetItem.backupMp3Url),
+                    }
+                  : null,
+            };
+          }
+
+          if (pickerTarget === 'timeGated') {
+            const items = targetGate ? getGateMediaItems(targetGate) : [];
+            const targetIdx = pickerItemIndex ?? 0;
+            const targetItem = items[targetIdx];
+            const hasAttached = Boolean(targetItem?.mp3Url && targetItem.mp3Url.trim());
+            const activeItems = items
+              .map((mi, idx) => ({ mi, idx }))
+              .filter(x => !x.mi.inactivated);
+            const activePos = activeItems.findIndex(x => x.idx === targetIdx);
+            const slotLabel =
+              activeItems.length > 1 && activePos >= 0
+                ? `Rotation Slot (${activePos + 1}/${activeItems.length})`
+                : 'Gate Media';
+            const playCount =
+              hasAttached && targetGate && targetItem?.mp3Url
+                ? calculateGatedTrackAudit(
+                    editingId || formData.id || '',
+                    targetItem.mp3Url,
+                    logs,
+                    {
+                      gate: targetGate,
+                      announcement: formData,
+                      itemIndex: targetIdx,
+                      referenceNow: now,
+                    }
+                  ).totalPlays
+                : 0;
+            return {
+              mode: (hasAttached ? 'replace' : 'choose') as 'choose' | 'replace',
+              contextDescription: `${annPrefix} • Gate #${gateIdx + 1}${
+                gateRangeLabel ? ` (${gateRangeLabel})` : ''
+              } • ${slotLabel}`,
+              currentFile:
+                hasAttached && targetItem?.mp3Url
+                  ? {
+                      name: getFilenameFromUrlOrPath(targetItem.mp3Url),
+                      duration: targetItem.duration ? String(targetItem.duration) : undefined,
+                      approximateReadTime: targetItem.approximateReadTime,
+                      playCount,
+                    }
+                  : null,
+            };
+          }
+
+          return {
+            mode: 'choose' as const,
+            contextDescription: `${annPrefix} • Gate #1 Media`,
+            currentFile: null,
+          };
+        })()}
+        replacingPlayedMediaInfo={
+          pickerTarget === 'timeGated' && pickerMp3Id
+            ? (() => {
+                const targetGate = (formData.timeGatedMp3s || []).find(m => m.id === pickerMp3Id);
+                if (!targetGate) return null;
+                const items = getGateMediaItems(targetGate);
+                const targetIdx = pickerItemIndex ?? 0;
+                const targetItem = items[targetIdx];
+                if (!targetItem || !targetItem.mp3Url || !targetItem.mp3Url.trim()) return null;
+                const priorFileName = getFilenameFromUrlOrPath(targetItem.mp3Url);
+                const audit = calculateGatedTrackAudit(
+                  editingId || formData.id || '',
+                  targetItem.mp3Url,
+                  logs,
+                  {
+                    gate: targetGate,
+                    announcement: formData,
+                    itemIndex: targetIdx,
+                    referenceNow: now,
+                  }
+                );
+                if (audit.totalPlays <= 0) return null;
+                return {
+                  priorFileName,
+                  playCount: audit.totalPlays,
+                };
+              })()
+            : null
+        }
         onClose={() => {
           setIsPickerOpen(false);
           setPickerTarget('main');
           setPickerItemIndex(null);
           setPickerHighlightedFileName(null);
+          setPickerExternalConfirmSelection(null);
         }}
         onRefresh={async () => {
           if (onRefresh) {
@@ -2758,11 +3538,15 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         onFileUploaded={(uploaded) => {
           const nowMs = uploaded.mtimeMs || Date.now();
           const nowIso = uploaded.modifiedTime || new Date(nowMs).toISOString();
+          const resolvedDuration = (uploaded as any).duration || mp3DurationCache.get(uploaded.name) || '';
+          if (resolvedDuration) {
+            setPickerDurations(prev => ({ ...prev, [uploaded.name]: resolvedDuration }));
+          }
           upsertMediaCatalogFile({
             name: uploaded.name,
             path: uploaded.path || uploaded.name,
             size: uploaded.size || '0.1 MB',
-            duration: '',
+            duration: resolvedDuration,
             mtimeMs: nowMs,
             modifiedTime: nowIso,
           });
@@ -2771,6 +3555,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               name: uploaded.name,
               path: uploaded.path || uploaded.name,
               size: uploaded.size || '0.1 MB',
+              duration: resolvedDuration,
               mtimeMs: nowMs,
               modifiedTime: nowIso
             },
@@ -2789,6 +3574,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         sourceFileToCopy={copyEditorState.sourceFileToCopy}
         initialReadTime={copyEditorState.initialReadTime}
         initialIsAutoReadTime={copyEditorState.initialIsAutoReadTime}
+        initialBackupMp3Url={copyEditorState.initialBackupMp3Url}
         suggestedBaseName={formData.name || ''}
         isDriveActive={isDriveActive}
         existingFileNames={existingFileNames}
@@ -2844,6 +3630,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         onBackupAudioUploaded={(uploaded, previousRenamedName) => {
           const nowMs = uploaded.mtimeMs || Date.now();
           const nowIso = uploaded.modifiedTime || new Date(nowMs).toISOString();
+          const resolvedDuration = (uploaded as any).duration || mp3DurationCache.get(uploaded.name) || '';
+          if (resolvedDuration) {
+            setPickerDurations(prev => ({ ...prev, [uploaded.name]: resolvedDuration }));
+          }
           if (previousRenamedName && previousRenamedName.toLowerCase() !== uploaded.name.toLowerCase()) {
             availableFilesCache.delete(previousRenamedName);
           }
@@ -2851,7 +3641,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             name: uploaded.name,
             path: uploaded.path || uploaded.name,
             size: uploaded.size || '0.1 MB',
-            duration: '',
+            duration: resolvedDuration,
             mtimeMs: nowMs,
             modifiedTime: nowIso,
           });
@@ -2860,6 +3650,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               name: uploaded.name,
               path: uploaded.path || uploaded.name,
               size: uploaded.size || '0.1 MB',
+              duration: resolvedDuration,
               mtimeMs: nowMs,
               modifiedTime: nowIso
             },
@@ -2908,12 +3699,13 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               ...prev.filter(f => f.name.toLowerCase() !== name.toLowerCase())
             ];
             if (pairedBackupAudioFile && !next.some(f => f.name.toLowerCase() === pairedBackupAudioFile.toLowerCase())) {
+              const cachedBackup = availableFilesCache.get(pairedBackupAudioFile);
               next.push({
                 name: pairedBackupAudioFile,
-                path: pairedBackupAudioFile,
-                size: '0.1 MB',
-                mtimeMs: nowMs,
-                modifiedTime: nowIso
+                path: cachedBackup?.path || pairedBackupAudioFile,
+                size: cachedBackup?.size || '0.1 MB',
+                mtimeMs: cachedBackup?.mtimeMs || nowMs,
+                modifiedTime: cachedBackup?.modifiedTime || nowIso
               });
             }
             return next;
@@ -2921,6 +3713,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
           if (onRefresh && !editingId && !editingShowId) {
             Promise.resolve(onRefresh()).catch(() => {});
+          }
+          setFileManagerRefreshTrigger(prev => prev + 1);
+          if (viewMode === 'files' && !editingId) {
+            setFileManagerReturnFocusFile(name);
           }
 
           // If user split to a new filename and explicitly chose to keep the original file in the slot, stop here
@@ -2933,20 +3729,20 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
           if (copyEditorState.fromPicker) {
             if (wasCopyingInPicker) {
-              // User clicked Copy on an item inside Select Announcement: keep Select Announcement open showing and highlighting the newly created copy
+              // User clicked Copy on an item inside Choose/Replace Announcement: keep modal open showing and selecting the newly created copy
               setPickerHighlightedFileName(name);
               return;
             }
             if (!wasEditingExistingInPicker || isSplitFromExisting) {
-              handleSelectFileFromPicker(
-                { name, path, size },
-                {
+              setPickerExternalConfirmSelection({
+                file: { name, path, size },
+                options: {
                   pairedBackupAudioFile: resolvedBackup,
                   doNotAttachBackup,
                   approximateReadTime: nextApprox,
                   isAutoReadTime: nextIsAutoReadTime
                 }
-              );
+              });
             } else {
               // Edited an existing file in-place while MediaPickerModal was open: sync metadata on any slots using this file
               const nameLower = name.toLowerCase();
@@ -2981,150 +3777,277 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                 ''
               ).toLowerCase();
               const sortedTargetGates = sortMp3sByStartDate(targetAnn.timeGatedMp3s || []);
-              let updatedGateIdx = targetGateIndex ?? 0;
-              let updatedItemIdx = targetItemIndex ?? 0;
-
-              const updatedMp3s = sortedTargetGates.map((m, gIdx) => {
-                const items = getGateMediaItems(m);
+              let detectedPlayedReplace: { priorFileName: string; playCount: number } | null = null;
+              sortedTargetGates.forEach((m, gIdx) => {
                 const matchesGate =
                   (targetGateId && m.id === targetGateId) ||
                   (targetGateIndex !== undefined && gIdx === targetGateIndex);
+                if (!matchesGate) return;
+                const items = getGateMediaItems(m);
+                items.forEach((mi, iIdx) => {
+                  const matchesItem =
+                    targetItemIndex !== undefined ? iIdx === targetItemIndex : iIdx === 0;
+                  if (!matchesItem) return;
+                  const oldNameLower = getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase();
+                  const newNameLower = getFilenameFromUrlOrPath(name).toLowerCase();
+                  if (oldNameLower && oldNameLower !== newNameLower) {
+                    const plays = calculateGatedTrackAudit(targetAnn.id || '', mi.mp3Url || '', logs, {
+                      gate: m,
+                      announcement: targetAnn,
+                      itemIndex: iIdx,
+                      referenceNow: now,
+                    }).totalPlays;
+                    if (plays > 0) {
+                      detectedPlayedReplace = {
+                        priorFileName: getFilenameFromUrlOrPath(mi.mp3Url || ''),
+                        playCount: plays,
+                      };
+                    }
+                  }
+                });
+              });
 
-                if (matchesGate) {
-                  updatedGateIdx = gIdx;
-                  return {
-                    ...m,
-                    mediaItems: items.map((mi, iIdx) => {
+              const applyTargetAnnSave = async () => {
+                let updatedGateIdx = targetGateIndex ?? 0;
+                let updatedItemIdx = targetItemIndex ?? 0;
+
+                const updatedMp3s = sortedTargetGates.map((m, gIdx) => {
+                  const items = getGateMediaItems(m);
+                  const matchesGate =
+                    (targetGateId && m.id === targetGateId) ||
+                    (targetGateIndex !== undefined && gIdx === targetGateIndex);
+
+                  if (matchesGate) {
+                    updatedGateIdx = gIdx;
+                    const nextMediaItems: TimeGatedMediaItem[] = [];
+                    items.forEach((mi, iIdx) => {
                       const matchesItem =
                         targetItemIndex !== undefined ? iIdx === targetItemIndex : iIdx === 0;
-                      if (!matchesItem) return mi;
-                      updatedItemIdx = iIdx;
-                      return {
+                      if (!matchesItem) {
+                        nextMediaItems.push(mi);
+                        return;
+                      }
+                      const oldNameLower = getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase();
+                      const newNameLower = getFilenameFromUrlOrPath(name).toLowerCase();
+                      const existingPlays =
+                        oldNameLower && oldNameLower !== newNameLower
+                          ? calculateGatedTrackAudit(targetAnn.id || '', mi.mp3Url || '', logs, {
+                              gate: m,
+                              announcement: targetAnn,
+                              itemIndex: iIdx,
+                              referenceNow: now,
+                            }).totalPlays
+                          : 0;
+                      if (existingPlays > 0) {
+                        nextMediaItems.push({
+                          ...mi,
+                          inactivated: true,
+                          inactivatedAt: getCurrentDatetimeLocal(),
+                        });
+                      }
+                      updatedItemIdx = nextMediaItems.length;
+                      nextMediaItems.push({
                         ...mi,
                         mp3Url: name,
                         assetType: classifyMediaAsset(name, 'script'),
                         approximateReadTime: nextApprox || mi.approximateReadTime,
                         isAutoReadTime: nextIsAutoReadTime,
+                        inactivated: undefined,
+                        inactivatedAt: undefined,
                         ...(resolvedBackup &&
                         (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
                           ? { backupMp3Url: resolvedBackup }
-                          : {})
-                      };
-                    })
-                  };
-                }
-
-                if (!targetGateId && targetGateIndex === undefined && oldLower) {
-                  return {
-                    ...m,
-                    mediaItems: items.map((mi, iIdx) => {
-                      if (getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === oldLower) {
-                        updatedGateIdx = gIdx;
-                        updatedItemIdx = iIdx;
-                        return {
-                          ...mi,
-                          mp3Url: name,
-                          assetType: classifyMediaAsset(name, 'script'),
-                          approximateReadTime: nextApprox || mi.approximateReadTime,
-                          isAutoReadTime: nextIsAutoReadTime,
-                          ...(resolvedBackup &&
-                          (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
-                            ? { backupMp3Url: resolvedBackup }
-                            : {})
-                        };
-                      }
-                      return mi;
-                    })
-                  };
-                }
-
-                return m;
-              });
-
-              const nowModified = new Date().toISOString();
-              const updatedAnn: Announcement = normalizeAnnouncement({
-                ...targetAnn,
-                timeGatedMp3s: updatedMp3s,
-                metadata: {
-                  ...(targetAnn.metadata || {
-                    createdBy: 'Admin',
-                    createdDate: nowModified,
-                    lastModifiedBy: 'Admin',
-                    lastModifiedDate: nowModified
-                  }),
-                  lastModifiedDate: nowModified
-                }
-              });
-
-              const nextAnnouncements = normalizeAnnouncements(
-                announcements.map(a => (a.id === targetAnn.id ? updatedAnn : a))
-              );
-              setSelectedListMediaByAnnId(prev => ({
-                ...prev,
-                [targetAnn.id]: `${updatedGateIdx}-${updatedItemIdx}`
-              }));
-              await onSave(nextAnnouncements);
-            }
-          } else if (targetGateId || targetGateIndex !== undefined) {
-            setFormData(prev => {
-              const current = prev.timeGatedMp3s || [];
-              const updated = current.map((m, gIdx) => {
-                const items = getGateMediaItems(m);
-                const matchesGate =
-                  (targetGateId && m.id === targetGateId) ||
-                  (targetGateIndex !== undefined && gIdx === targetGateIndex);
-                if (!matchesGate) {
-                  // If edited in-place (not split or copied), sync read time on other slots sharing the same file
-                  if (!isSplitFromExisting && !copyEditorState.sourceFileToCopy && copyEditorState.initialFileName) {
-                    const sameLower = getFilenameFromUrlOrPath(copyEditorState.initialFileName).toLowerCase();
+                          : {}),
+                      });
+                    });
                     return {
                       ...m,
-                      mediaItems: items.map(mi =>
-                        getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === sameLower
-                          ? {
-                              ...mi,
-                              approximateReadTime: nextApprox || mi.approximateReadTime,
-                              isAutoReadTime: nextIsAutoReadTime,
-                              ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {})
-                            }
-                          : mi
-                      )
+                      mediaItems: nextMediaItems,
                     };
                   }
+
+                  if (!targetGateId && targetGateIndex === undefined && oldLower) {
+                    return {
+                      ...m,
+                      mediaItems: items.map((mi, iIdx) => {
+                        if (getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === oldLower) {
+                          updatedGateIdx = gIdx;
+                          updatedItemIdx = iIdx;
+                          return {
+                            ...mi,
+                            mp3Url: name,
+                            assetType: classifyMediaAsset(name, 'script'),
+                            approximateReadTime: nextApprox || mi.approximateReadTime,
+                            isAutoReadTime: nextIsAutoReadTime,
+                            ...(resolvedBackup &&
+                            (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
+                              ? { backupMp3Url: resolvedBackup }
+                              : {})
+                          };
+                        }
+                        return mi;
+                      })
+                    };
+                  }
+
                   return m;
+                });
+
+                const nowModified = new Date().toISOString();
+                const updatedAnn: Announcement = normalizeAnnouncement({
+                  ...targetAnn,
+                  timeGatedMp3s: updatedMp3s,
+                  metadata: {
+                    ...(targetAnn.metadata || {
+                      createdBy: 'Admin',
+                      createdDate: nowModified,
+                      lastModifiedBy: 'Admin',
+                      lastModifiedDate: nowModified
+                    }),
+                    lastModifiedDate: nowModified
+                  }
+                });
+
+                const nextAnnouncements = normalizeAnnouncements(
+                  announcements.map(a => (a.id === targetAnn.id ? updatedAnn : a))
+                );
+                setSelectedListMediaByAnnId(prev => ({
+                  ...prev,
+                  [targetAnn.id]: `${updatedGateIdx}-${updatedItemIdx}`
+                }));
+                await onSave(nextAnnouncements);
+              };
+
+              if (detectedPlayedReplace) {
+                const info = detectedPlayedReplace as { priorFileName: string; playCount: number };
+                setDirectReplacePlayedConfirm({
+                  priorFileName: info.priorFileName,
+                  newFileName: name,
+                  playCount: info.playCount,
+                  onConfirm: applyTargetAnnSave,
+                });
+              } else {
+                await applyTargetAnnSave();
+              }
+            }
+          } else if (targetGateId || targetGateIndex !== undefined) {
+            let detectedPlayedReplace: { priorFileName: string; playCount: number } | null = null;
+            const currentGatesSnapshot = formData.timeGatedMp3s || [];
+            currentGatesSnapshot.forEach((m, gIdx) => {
+              const matchesGate =
+                (targetGateId && m.id === targetGateId) ||
+                (targetGateIndex !== undefined && gIdx === targetGateIndex);
+              if (!matchesGate) return;
+              const items = getGateMediaItems(m);
+              if (targetItemIndex !== undefined && targetItemIndex >= items.length) return;
+              items.forEach((mi, idx) => {
+                const matchesItem =
+                  targetItemIndex !== undefined ? idx === targetItemIndex : idx === 0;
+                if (!matchesItem) return;
+                const oldNameLower = getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase();
+                const newNameLower = getFilenameFromUrlOrPath(name).toLowerCase();
+                if (oldNameLower && oldNameLower !== newNameLower) {
+                  const plays = calculateGatedTrackAudit(
+                    editingId || formData.id || '',
+                    mi.mp3Url || '',
+                    logs,
+                    {
+                      gate: m,
+                      announcement: formData,
+                      itemIndex: idx,
+                      referenceNow: now,
+                    }
+                  ).totalPlays;
+                  if (plays > 0) {
+                    detectedPlayedReplace = {
+                      priorFileName: getFilenameFromUrlOrPath(mi.mp3Url || ''),
+                      playCount: plays,
+                    };
+                  }
                 }
-                if (targetItemIndex !== undefined && targetItemIndex >= items.length) {
-                  return {
-                    ...m,
-                    mediaItems: [
-                      ...items.filter(mi => mi.mp3Url && mi.mp3Url.trim() !== ''),
-                      {
-                        mp3Url: name,
-                        assetType: classifyMediaAsset(name, 'script'),
-                        approximateReadTime: nextApprox,
-                        isAutoReadTime: nextIsAutoReadTime,
-                        ...(resolvedBackup ? { backupMp3Url: resolvedBackup } : {})
-                      }
-                    ]
-                  };
-                }
-                return {
-                  ...m,
-                  mediaItems: items.map((mi, idx) => {
+              });
+            });
+
+            const applyFormDataGateSave = () => {
+              setFormData(prev => {
+                const current = prev.timeGatedMp3s || [];
+                const updated = current.map((m, gIdx) => {
+                  const items = getGateMediaItems(m);
+                  const matchesGate =
+                    (targetGateId && m.id === targetGateId) ||
+                    (targetGateIndex !== undefined && gIdx === targetGateIndex);
+                  if (!matchesGate) {
+                    // If edited in-place (not split or copied), sync read time on other slots sharing the same file
+                    if (!isSplitFromExisting && !copyEditorState.sourceFileToCopy && copyEditorState.initialFileName) {
+                      const sameLower = getFilenameFromUrlOrPath(copyEditorState.initialFileName).toLowerCase();
+                      return {
+                        ...m,
+                        mediaItems: items.map(mi =>
+                          getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === sameLower
+                            ? {
+                                ...mi,
+                                approximateReadTime: nextApprox || mi.approximateReadTime,
+                                isAutoReadTime: nextIsAutoReadTime,
+                                ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {})
+                              }
+                            : mi
+                        )
+                      };
+                    }
+                    return m;
+                  }
+                  if (targetItemIndex !== undefined && targetItemIndex >= items.length) {
+                    return {
+                      ...m,
+                      mediaItems: [
+                        ...items.filter(mi => Boolean(mi.mp3Url && mi.mp3Url.trim() !== '') || Boolean(mi.inactivated)),
+                        {
+                          mp3Url: name,
+                          assetType: classifyMediaAsset(name, 'script'),
+                          approximateReadTime: nextApprox,
+                          isAutoReadTime: nextIsAutoReadTime,
+                          ...(resolvedBackup ? { backupMp3Url: resolvedBackup } : {})
+                        }
+                      ]
+                    };
+                  }
+                  const nextMediaItems: TimeGatedMediaItem[] = [];
+                  items.forEach((mi, idx) => {
                     const matchesItem =
                       targetItemIndex !== undefined ? idx === targetItemIndex : idx === 0;
                     if (matchesItem) {
-                      return {
+                      const oldNameLower = getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase();
+                      const newNameLower = getFilenameFromUrlOrPath(name).toLowerCase();
+                      const existingPlays =
+                        oldNameLower && oldNameLower !== newNameLower
+                          ? calculateGatedTrackAudit(editingId || prev.id || '', mi.mp3Url || '', logs, {
+                              gate: m,
+                              announcement: prev,
+                              itemIndex: idx,
+                              referenceNow: now,
+                            }).totalPlays
+                          : 0;
+                      if (existingPlays > 0) {
+                        nextMediaItems.push({
+                          ...mi,
+                          inactivated: true,
+                          inactivatedAt: getCurrentDatetimeLocal(),
+                        });
+                      }
+                      nextMediaItems.push({
                         ...mi,
                         mp3Url: name,
                         assetType: classifyMediaAsset(name, 'script'),
                         approximateReadTime: nextApprox || mi.approximateReadTime,
                         isAutoReadTime: nextIsAutoReadTime,
+                        inactivated: undefined,
+                        inactivatedAt: undefined,
                         ...(resolvedBackup &&
                         (!mi.backupMp3Url || Boolean(copyEditorState.sourceFileToCopy) || isSplitFromExisting)
                           ? { backupMp3Url: resolvedBackup }
-                          : {})
-                      };
+                          : {}),
+                      });
+                      return;
                     }
                     // If edited in-place, sync read time on sibling items sharing the same file
                     if (
@@ -3134,23 +4057,40 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() ===
                         getFilenameFromUrlOrPath(copyEditorState.initialFileName).toLowerCase()
                     ) {
-                      return {
+                      nextMediaItems.push({
                         ...mi,
                         approximateReadTime: nextApprox || mi.approximateReadTime,
                         isAutoReadTime: nextIsAutoReadTime,
-                        ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {})
-                      };
+                        ...(resolvedBackup && !mi.backupMp3Url ? { backupMp3Url: resolvedBackup } : {}),
+                      });
+                      return;
                     }
-                    return mi;
-                  })
+                    nextMediaItems.push(mi);
+                  });
+                  return {
+                    ...m,
+                    mediaItems: nextMediaItems,
+                  };
+                });
+                const sorted = sortMp3sByStartDate(updated);
+                return {
+                  ...prev,
+                  timeGatedMp3s: sorted
                 };
               });
-              const sorted = sortMp3sByStartDate(updated);
-              return {
-                ...prev,
-                timeGatedMp3s: sorted
-              };
-            });
+            };
+
+            if (detectedPlayedReplace) {
+              const info = detectedPlayedReplace as { priorFileName: string; playCount: number };
+              setDirectReplacePlayedConfirm({
+                priorFileName: info.priorFileName,
+                newFileName: name,
+                playCount: info.playCount,
+                onConfirm: applyFormDataGateSave,
+              });
+            } else {
+              applyFormDataGateSave();
+            }
           } else if (copyEditorState.initialFileName) {
             const oldLower = getFilenameFromUrlOrPath(copyEditorState.initialFileName).toLowerCase();
             setFormData(prev => {
@@ -3180,9 +4120,84 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         }}
       />
 
+      {/* Confirmation Popup When Replacing a Played Media Item Directly From CopyEditorModal (Edge Case 5) */}
+      {directReplacePlayedConfirm && (
+        <div
+          className="fixed inset-0 z-[195] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          onClick={() => setDirectReplacePlayedConfirm(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
+                  Replace Played Media
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDirectReplacePlayedConfirm(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+                title="Cancel"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-2.5 text-xs text-slate-700 leading-relaxed">
+              <p className="font-bold text-slate-900">
+                Replace &quot;{directReplacePlayedConfirm.priorFileName}&quot; with &quot;
+                {directReplacePlayedConfirm.newFileName}&quot;?
+              </p>
+              <p className="font-medium text-slate-600">
+                &quot;{directReplacePlayedConfirm.priorFileName}&quot; has{' '}
+                <strong className="text-slate-900">
+                  {directReplacePlayedConfirm.playCount}{' '}
+                  {directReplacePlayedConfirm.playCount === 1 ? 'logged play' : 'logged plays'}
+                </strong>{' '}
+                and will be moved to the{' '}
+                <strong className="text-slate-900">Past / Inactivated Media</strong> section of this
+                gate so its broadcast history is preserved.
+              </p>
+            </div>
+
+            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDirectReplacePlayedConfirm(null)}
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const confirmFn = directReplacePlayedConfirm.onConfirm;
+                  setDirectReplacePlayedConfirm(null);
+                  await confirmFn();
+                }}
+                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer inline-flex items-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>Confirm &amp; Replace</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete Confirmation Modal Overlay */}
       <DeleteAnnouncementModal
         isOpen={!!deleteConfirmId}
+        announcementName={
+          announcements.find(s => s.id === deleteConfirmId)?.name ||
+          (editingId === deleteConfirmId ? formData.name : undefined)
+        }
         isSaving={isSavingAnnouncement}
         onCancel={() => setDeleteConfirmId(null)}
         onConfirm={async () => {
@@ -3217,7 +4232,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         onDiscard={() => {
           setShowCancelConfirm(false);
           setEditingId(null);
-          if (openedFromAudit) {
+          if (!finishReturnToFileManager() && openedFromAudit) {
             setOpenedFromAudit(false);
             setIsScheduleAuditOpen(true);
           }
@@ -3252,19 +4267,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         }}
       />
 
-      {/* Schedule Placement & Gap Selection Modal Overlay */}
-      {placementModal && (
-        <PlacementPresetModal
-          placementModal={placementModal}
-          parentStartDate={formData.startDate}
-          parentEndDate={formData.endDate}
-          onSelectPreset={handleSelectPlacementPreset}
-          onUpdateDates={handleUpdatePlacementModalDates}
-          onConfirm={handleConfirmPlacementModal}
-          onCancel={handleCancelPlacementModal}
-        />
-      )}
-
       {/* Calendar Show Details Modal Overlay */}
       <ShowDetailsModal
         show={selectedCalendarShow}
@@ -3279,7 +4281,11 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         <div id="preview-script-modal-backdrop" className="fixed inset-0 bg-slate-950/80 flex items-center justify-center p-4 z-[135] animate-in fade-in duration-150">
           <LiveReadPopout
             initialFileName={previewScriptFile}
-            initialAnnouncementName="File Preview"
+            initialAnnouncementName={
+              isUpNextPromoUrl(previewScriptFile)
+                ? formatUpNextPromoFilename(previewScriptFile)
+                : 'File Preview'
+            }
             backupMp3Url={previewScriptBackupUrl}
             isOverlay={true}
             isPreview={true}
@@ -3312,6 +4318,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         mi => getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === cleanName.toLowerCase()
                       );
                     const originSnap = previewScriptOrigin;
+                    const backupSnap = previewScriptBackupUrl || matchingItem?.backupMp3Url;
                     setPreviewScriptFile(null);
                     setPreviewScriptBackupUrl(undefined);
                     setPreviewScriptOrigin(null);
@@ -3321,6 +4328,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       sourceFileToCopy: undefined,
                       initialReadTime: matchingItem?.approximateReadTime,
                       initialIsAutoReadTime: matchingItem?.isAutoReadTime,
+                      initialBackupMp3Url: backupSnap,
                       targetGateId: originSnap?.gateId || null,
                       targetGateIndex: originSnap?.gateIndex,
                       targetItemIndex: originSnap?.itemIndex,
@@ -3359,6 +4367,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         mi => getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === cleanName.toLowerCase()
                       );
                     const originSnap = previewScriptOrigin;
+                    const backupSnap = previewScriptBackupUrl || matchingItem?.backupMp3Url;
                     setPreviewScriptFile(null);
                     setPreviewScriptBackupUrl(undefined);
                     setPreviewScriptOrigin(null);
@@ -3368,6 +4377,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                       sourceFileToCopy: cleanName,
                       initialReadTime: matchingItem?.approximateReadTime,
                       initialIsAutoReadTime: matchingItem?.isAutoReadTime,
+                      initialBackupMp3Url: backupSnap,
                       targetGateId: originSnap?.gateId || null,
                       targetGateIndex: originSnap?.gateIndex,
                       targetItemIndex: originSnap?.itemIndex,
@@ -3400,7 +4410,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             if (res !== false) {
               setEditingId(null);
               setPendingSaveAnnouncement(null);
-              if (openedFromAudit) {
+              if (!finishReturnToFileManager() && openedFromAudit) {
                 setOpenedFromAudit(false);
                 setIsScheduleAuditOpen(true);
               }
@@ -3550,110 +4560,268 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             </div>
 
             <div className="p-4 overflow-y-auto flex-1 space-y-3">
-              <div className="bg-slate-900 text-slate-100 rounded-lg p-3 font-mono text-xs space-y-1.5 leading-relaxed border border-slate-800">
-                {folderCheckModal.lines.map((line, idx) => {
-                  const isError = line.startsWith('[Error]') || line.startsWith('[Warning]');
-                  const isFixed = line.startsWith('[Fixed]');
-                  const isNotice =
-                    line.startsWith('[Notice]') ||
-                    line.startsWith('  media_evergreens/') ||
-                    line.startsWith('  media_shows/');
-                  const isOk =
-                    line.startsWith('[Validated]') ||
-                    line.startsWith('[OK]') ||
-                    line.startsWith('[Complete]');
-                  return (
-                    <div
-                      key={idx}
-                      className={cn(
-                        'break-words',
-                        isError
-                          ? 'text-rose-300 font-semibold'
-                          : isFixed
-                            ? 'text-amber-300 font-semibold'
-                            : isNotice
-                              ? 'text-sky-300 font-semibold'
-                              : isOk
-                                ? 'text-emerald-300'
-                                : 'text-slate-300'
-                      )}
-                    >
-                      {line}
-                    </div>
-                  );
-                })}
-                {folderCheckModal.isRunning && (
-                  <div className="text-blue-300 flex items-center gap-2 pt-1">
-                    <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
-                    <span>Running folder checks...</span>
+              <div className="bg-slate-900 text-slate-100 rounded-lg border border-slate-800 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setIsReadoutCollapsed(prev => !prev)}
+                  className="w-full px-3 py-1.5 bg-slate-800/80 hover:bg-slate-800 border-b border-slate-800 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-slate-300 cursor-pointer select-none"
+                >
+                  <span>Verification Log ({folderCheckModal.lines.length})</span>
+                  <span className="flex items-center gap-1 text-slate-400">
+                    <span>{isReadoutCollapsed ? 'Expand' : 'Collapse'}</span>
+                    {isReadoutCollapsed ? (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    )}
+                  </span>
+                </button>
+                {!isReadoutCollapsed && (
+                  <div
+                    className={cn(
+                      'p-3 font-mono text-xs space-y-1.5 leading-relaxed overflow-y-auto custom-scrollbar',
+                      folderCheckModal.extraFolders.length > 0 ? 'max-h-36' : 'max-h-64'
+                    )}
+                  >
+                    {folderCheckModal.lines.map((line, idx) => {
+                      const isError = line.startsWith('[Error]') || line.startsWith('[Warning]');
+                      const isFixed = line.startsWith('[Fixed]');
+                      const isNotice =
+                        line.startsWith('[Notice]') ||
+                        line.startsWith('  media_evergreens/') ||
+                        line.startsWith('  media_shows/');
+                      const isOk =
+                        line.startsWith('[Validated]') ||
+                        line.startsWith('[OK]') ||
+                        line.startsWith('[Complete]');
+                      return (
+                        <div
+                          key={idx}
+                          className={cn(
+                            'break-words',
+                            isError
+                              ? 'text-rose-300 font-semibold'
+                              : isFixed
+                                ? 'text-amber-300 font-semibold'
+                                : isNotice
+                                  ? 'text-sky-300 font-semibold'
+                                  : isOk
+                                    ? 'text-emerald-300'
+                                    : 'text-slate-300'
+                          )}
+                        >
+                          {line}
+                        </div>
+                      );
+                    })}
+                    {folderCheckModal.isRunning && (
+                      <div className="text-blue-300 flex items-center gap-2 pt-1">
+                        <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
+                        <span>Running folder checks...</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
               {!folderCheckModal.isRunning &&
                 folderCheckModal.extraFolders.length > 0 &&
-                shows.some(s => !s?.isDeleted && String(s?.nameShort || '').trim().length > 0) && (
+                sortedActiveShowsWithShortName.length > 0 && (
                   <div className="bg-sky-50 border border-sky-200 rounded-lg p-3 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-black uppercase tracking-wider text-sky-900">
-                        Merge Stranded Folder into Show
-                      </span>
-                      <span className="text-[11px] font-bold text-sky-700">
-                        Moves non-duplicate files &amp; removes empty folder
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-black uppercase tracking-wider text-sky-900">
+                          Merge Stranded Folder into Show
+                        </span>
+                        <span
+                          title="Moves non-duplicate files into the selected destination show folder and removes the empty stranded folder."
+                          className="text-sky-700 hover:text-sky-900 cursor-help inline-flex items-center"
+                        >
+                          <HelpCircle className="w-3.5 h-3.5" />
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-1">
+                          <label className="inline-flex items-center gap-1 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                            <input
+                              type="radio"
+                              name="mergeTargetCategory"
+                              checked={mergeTargetCategory === 'media_shows'}
+                              onChange={() => {
+                                setMergeTargetCategory('media_shows');
+                                setConfirmMergeStrandedOpen(false);
+                              }}
+                              disabled={isMergingStranded}
+                              className="w-3.5 h-3.5 text-sky-700 focus:ring-sky-600 cursor-pointer"
+                            />
+                            <span>Shows</span>
+                          </label>
+                          {onOpenShowsFolder && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenShowsFolder(
+                                  folderCheckModal.playlistsPath &&
+                                    !folderCheckModal.playlistsPath.startsWith('Google Drive:')
+                                    ? folderCheckModal.playlistsPath
+                                    : undefined,
+                                  folderCheckModal.playlistsFolderId
+                                )
+                              }
+                              className="p-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded cursor-pointer inline-flex items-center justify-center"
+                              title="Open Shows Folder (media_shows)"
+                              aria-label="Open Shows Folder (media_shows)"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <label className="inline-flex items-center gap-1 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                            <input
+                              type="radio"
+                              name="mergeTargetCategory"
+                              checked={mergeTargetCategory === 'media_evergreens'}
+                              onChange={() => {
+                                setMergeTargetCategory('media_evergreens');
+                                setConfirmMergeStrandedOpen(false);
+                              }}
+                              disabled={isMergingStranded}
+                              className="w-3.5 h-3.5 text-sky-700 focus:ring-sky-600 cursor-pointer"
+                            />
+                            <span>Evergreens</span>
+                          </label>
+                          {onOpenEvergreensFolder && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenEvergreensFolder(
+                                  folderCheckModal.evergreensPath &&
+                                    !folderCheckModal.evergreensPath.startsWith('Google Drive:')
+                                    ? folderCheckModal.evergreensPath
+                                    : undefined,
+                                  folderCheckModal.evergreensFolderId
+                                )
+                              }
+                              className="p-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded cursor-pointer inline-flex items-center justify-center"
+                              title="Open Evergreens Folder (media_evergreens)"
+                              aria-label="Open Evergreens Folder (media_evergreens)"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <div className="space-y-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-2 items-center">
+                      <div className="space-y-1 min-w-0">
                         <label className="text-[11px] font-bold uppercase text-slate-600 block">
-                          Stranded Folder
+                          Stranded Folder ({folderCheckModal.extraFolders.length})
                         </label>
-                        <select
-                          value={selectedStrandedKey}
-                          onChange={e => {
-                            setSelectedStrandedKey(e.target.value);
-                            setConfirmMergeStrandedOpen(false);
-                          }}
-                          disabled={isMergingStranded}
-                          className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-bold text-slate-800 outline-none focus:border-blue-500"
+                        <div
+                          role="listbox"
+                          aria-label="Stranded Folder"
+                          className="h-[130px] overflow-y-auto bg-white border border-slate-300 rounded divide-y divide-slate-100 custom-scrollbar"
                         >
                           {folderCheckModal.extraFolders.map(ef => {
                             const key = `${ef.category}/${ef.name}`;
+                            const isSelected = selectedStrandedKey === key;
                             return (
-                              <option key={key} value={key}>
+                              <button
+                                key={key}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                disabled={isMergingStranded}
+                                onClick={() => handleSelectStrandedItem(ef)}
+                                className={cn(
+                                  'w-full px-2.5 py-1.5 text-left text-xs font-mono truncate block cursor-pointer',
+                                  isSelected
+                                    ? 'bg-sky-600 text-white font-bold'
+                                    : 'text-slate-800 hover:bg-sky-50 font-medium'
+                                )}
+                                title={key}
+                              >
                                 {key}
-                              </option>
+                              </button>
                             );
                           })}
-                        </select>
+                        </div>
                       </div>
 
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-bold uppercase text-slate-600 block">
-                          Target Show Folder
+                      <div className="hidden sm:flex items-center justify-center pt-5">
+                        <ArrowRight className="w-4 h-4 text-sky-700 shrink-0" />
+                      </div>
+
+                      <div className="space-y-1 min-w-0">
+                        <label className="text-[11px] font-bold uppercase text-slate-600 block truncate">
+                          Target Show Folder ({mergeTargetCategory === 'media_shows' ? 'Shows' : 'Evergreens'})
                         </label>
-                        <select
-                          value={selectedMergeTargetShortName}
-                          onChange={e => {
-                            setSelectedMergeTargetShortName(e.target.value);
-                            setConfirmMergeStrandedOpen(false);
-                          }}
-                          disabled={isMergingStranded}
-                          className="w-full px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800 outline-none focus:border-blue-500"
+                        <div
+                          ref={mergeTargetListRef}
+                          role="listbox"
+                          aria-label="Target Show Folder"
+                          className="h-[130px] overflow-y-auto bg-white border border-slate-300 rounded divide-y divide-slate-100 custom-scrollbar"
                         >
-                          {shows
-                            .filter(s => !s?.isDeleted && String(s?.nameShort || '').trim().length > 0)
-                            .map(s => (
-                              <option key={s.id} value={s.nameShort}>
-                                {s.name} ({s.nameShort})
-                              </option>
-                            ))}
-                        </select>
+                          {sortedActiveShowsWithShortName.map(s => {
+                            const shortName = String(s.nameShort || '').trim();
+                            const isSelected = selectedMergeTargetShortName === shortName;
+                            const targetPath = `${mergeTargetCategory}/${shortName}`;
+                            return (
+                              <button
+                                key={s.id}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                data-target-short={shortName}
+                                disabled={isMergingStranded}
+                                onClick={() => {
+                                  setSelectedMergeTargetShortName(shortName);
+                                  setConfirmMergeStrandedOpen(false);
+                                }}
+                                className={cn(
+                                  'w-full px-2.5 py-1.5 text-left text-xs truncate flex items-center justify-between gap-2 cursor-pointer',
+                                  isSelected
+                                    ? 'bg-sky-600 text-white font-bold'
+                                    : 'text-slate-800 hover:bg-sky-50 font-medium'
+                                )}
+                                title={`${targetPath} — ${s.name}`}
+                              >
+                                <span className="font-mono truncate">{targetPath}</span>
+                                <span
+                                  className={cn(
+                                    'text-[11px] truncate shrink-0 max-w-[45%]',
+                                    isSelected ? 'text-sky-100' : 'text-slate-500'
+                                  )}
+                                >
+                                  {s.name}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
 
                     {!confirmMergeStrandedOpen ? (
-                      <div className="flex justify-end">
+                      <div className="flex items-center justify-between gap-2 pt-0.5">
+                        <div>
+                          {onOpenLocationsModal && (
+                            <button
+                              type="button"
+                              disabled={folderCheckModal.isRunning || isMergingStranded}
+                              onClick={() => onOpenLocationsModal()}
+                              className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                              title="Open Storage Folders settings"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
+                              <span>Folders</span>
+                            </button>
+                          )}
+                        </div>
                         <button
                           type="button"
                           disabled={isMergingStranded || !selectedStrandedKey || !selectedMergeTargetShortName}
@@ -3664,32 +4832,48 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         </button>
                       </div>
                     ) : (
-                      <div className="p-2.5 bg-amber-50 border border-amber-300 rounded flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-amber-950">
+                      <div className="p-2.5 bg-amber-50 border border-amber-300 rounded flex flex-col gap-2">
+                        <span className="text-xs font-bold text-amber-950 break-words">
                           Move files from <span className="font-mono">{selectedStrandedKey}</span> into{' '}
                           <span className="font-mono">
-                            {selectedStrandedKey.split('/')[0]}/{selectedMergeTargetShortName}
+                            {mergeTargetCategory}/{selectedMergeTargetShortName}
                           </span>
                           ?
                         </span>
-                        <div className="flex items-center gap-1.5 shrink-0 justify-end">
-                          <button
-                            type="button"
-                            disabled={isMergingStranded}
-                            onClick={() => setConfirmMergeStrandedOpen(false)}
-                            className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isMergingStranded}
-                            onClick={handleMergeStrandedFolder}
-                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase cursor-pointer flex items-center gap-1"
-                          >
-                            {isMergingStranded && <RefreshCw className="w-3 h-3 animate-spin" />}
-                            <span>{isMergingStranded ? 'Merging...' : 'Confirm Merge'}</span>
-                          </button>
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            {onOpenLocationsModal && (
+                              <button
+                                type="button"
+                                disabled={isMergingStranded}
+                                onClick={() => onOpenLocationsModal()}
+                                className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                title="Open Storage Folders settings"
+                              >
+                                <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
+                                <span>Folders</span>
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0 justify-end">
+                            <button
+                              type="button"
+                              disabled={isMergingStranded}
+                              onClick={() => setConfirmMergeStrandedOpen(false)}
+                              className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isMergingStranded}
+                              onClick={handleMergeStrandedFolder}
+                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase cursor-pointer flex items-center gap-1"
+                            >
+                              {isMergingStranded && <RefreshCw className="w-3 h-3 animate-spin" />}
+                              <span>{isMergingStranded ? 'Merging...' : 'Confirm Merge'}</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -3706,33 +4890,74 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                     : 'Verification complete'}
               </span>
               <div className="flex items-center gap-2 flex-wrap">
-                {onOpenLocalStationFolder && (
-                  <button
-                    type="button"
-                    disabled={folderCheckModal.isRunning}
-                    onClick={() => onOpenLocalStationFolder()}
-                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    title="Open default station folder in Finder / Windows Explorer"
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-slate-600" />
-                    <span>Open in Finder / Explorer</span>
-                  </button>
+                {(folderCheckModal.isRunning ||
+                  folderCheckModal.extraFolders.length === 0 ||
+                  sortedActiveShowsWithShortName.length === 0) && (
+                  <>
+                    {onOpenShowsFolder && (
+                      <button
+                        type="button"
+                        disabled={folderCheckModal.isRunning}
+                        onClick={() =>
+                          onOpenShowsFolder(
+                            folderCheckModal.playlistsPath &&
+                              !folderCheckModal.playlistsPath.startsWith('Google Drive:')
+                              ? folderCheckModal.playlistsPath
+                              : undefined,
+                            folderCheckModal.playlistsFolderId
+                          )
+                        }
+                        className="p-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded cursor-pointer disabled:opacity-50 inline-flex items-center justify-center"
+                        title="Open Shows Folder (media_shows)"
+                        aria-label="Open Shows Folder (media_shows)"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
+                      </button>
+                    )}
+                    {onOpenEvergreensFolder && (
+                      <button
+                        type="button"
+                        disabled={folderCheckModal.isRunning}
+                        onClick={() =>
+                          onOpenEvergreensFolder(
+                            folderCheckModal.evergreensPath &&
+                              !folderCheckModal.evergreensPath.startsWith('Google Drive:')
+                              ? folderCheckModal.evergreensPath
+                              : undefined,
+                            folderCheckModal.evergreensFolderId
+                          )
+                        }
+                        className="p-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded cursor-pointer disabled:opacity-50 inline-flex items-center justify-center"
+                        title="Open Evergreens Folder (media_evergreens)"
+                        aria-label="Open Evergreens Folder (media_evergreens)"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
+                      </button>
+                    )}
+                    {onOpenLocationsModal && (
+                      <button
+                        type="button"
+                        disabled={folderCheckModal.isRunning}
+                        onClick={() => onOpenLocationsModal()}
+                        className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="Open Storage Folders settings"
+                      >
+                        <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Folders</span>
+                      </button>
+                    )}
+                  </>
                 )}
-                {onOpenLocationsModal && (
-                  <button
-                    type="button"
-                    disabled={folderCheckModal.isRunning}
-                    onClick={() => {
-                      setFolderCheckModal(null);
-                      onOpenLocationsModal();
-                    }}
-                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    title="Open Storage Folders settings"
-                  >
-                    <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Folders</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  disabled={folderCheckModal.isRunning || isMergingStranded}
+                  onClick={handleVerifyEvergreens}
+                  className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Re-run folder verification check"
+                >
+                  <RefreshCw className={cn('w-3.5 h-3.5 text-slate-600', folderCheckModal.isRunning && 'animate-spin')} />
+                  <span>Recheck</span>
+                </button>
                 <button
                   type="button"
                   disabled={folderCheckModal.isRunning}
@@ -3761,7 +4986,11 @@ export default React.memo(CalendarTab, (prev, next) => {
     prev.isDriveActive === next.isDriveActive &&
     prev.currentViewMode === next.currentViewMode &&
     prev.showPixelRuler === next.showPixelRuler &&
+    prev.showLocationsModal === next.showLocationsModal &&
     prev.onOpenLocationsModal === next.onOpenLocationsModal &&
-    prev.onOpenLocalStationFolder === next.onOpenLocalStationFolder
+    prev.onOpenLocalStationFolder === next.onOpenLocalStationFolder &&
+    prev.onOpenAnnouncementsFolder === next.onOpenAnnouncementsFolder &&
+    prev.onOpenEvergreensFolder === next.onOpenEvergreensFolder &&
+    prev.onOpenShowsFolder === next.onOpenShowsFolder
   );
 });

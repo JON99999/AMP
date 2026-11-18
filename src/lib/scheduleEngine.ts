@@ -804,8 +804,16 @@ export function getActiveMp3ForSlot(
 
   const sorted = sortMp3sByStartDate(mp3s);
 
+  const nowMs = Date.now();
+
   // Step 1: Check for currently active window (respecting inactivatedAt cutoff on inactivated gates)
   for (const item of sorted) {
+    if (item.inactivated) {
+      if (targetMs >= nowMs) continue;
+      if (!item.inactivatedAt || !item.inactivatedAt.trim()) continue;
+      const inactMs = new Date(formatToDatetimeLocal(item.inactivatedAt)).getTime();
+      if (isNaN(inactMs) || targetMs > inactMs) continue;
+    }
     const startMs = item.startDate ? new Date(formatToDatetimeLocal(item.startDate)).getTime() : 0;
     const effectiveEndStr = getGateEffectiveEndIso(item);
     const endMs = effectiveEndStr ? new Date(effectiveEndStr).getTime() : Infinity;
@@ -848,9 +856,19 @@ export function getMatchingMp3sForSlot(
     return [];
   }
 
+  const nowMs = Date.now();
   const matching: TimeGatedMp3[] = [];
 
   for (const item of timeGated) {
+    if (item.inactivated) {
+      // Going forward, inactivated gates are excluded from global audits and playback (#106)
+      if (slotDateMs >= nowMs) continue;
+      // Backward dates: only include if inactivatedAt was recorded and slotDateMs <= inactivatedAt
+      if (!item.inactivatedAt || !item.inactivatedAt.trim()) continue;
+      const inactMs = new Date(formatToDatetimeLocal(item.inactivatedAt)).getTime();
+      if (isNaN(inactMs) || slotDateMs > inactMs) continue;
+    }
+
     const itemStartMs = item.startDate ? new Date(formatToDatetimeLocal(item.startDate)).getTime() : NaN;
     const effectiveEndStr = getGateEffectiveEndIso(item);
     const itemEndMs = effectiveEndStr ? new Date(effectiveEndStr).getTime() : NaN;
@@ -891,9 +909,11 @@ export function getAllRequiredMp3Urls(announcements: Announcement[]): string[] {
 }
 
 /**
- * Checks if an end datetime (e.g. 2026-08-30T23:59) and a start datetime (e.g. 2026-08-31T00:00)
- * represent a contiguous transition across midnight (Prior Day 23:59 to Next Day 00:00),
- * which is treated as seamless continuous coverage (not a gap).
+ * Checks if an end datetime (e.g. 2026-08-30T23:59 or 2026-08-30T01:59 or 2026-08-30T02:00)
+ * and a start datetime (e.g. 2026-08-31T00:00 or 2026-08-30T02:00)
+ * represent a contiguous transition (either 0-minute exact abutment like 02:00 -> 02:00
+ * or 1-minute abutment like 01:59 -> 02:00 / 23:59 -> 00:00 next day),
+ * which is treated as seamless continuous coverage (neither a gap nor an overlap).
  */
 export function isContiguousMidnightTransition(endStr?: string, startStr?: string): boolean {
   if (!endStr || !startStr) return false;
@@ -901,21 +921,38 @@ export function isContiguousMidnightTransition(endStr?: string, startStr?: strin
   const startFormatted = formatToDatetimeLocal(startStr);
   if (!endFormatted || !startFormatted) return false;
 
-  const endDate = getDatePart(endFormatted);
-  const endTime = getTimePart(endFormatted);
-  const startDate = getDatePart(startFormatted);
-  const startTime = getTimePart(startFormatted);
+  if (endFormatted === startFormatted) {
+    return true;
+  }
 
-  if (endTime === '23:59' && startTime === '00:00') {
-    const [ey, em, ed] = endDate.split('-').map(Number);
-    const [sy, sm, sd] = startDate.split('-').map(Number);
-    if (!isNaN(ey) && !isNaN(em) && !isNaN(ed) && !isNaN(sy) && !isNaN(sm) && !isNaN(sd)) {
-      const nextDayOfEnd = new Date(ey, em - 1, ed + 1);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const expectedStartDate = `${nextDayOfEnd.getFullYear()}-${pad(nextDayOfEnd.getMonth() + 1)}-${pad(nextDayOfEnd.getDate())}`;
-      if (startDate === expectedStartDate) {
-        return true;
-      }
+  const endDate = getDatePart(endFormatted);
+  const endTime = getTimePart(endFormatted) || '00:00';
+  const startDate = getDatePart(startFormatted);
+  const startTime = getTimePart(startFormatted) || '00:00';
+
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const [eh, emin] = endTime.split(':').map(Number);
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [sh, smin] = startTime.split(':').map(Number);
+
+  if (
+    !isNaN(ey) &&
+    !isNaN(em) &&
+    !isNaN(ed) &&
+    !isNaN(eh) &&
+    !isNaN(emin) &&
+    !isNaN(sy) &&
+    !isNaN(sm) &&
+    !isNaN(sd) &&
+    !isNaN(sh) &&
+    !isNaN(smin)
+  ) {
+    const endPlusOneMin = new Date(ey, em - 1, ed, eh, emin + 1);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const expectedDate = `${endPlusOneMin.getFullYear()}-${pad(endPlusOneMin.getMonth() + 1)}-${pad(endPlusOneMin.getDate())}`;
+    const expectedTime = `${pad(endPlusOneMin.getHours())}:${pad(endPlusOneMin.getMinutes())}`;
+    if (startDate === expectedDate && startTime === expectedTime) {
+      return true;
     }
   }
   return false;
@@ -943,6 +980,8 @@ export function computeBackfilledEndTime(newStartIso: string): string {
 /**
  * Given a preceding slot's end datetime ISO or (date, time) pair,
  * computes the starting datetime for the next announcement gap auto-fill.
+ * If the end time ends in :59 (e.g. 01:59 or 23:59), advances by 1 minute to :00;
+ * otherwise uses the exact end timestamp (e.g. 02:00 -> 02:00).
  */
 export function getNextGapAutoFillStart(
   endIsoOrDate: string,
@@ -959,16 +998,18 @@ export function getNextGapAutoFillStart(
     eTime = getTimePart(formatted) || '00:00';
   }
 
-  if (eTime === '23:59') {
+  if (eTime.endsWith(':59')) {
     const [y, m, d] = eDate.split('-').map(Number);
-    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-      const nextDay = new Date(y, m - 1, d + 1);
+    const [hh, mm] = eTime.split(':').map(Number);
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d) && !isNaN(hh) && !isNaN(mm)) {
+      const nextMin = new Date(y, m - 1, d, hh, mm + 1);
       const pad = (n: number) => String(n).padStart(2, '0');
-      const nextDateStr = `${nextDay.getFullYear()}-${pad(nextDay.getMonth() + 1)}-${pad(nextDay.getDate())}`;
+      const nextDateStr = `${nextMin.getFullYear()}-${pad(nextMin.getMonth() + 1)}-${pad(nextMin.getDate())}`;
+      const nextTimeStr = `${pad(nextMin.getHours())}:${pad(nextMin.getMinutes())}`;
       return {
         startDate: nextDateStr,
-        startTime: '00:00',
-        startIso: `${nextDateStr}T00:00`,
+        startTime: nextTimeStr,
+        startIso: `${nextDateStr}T${nextTimeStr}`,
       };
     }
   }
@@ -1040,9 +1081,18 @@ export function validateTimeGatedMp3s(
   const gapEndIds = new Set<string>();
   const overlapStartIds = new Set<string>();
   const overlapEndIds = new Set<string>();
+  const overreachStartIds = new Set<string>();
+  const overreachEndIds = new Set<string>();
   const missingStartIds = new Set<string>();
   const missingFileIds = new Set<string>();
   const currentNow = nowIso || getCurrentDatetimeLocal();
+
+  const getGateNum = (gateId: string): number => {
+    const rawIdx = (mp3s || []).findIndex(g => g.id === gateId);
+    if (rawIdx >= 0) return rawIdx + 1;
+    const sortedIdx = sorted.findIndex(g => g.id === gateId);
+    return sortedIdx >= 0 ? sortedIdx + 1 : 1;
+  };
 
   sorted.forEach(item => {
     errors[item.id] = [];
@@ -1051,19 +1101,25 @@ export function validateTimeGatedMp3s(
 
   sorted.forEach(item => {
     const isHistoricalExpired = isGateExpiredOrInactivated(item, currentNow);
+    if (isHistoricalExpired) return;
+    const gateNum = getGateNum(item.id);
     if (!item.startDate || item.startDate.trim() === '') {
       warnings[item.id].push('Start date & time is missing.');
-      if (!isHistoricalExpired) {
-        missingStartIds.add(item.id);
+      missingStartIds.add(item.id);
+    } else if (item.endDate && item.endDate.trim() !== '') {
+      const sLocal = formatToDatetimeLocal(item.startDate);
+      const eLocal = formatToDatetimeLocal(item.endDate);
+      if (sLocal && eLocal && sLocal > eLocal) {
+        errors[item.id].push(`Gate #${gateNum}'s START is after the END.`);
+        overlapStartIds.add(item.id);
+        overlapEndIds.add(item.id);
       }
     }
     const mediaItems = getGateMediaItems(item);
     const activeMediaItems = mediaItems.filter(mi => !mi.inactivated);
     if (activeMediaItems.length === 0) {
       warnings[item.id].push('File attachment selection is missing.');
-      if (!isHistoricalExpired) {
-        missingFileIds.add(item.id);
-      }
+      missingFileIds.add(item.id);
     } else {
       let gateMissingFile = false;
       activeMediaItems.forEach(mi => {
@@ -1073,30 +1129,38 @@ export function validateTimeGatedMp3s(
       });
       if (gateMissingFile) {
         warnings[item.id].push('File attachment selection is missing.');
-        if (!isHistoricalExpired) {
-          missingFileIds.add(item.id);
-        }
+        missingFileIds.add(item.id);
       }
     }
   });
+
+  // Track recorded overlap pairs so out-of-order / overlapping gates emit one natural-language notice per pair
+  const recordedOverlaps = new Set<string>();
 
   // Check sequential gate order in the raw active list so out-of-order entries warn immediately (#81)
   const rawActiveGates = (mp3s || []).filter(item => !isGateExpiredOrInactivated(item, currentNow));
   for (let i = 0; i < rawActiveGates.length - 1; i++) {
     const prevGate = rawActiveGates[i];
     const nextGate = rawActiveGates[i + 1];
+    const prevNum = getGateNum(prevGate.id);
+    const nextNum = getGateNum(nextGate.id);
     const prevStart = prevGate.startDate ? formatToDatetimeLocal(prevGate.startDate) : '';
     const prevEnd = getGateEffectiveEndIso(prevGate) || '';
     const nextStart = nextGate.startDate ? formatToDatetimeLocal(nextGate.startDate) : '';
     if (prevStart && nextStart && nextStart < prevStart) {
-      warnings[nextGate.id].push(
-        `Sequential order warning: Starts (${formatDatetime12(nextStart)}) before preceding gate starts (${formatDatetime12(prevStart)}).`
-      );
+      const pairKey = [prevGate.id, nextGate.id].sort().join('::');
+      if (!recordedOverlaps.has(pairKey)) {
+        recordedOverlaps.add(pairKey);
+        warnings[nextGate.id].push(`Gate #${nextNum} starts before Gate #${prevNum} starts.`);
+      }
       overlapStartIds.add(nextGate.id);
     } else if (prevEnd && nextStart && nextStart < prevEnd) {
-      warnings[nextGate.id].push(
-        `Sequential order warning: Starts (${formatDatetime12(nextStart)}) before preceding gate ends (${formatDatetime12(prevEnd)}).`
-      );
+      const pairKey = [prevGate.id, nextGate.id].sort().join('::');
+      if (!recordedOverlaps.has(pairKey)) {
+        recordedOverlaps.add(pairKey);
+        warnings[nextGate.id].push(`Gate #${nextNum} overlaps with Gate #${prevNum}.`);
+      }
+      overlapEndIds.add(prevGate.id);
       overlapStartIds.add(nextGate.id);
     }
   }
@@ -1108,6 +1172,8 @@ export function validateTimeGatedMp3s(
     const aEnd = getGateEffectiveEndIso(a) || null;
 
     if (!aStart) continue;
+    // Skip self-inverted gate from pairwise overlap math since it already has its own self-inversion error
+    if (aEnd !== null && aStart > aEnd) continue;
 
     for (let j = i + 1; j < sorted.length; j++) {
       const b = sorted[j];
@@ -1116,6 +1182,7 @@ export function validateTimeGatedMp3s(
       const bEnd = getGateEffectiveEndIso(b) || null;
 
       if (!bStart) continue;
+      if (bEnd !== null && bStart > bEnd) continue;
 
       let overlap = false;
       if (aEnd === null) {
@@ -1144,8 +1211,14 @@ export function validateTimeGatedMp3s(
           continue;
         }
 
-        warnings[a.id].push(`Time range overlaps with Announcement #${j + 1}`);
-        warnings[b.id].push(`Time range overlaps with Announcement #${i + 1}`);
+        const aNum = getGateNum(a.id);
+        const bNum = getGateNum(b.id);
+        const pairKey = [a.id, b.id].sort().join('::');
+        if (!recordedOverlaps.has(pairKey)) {
+          recordedOverlaps.add(pairKey);
+          warnings[a.id].push(`Gate #${aNum} overlaps with Gate #${bNum}.`);
+          warnings[b.id].push(`Gate #${bNum} overlaps with Gate #${aNum}.`);
+        }
 
         if (aStart === bStart) {
           overlapStartIds.add(a.id);
@@ -1168,30 +1241,46 @@ export function validateTimeGatedMp3s(
     }
   }
 
-  // 1. Check for leading gap from effective schedule start (max of now() and parentProfileStartDate) to first active/upcoming startDate
+  // 1. Check for leading gap or leading overreach against parentProfileStartDate (accounting for prior past/inactivated gates)
   const activeSorted = sorted.filter(
     item => !isGateExpiredOrInactivated(item, currentNow)
   );
+  const archivedSorted = sorted.filter(
+    item => isGateExpiredOrInactivated(item, currentNow)
+  );
+  let latestArchivedEnd = '';
+  for (const archGate of archivedSorted) {
+    const archEffEnd = getGateEffectiveEndIso(archGate) || '';
+    if (archEffEnd && archEffEnd > latestArchivedEnd) {
+      latestArchivedEnd = archEffEnd;
+    }
+  }
+
   const parentStart = parentProfileStartDate ? formatToDatetimeLocal(parentProfileStartDate) : '';
   const isParentStartDateOnly = Boolean(parentProfileStartDate && !parentProfileStartDate.includes('T'));
-  const effectiveLeadBaseline = parentStart && parentStart > currentNow ? parentStart : currentNow;
-  const isBaselineNow = effectiveLeadBaseline === currentNow && (!parentStart || parentStart <= currentNow);
-  if (activeSorted.length > 0 && activeSorted[0].startDate) {
-    const firstStart = formatToDatetimeLocal(activeSorted[0].startDate);
+  if (activeSorted.length > 0 && activeSorted[0].startDate && parentStart) {
+    const firstGate = activeSorted[0];
+    const firstNum = getGateNum(firstGate.id);
+    const firstStart = formatToDatetimeLocal(firstGate.startDate);
+    const effectivePriorBoundary =
+      latestArchivedEnd && latestArchivedEnd > parentStart ? latestArchivedEnd : parentStart;
     const isSameDayAsDateOnlyParentStart =
+      !latestArchivedEnd &&
       isParentStartDateOnly &&
       Boolean(firstStart) &&
       getDatePart(parentStart) === getDatePart(firstStart);
-    if (
-      firstStart &&
-      firstStart > effectiveLeadBaseline &&
-      !isSameDayAsDateOnlyParentStart &&
-      !isContiguousMidnightTransition(effectiveLeadBaseline, firstStart)
-    ) {
-      warnings[activeSorted[0].id].push(
-        `Gap detected: ${formatDatetime12(effectiveLeadBaseline)}${isBaselineNow ? ' (now)' : ''} to ${formatDatetime12(firstStart)}`
-      );
-      gapStartIds.add(activeSorted[0].id);
+    if (firstStart && !isSameDayAsDateOnlyParentStart) {
+      if (firstStart < parentStart) {
+        warnings[firstGate.id].push(`Gate #${firstNum} starts before Announcement starts.`);
+        overreachStartIds.add(firstGate.id);
+      } else if (
+        firstStart > effectivePriorBoundary &&
+        firstStart > currentNow &&
+        !isContiguousMidnightTransition(effectivePriorBoundary, firstStart)
+      ) {
+        warnings[firstGate.id].push(`Gap before Gate #${firstNum}.`);
+        gapStartIds.add(firstGate.id);
+      }
     }
   }
 
@@ -1199,6 +1288,8 @@ export function validateTimeGatedMp3s(
   for (let i = 0; i < activeSorted.length - 1; i++) {
     const a = activeSorted[i];
     const b = activeSorted[i + 1];
+    const aNum = getGateNum(a.id);
+    const bNum = getGateNum(b.id);
     const aEnd = a.endDate ? formatToDatetimeLocal(a.endDate) : null;
     const bStart = b.startDate ? formatToDatetimeLocal(b.startDate) : null;
 
@@ -1209,25 +1300,48 @@ export function validateTimeGatedMp3s(
       bStart > currentNow &&
       !isContiguousMidnightTransition(aEnd, bStart)
     ) {
-      warnings[b.id].push(`Gap detected: ${formatDatetime12(aEnd)} to ${formatDatetime12(bStart)}`);
+      warnings[b.id].push(`Gap between Gate #${aNum} and Gate #${bNum}.`);
       gapEndIds.add(a.id);
       gapStartIds.add(b.id);
     }
   }
 
-  // 3. Check for trailing post-expiration gap after the last active/upcoming gated item
+  // 3. Check for trailing post-expiration gap or trailing overreach against parentProfileEndDate (#108)
+  const parentEnd = parentProfileEndDate ? formatToDatetimeLocal(parentProfileEndDate) : null;
   if (activeSorted.length > 0) {
     const lastItem = activeSorted[activeSorted.length - 1];
-    if (lastItem.endDate && lastItem.endDate.trim()) {
-      const lastEnd = formatToDatetimeLocal(lastItem.endDate);
-      const parentEnd = parentProfileEndDate ? formatToDatetimeLocal(parentProfileEndDate) : null;
-      if (
+    const lastNum = getGateNum(lastItem.id);
+    const lastEnd =
+      lastItem.endDate && lastItem.endDate.trim()
+        ? formatToDatetimeLocal(lastItem.endDate)
+        : null;
+
+    if (lastEnd) {
+      if (parentEnd && lastEnd > parentEnd) {
+        overreachEndIds.add(lastItem.id);
+        warnings[lastItem.id].push(`Gate #${lastNum} ends after Announcement ends.`);
+      } else if (
         lastEnd > currentNow &&
         (!parentEnd || (parentEnd > lastEnd && !isContiguousMidnightTransition(lastEnd, parentEnd)))
       ) {
         gapEndIds.add(lastItem.id);
-        const gapTargetText = parentEnd ? formatDatetime12(parentEnd) : 'the future';
-        warnings[lastItem.id].push(`Gap detected: ${formatDatetime12(lastEnd)} to ${gapTargetText}`);
+        warnings[lastItem.id].push(`Gap after Gate #${lastNum}.`);
+      }
+    } else if (parentEnd) {
+      overreachEndIds.add(lastItem.id);
+      warnings[lastItem.id].push(
+        `Announcement ends ${formatShortDateMDY(parentEnd)}. Set Gate end to that?`
+      );
+    }
+
+    // Also flag any earlier active gate whose End date exceeds parentEnd
+    for (let i = 0; i < activeSorted.length - 1; i++) {
+      const g = activeSorted[i];
+      const gNum = getGateNum(g.id);
+      const gEnd = g.endDate && g.endDate.trim() ? formatToDatetimeLocal(g.endDate) : null;
+      if (parentEnd && gEnd && gEnd > parentEnd) {
+        overreachEndIds.add(g.id);
+        warnings[g.id].push(`Gate #${gNum} ends after Announcement ends.`);
       }
     }
   }
@@ -1238,6 +1352,8 @@ export function validateTimeGatedMp3s(
     missingFileIds.size > 0 ||
     overlapStartIds.size > 0 ||
     overlapEndIds.size > 0 ||
+    overreachStartIds.size > 0 ||
+    overreachEndIds.size > 0 ||
     gapStartIds.size > 0 ||
     gapEndIds.size > 0 ||
     Object.values(errors).some(arr => arr.length > 0);
@@ -1249,6 +1365,8 @@ export function validateTimeGatedMp3s(
     gapEndIds,
     overlapStartIds,
     overlapEndIds,
+    overreachStartIds,
+    overreachEndIds,
     missingStartIds,
     missingFileIds,
     hasErrors,
@@ -1743,47 +1861,18 @@ export function computeFileScheduleUsageMap(
 
       const isSlotWithinAnnBounds =
         !annEndLocal || !slotStartLocal || slotStartLocal <= annEndLocal;
-      const isSlotCurrent =
+      const isSlotInactivated = Boolean((slot as { inactivated?: boolean }).inactivated);
+      const slotInactivatedAt = (slot as { inactivatedAt?: string }).inactivatedAt || '';
+      const isSlotBaseCurrent =
         isAnnFutureOrCurrent &&
+        !isSlotInactivated &&
         isSlotWithinAnnBounds &&
         (!effectiveEndIso || effectiveEndIso >= nowIso);
-
-      const status: 'Current' | 'Ended' | 'Inactive' = isSlotCurrent
-        ? 'Current'
-        : !isAnnEnabled
-          ? 'Inactive'
-          : 'Ended';
-
-      const refDateRaw =
-        effectiveEndIso ||
-        slotStartLocal ||
-        ann.date ||
-        ann.startDate ||
-        ann.metadata?.lastModifiedDate ||
-        ann.metadata?.createdDate ||
-        '';
-
-      const refDateMs = isSlotCurrent
-        ? Number.MAX_SAFE_INTEGER
-        : Math.max(1, parseIsoOrLocalDateToMs(refDateRaw));
-
-      const refDateLabel = isSlotCurrent
-        ? 'Current'
-        : formatShortDateMDY(refDateRaw) || 'Past';
 
       const startFormatted =
         ann.type === AnnouncementType.ONE_TIME
           ? formatShortDateMDY(ann.date) || 'One-Time'
           : formatDateTime12Summary(slotStartLocal) || 'Immediate';
-
-      const endFormatted =
-        ann.type === AnnouncementType.ONE_TIME
-          ? `${formatShortDateMDY(ann.date)}${
-              ann.time !== undefined && ann.time !== ''
-                ? ' ' + formatTime12(`${ann.time}:${String(ann.minute || 0).padStart(2, '0')}`)
-                : ''
-            }`.trim() || 'One-Time'
-          : formatDateTime12Summary(effectiveEndIso) || 'Ongoing';
 
       const slotMediaItems =
         Array.isArray(slot.mediaItems) && slot.mediaItems.length > 0
@@ -1791,6 +1880,48 @@ export function computeFileScheduleUsageMap(
           : [slot];
 
       for (const mItem of slotMediaItems) {
+        const isItemInactivated = isSlotInactivated || Boolean((mItem as { inactivated?: boolean }).inactivated);
+        const itemInactivatedAt =
+          (mItem as { inactivatedAt?: string }).inactivatedAt || slotInactivatedAt || '';
+        const isItemCurrent = isSlotBaseCurrent && !isItemInactivated;
+
+        const status: 'Current' | 'Ended' | 'Inactive' = isItemCurrent
+          ? 'Current'
+          : !isAnnEnabled || isItemInactivated
+            ? 'Inactive'
+            : 'Ended';
+
+        const effectiveItemEndIso =
+          isItemInactivated && itemInactivatedAt && (!effectiveEndIso || itemInactivatedAt < effectiveEndIso)
+            ? formatToDatetimeLocal(itemInactivatedAt)
+            : effectiveEndIso;
+
+        const refDateRaw =
+          effectiveItemEndIso ||
+          slotStartLocal ||
+          ann.date ||
+          ann.startDate ||
+          ann.metadata?.lastModifiedDate ||
+          ann.metadata?.createdDate ||
+          '';
+
+        const refDateMs = isItemCurrent
+          ? Number.MAX_SAFE_INTEGER
+          : Math.max(1, parseIsoOrLocalDateToMs(refDateRaw));
+
+        const refDateLabel = isItemCurrent
+          ? 'Current'
+          : formatShortDateMDY(refDateRaw) || 'Past';
+
+        const endFormatted =
+          ann.type === AnnouncementType.ONE_TIME
+            ? `${formatShortDateMDY(ann.date)}${
+                ann.time !== undefined && ann.time !== ''
+                  ? ' ' + formatTime12(`${ann.time}:${String(ann.minute || 0).padStart(2, '0')}`)
+                  : ''
+              }`.trim() || 'One-Time'
+            : formatDateTime12Summary(effectiveItemEndIso) || 'Ongoing';
+
         if (mItem.mp3Url) {
           recordUsage(mItem.mp3Url, {
             announcementId: ann.id,

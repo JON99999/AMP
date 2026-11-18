@@ -376,7 +376,20 @@ function mergeLocalDirectoryContents(
       fs.renameSync(srcPath, destPath);
       movedCount++;
     } catch (_) {
-      skippedCount++;
+      try {
+        if (entry.isFile()) {
+          fs.copyFileSync(srcPath, destPath);
+          try {
+            fs.chmodSync(srcPath, 0o666);
+          } catch (_) {}
+          fs.rmSync(srcPath, { force: true, maxRetries: 3, retryDelay: 100 });
+          movedCount++;
+        } else {
+          skippedCount++;
+        }
+      } catch (_) {
+        skippedCount++;
+      }
     }
   }
 
@@ -386,14 +399,23 @@ function mergeLocalDirectoryContents(
     const nonJunk = remaining.filter(name => !osJunkNames.has(name.toLowerCase()));
     if (nonJunk.length === 0) {
       for (const junk of remaining) {
+        const junkPath = path.join(sourceDir, junk);
         try {
-          fs.unlinkSync(path.join(sourceDir, junk));
+          fs.chmodSync(junkPath, 0o666);
+        } catch (_) {}
+        try {
+          fs.rmSync(junkPath, { force: true, maxRetries: 3, retryDelay: 100 });
         } catch (_) {}
       }
-      fs.rmdirSync(sourceDir);
-      removedSourceFolder = true;
+      try {
+        fs.chmodSync(sourceDir, 0o777);
+      } catch (_) {}
+      fs.rmSync(sourceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      removedSourceFolder = !fs.existsSync(sourceDir);
     }
-  } catch (_) {}
+  } catch (_) {
+    removedSourceFolder = !fs.existsSync(sourceDir);
+  }
 
   return { movedCount, skippedCount, removedSourceFolder };
 }
@@ -489,7 +511,19 @@ export function registerShowsRoutes(app: express.Express): void {
       const createdFolders: string[] = [];
       const createdEvergreenFolders: string[] = [];
       const createdPlaylistFolders: string[] = [];
+      const createdAnnouncementSubfolders: string[] = [];
       let checkedShowCount = 0;
+
+      // Verify & auto-create media_announcements/archived and media_announcements/deleted_in_AMP_OK_to_purge (#26)
+      for (const subName of ['archived', 'deleted_in_AMP_OK_to_purge']) {
+        const subPath = path.join(announcementsPath, subName);
+        if (!fs.existsSync(subPath)) {
+          try {
+            fs.mkdirSync(subPath, { recursive: true });
+            createdAnnouncementSubfolders.push(subName);
+          } catch (_) {}
+        }
+      }
 
       for (const show of activeShows) {
         const shortName = String(show?.nameShort || '').trim();
@@ -549,6 +583,7 @@ export function registerShowsRoutes(app: express.Express): void {
         checkedShowCount,
         createdEvergreenFolders,
         createdPlaylistFolders,
+        createdAnnouncementSubfolders,
         createdFolders,
         extraEvergreenFolders,
         extraPlaylistFolders
@@ -671,15 +706,19 @@ export function registerShowsRoutes(app: express.Express): void {
     }
   });
 
-  // API - Merge a stranded/extra subfolder in media_evergreens or media_shows into an active show's folder (#85)
+  // API - Merge a stranded/extra subfolder in media_evergreens or media_shows into an active show's folder (#85, #101)
   app.post('/api/shows/merge-stranded-folder', async (req, res) => {
     try {
       const folderCategory = String(req.body?.folderCategory || '');
+      const targetFolderCategory = String(req.body?.targetFolderCategory || folderCategory);
       const sourceFolderName = String(req.body?.sourceFolderName || '').trim();
       const targetShowShortName = String(req.body?.targetShowShortName || '').trim();
 
       if (folderCategory !== 'media_evergreens' && folderCategory !== 'media_shows') {
         return res.status(400).json({ error: 'Invalid folderCategory. Must be media_evergreens or media_shows.' });
+      }
+      if (targetFolderCategory !== 'media_evergreens' && targetFolderCategory !== 'media_shows') {
+        return res.status(400).json({ error: 'Invalid targetFolderCategory. Must be media_evergreens or media_shows.' });
       }
       if (
         !sourceFolderName ||
@@ -693,34 +732,46 @@ export function registerShowsRoutes(app: express.Express): void {
       ) {
         return res.status(400).json({ error: 'Valid sourceFolderName and targetShowShortName are required.' });
       }
-      if (sourceFolderName.toLowerCase() === targetShowShortName.toLowerCase()) {
+      if (
+        folderCategory === targetFolderCategory &&
+        sourceFolderName.toLowerCase() === targetShowShortName.toLowerCase()
+      ) {
         return res.status(400).json({ error: 'Source folder and target show folder cannot be the same.' });
       }
 
       if (isServerDriveStorageRequest(req)) {
         const result = await mergeServerDriveStrandedFolder(req, {
           folderCategory,
+          targetFolderCategory,
           sourceFolderName,
           targetShowShortName
         });
         return res.json(result);
       }
 
-      let baseDirPath =
-        folderCategory === 'media_evergreens'
-          ? getAmpMediaEvergreensDir(currentSettings)
-          : getAmpMediaShowsDir(currentSettings);
+      const resolveCategoryBaseDir = (cat: 'media_evergreens' | 'media_shows') => {
+        let dir =
+          cat === 'media_evergreens'
+            ? getAmpMediaEvergreensDir(currentSettings)
+            : getAmpMediaShowsDir(currentSettings);
+        if (!dir && currentSettings.localPathAmp) {
+          dir = path.join(currentSettings.localPathAmp, cat);
+        }
+        return dir;
+      };
 
-      if (!baseDirPath && currentSettings.localPathAmp) {
-        baseDirPath = path.join(currentSettings.localPathAmp, folderCategory);
-      }
+      const sourceBaseDirPath = resolveCategoryBaseDir(folderCategory);
+      const targetBaseDirPath = resolveCategoryBaseDir(targetFolderCategory);
 
-      if (!baseDirPath || !fs.existsSync(baseDirPath)) {
+      if (!sourceBaseDirPath || !fs.existsSync(sourceBaseDirPath)) {
         return res.status(400).json({ error: `Base directory for ${folderCategory} is not configured or accessible.` });
       }
+      if (!targetBaseDirPath || !fs.existsSync(targetBaseDirPath)) {
+        return res.status(400).json({ error: `Base directory for ${targetFolderCategory} is not configured or accessible.` });
+      }
 
-      const sourceDir = path.join(baseDirPath, sourceFolderName);
-      const targetDir = path.join(baseDirPath, targetShowShortName);
+      const sourceDir = path.join(sourceBaseDirPath, sourceFolderName);
+      const targetDir = path.join(targetBaseDirPath, targetShowShortName);
 
       if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
         return res.status(404).json({ error: `Stranded folder "${sourceFolderName}" was not found in ${folderCategory}.` });
@@ -731,6 +782,7 @@ export function registerShowsRoutes(app: express.Express): void {
       res.json({
         success: true,
         folderCategory,
+        targetFolderCategory,
         sourceFolderName,
         targetShowShortName,
         movedCount,

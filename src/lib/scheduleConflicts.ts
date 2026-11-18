@@ -40,11 +40,13 @@ function getAnnouncementActiveWindowMs(s: Announcement, nowMs: number): { startM
   }
 
   if (Array.isArray(s.timeGatedMp3s) && s.timeGatedMp3s.length > 0) {
+    const activeGates = s.timeGatedMp3s.filter(m => !m.inactivated);
+    if (activeGates.length === 0) return null;
     let minGatedStart = Infinity;
     let maxGatedEnd = -Infinity;
     let hasOpenEnd = false;
 
-    for (const m of s.timeGatedMp3s) {
+    for (const m of activeGates) {
       const mStart = m.startDate ? new Date(formatToDatetimeLocal(m.startDate)).getTime() : -Infinity;
       const mEnd = m.endDate ? new Date(formatToDatetimeLocal(m.endDate)).getTime() : Infinity;
       if (!isNaN(mStart) && mStart < minGatedStart) minGatedStart = mStart;

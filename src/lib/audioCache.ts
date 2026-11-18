@@ -74,8 +74,13 @@ export function upsertMediaCatalogFile(
   if (!file) return;
   const resolvedName = (file.name || file.fileName || '').trim();
   if (!resolvedName) return;
-  const resolvedPath = file.path || file.streamUrl || file.webContentLink || resolvedName;
   const existing = availableFilesCache.get(resolvedName);
+  const candidatePath = (file.path && file.path !== resolvedName ? file.path : '') || file.streamUrl || file.webContentLink || file.id || '';
+  const resolvedPath =
+    candidatePath ||
+    (existing?.path && existing.path !== resolvedName ? existing.path : '') ||
+    file.path ||
+    resolvedName;
   const resolvedDuration =
     file.duration !== undefined && file.duration !== ''
       ? String(file.duration)

@@ -280,8 +280,9 @@ export function evaluateScheduleDiagnostics({
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+  const nowMs = now.getTime();
   const activeAnnouncements = announcements.filter(
-    s => s.enabled !== false || Boolean(s.endDate && s.endDate.trim())
+    s => !s.isDeleted && (s.enabled !== false || Boolean(s.endDate && s.endDate.trim()))
   );
 
   // Timeline Slot Analysis: Evaluate each realized instance of an announcement in the calendar
@@ -317,11 +318,25 @@ export function evaluateScheduleDiagnostics({
         const minute = s.minute || 0;
         const slotDateTime = new Date(yyyy, currentDayDate.getMonth(), currentDayDate.getDate(), hour, minute, 0, 0);
         const slotMs = slotDateTime.getTime();
+        const rawHead = announcements.find(a => a.id === s.id);
+        // Going forward, anything deactivated or deleted is excluded from global audits (#106)
+        if (slotMs >= nowMs && (s.enabled === false || rawHead?.enabled === false || rawHead?.isDeleted)) {
+          continue;
+        }
         const slotIso = `${dayKey}T${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
         const timeLabel = `${dayNames[dayOfWeek]}, ${monthNames[currentDayDate.getMonth()]} ${currentDayDate.getDate()} at ${formatTime12(`${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`)}`;
         const slotId = `${s.id}_${dayKey}_${hour}`;
 
         const timeGated = s.timeGatedMp3s || [];
+
+        const getActiveMediaItemsAtSlot = (gate: TimeGatedMp3) =>
+          getGateMediaItems(gate).filter(mi => {
+            if (!mi.inactivated) return true;
+            if (slotMs >= nowMs) return false;
+            if (!mi.inactivatedAt || !mi.inactivatedAt.trim()) return false;
+            const inactMs = new Date(formatToDatetimeLocal(mi.inactivatedAt)).getTime();
+            return !isNaN(inactMs) && slotMs <= inactMs;
+          });
 
         // Check 1: Realized instance has 0 timeGated entries
         if (timeGated.length === 0) {
@@ -350,7 +365,7 @@ export function evaluateScheduleDiagnostics({
         // Case A: Schedule Gap / No file covers this realized slot
         if (matchingEntries.length === 0) {
           // Check if slot is after the last scheduled time-gated item ended
-          const sortedEntries = [...timeGated].filter(t => t.endDate).sort((a, b) => {
+          const sortedEntries = [...timeGated].filter(t => !t.inactivated && t.endDate).sort((a, b) => {
             const aEnd = a.endDate ? new Date(formatToDatetimeLocal(a.endDate)).getTime() : 0;
             const bEnd = b.endDate ? new Date(formatToDatetimeLocal(b.endDate)).getTime() : 0;
             return bEnd - aEnd;
@@ -385,10 +400,10 @@ export function evaluateScheduleDiagnostics({
         // Case B: Dual Media Collision (More than one time-gate window is scheduled to play simultaneously for this single announcement)
         if (matchingEntries.length > 1) {
           const fileNames = matchingEntries.map(m => {
-            const firstItem = getGateMediaItems(m)[0];
+            const firstItem = getActiveMediaItemsAtSlot(m)[0] || getGateMediaItems(m)[0];
             return firstItem?.mp3Url ? getFilenameFromUrlOrPath(firstItem.mp3Url) : '(no file)';
           }).join(' AND ');
-          const firstEntryMedia = getGateMediaItems(matchingEntries[0])[0];
+          const firstEntryMedia = getActiveMediaItemsAtSlot(matchingEntries[0])[0] || getGateMediaItems(matchingEntries[0])[0];
           addIssue({
             id: `overlap_${s.id}_${dayKey}_${hour}_${minute}`,
             type: 'overlap',
@@ -410,7 +425,7 @@ export function evaluateScheduleDiagnostics({
 
         // Case C: For each active matching gate in this slot, verify that all rotating media files in the gate are valid and present on disk/Drive
         for (const entry of matchingEntries) {
-          const entryItems = getGateMediaItems(entry);
+          const entryItems = getActiveMediaItemsAtSlot(entry);
           if (entryItems.length === 0) {
             addIssue({
               id: `empty_file_${s.id}_${entry.id}_${dayKey}_${hour}_${minute}`,

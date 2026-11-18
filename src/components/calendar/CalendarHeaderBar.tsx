@@ -1,12 +1,12 @@
 import React from 'react';
-import { Calendar, Clock, Music, FileText, BookOpen, Search } from 'lucide-react';
+import { Calendar, Clock, Volume2, FileText, BookOpen, FolderOpen, Search } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { getStationTimezone, getStationTimezoneOption } from '../../lib/compatibility';
 
 export interface CalendarHeaderBarProps {
   headerContainerRef: React.RefObject<HTMLDivElement | null>;
-  viewMode: 'list' | 'calendar' | 'shows';
-  setViewMode: (mode: 'list' | 'calendar' | 'shows') => void;
+  viewMode: 'list' | 'calendar' | 'shows' | 'files';
+  setViewMode: (mode: 'list' | 'calendar' | 'shows' | 'files') => void;
   stationTimezone?: string;
   announcementFilterQuery: string;
   setAnnouncementFilterQuery: (val: string) => void;
@@ -116,7 +116,7 @@ export function CalendarHeaderBar({
                         : 'bg-slate-800'
                     )}
                   />
-                  {(!hideAnnouncementsIcons || modeIconsOnly) && <Music className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                  {(!hideAnnouncementsIcons || modeIconsOnly) && <Volume2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
                   {!modeIconsOnly && <span>Announcements</span>}
                   {(!hideAnnouncementsIcons || (modeIconsOnly && !isUltraNarrowHeader)) && (
                     <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -145,6 +145,29 @@ export function CalendarHeaderBar({
                   {(!hideShowsIcon || modeIconsOnly) && <BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
                   {!modeIconsOnly && <span>Shows</span>}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('files')}
+                  title="Files View (File Manager)"
+                  className={cn(
+                    'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+                    isUltraNarrowHeader ? 'px-2 py-1 gap-1' : 'px-3 py-1.5 gap-1.5',
+                    viewMode === 'files'
+                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+                      : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+                      viewMode === 'files'
+                        ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+                        : 'bg-slate-800'
+                    )}
+                  />
+                  {(!hideShowsIcon || modeIconsOnly) && <FolderOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                  {!modeIconsOnly && <span>Files</span>}
+                </button>
               </div>
 
               {(() => {
@@ -158,22 +181,32 @@ export function CalendarHeaderBar({
                     )}
                   >
                     <Clock className="w-3 h-3 text-slate-450 shrink-0" />
-                    <span className="truncate">{activeTzOpt.offsetLabel}</span>
+                    <span className="truncate">
+                      {modeIconsOnly ? activeTzOpt.shortCode : activeTzOpt.commonName}
+                    </span>
                   </div>
                 );
               })()}
             </div>
 
-            <button
-              onClick={viewMode === 'shows' ? createNewShow : createNew}
-              className={cn(
-                'bg-blue-600 text-white rounded text-xs font-black tracking-tighter shadow-sm hover:bg-blue-700 transition-colors uppercase cursor-pointer border border-blue-700 shrink-0 whitespace-nowrap',
-                isUltraNarrowHeader ? 'px-2 py-1 h-7' : 'p-1.5 px-3 h-8'
-              )}
-              title={viewMode === 'shows' ? 'Add Show' : 'Add Announcement'}
-            >
-              {addTextIconOnly ? '+' : addTextShort ? '+ ADD' : viewMode === 'shows' ? '+ ADD SHOW' : '+ ADD NEW'}
-            </button>
+            {viewMode !== 'files' && (
+              <button
+                onClick={viewMode === 'shows' ? createNewShow : createNew}
+                className={cn(
+                  'bg-blue-600 text-white rounded text-xs font-black tracking-tighter shadow-sm hover:bg-blue-700 transition-colors uppercase cursor-pointer border border-blue-700 shrink-0 whitespace-nowrap',
+                  isUltraNarrowHeader ? 'px-2 py-1 h-7' : 'p-1.5 px-3 h-8'
+                )}
+                title={viewMode === 'shows' ? 'Add Show' : 'Add Announcement'}
+              >
+                {addTextIconOnly
+                  ? '+'
+                  : addTextShort
+                    ? '+ ADD'
+                    : viewMode === 'shows'
+                      ? '+ ADD SHOW'
+                      : '+ ADD ANNOUNCEMENT'}
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -217,7 +250,7 @@ export function CalendarHeaderBar({
                       : 'bg-slate-800'
                   )}
                 />
-                {(!hideAnnouncementsIcons || modeIconsOnly) && <Music className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                {(!hideAnnouncementsIcons || modeIconsOnly) && <Volume2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
                 {!modeIconsOnly && <span>Announcements</span>}
                 {(!hideAnnouncementsIcons || modeIconsOnly) && <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
               </button>
@@ -242,6 +275,28 @@ export function CalendarHeaderBar({
                 {(!hideShowsIcon || modeIconsOnly) && <BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
                 {!modeIconsOnly && <span>Shows</span>}
               </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('files')}
+                title="Files View (File Manager)"
+                className={cn(
+                  'px-3 py-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+                  viewMode === 'files'
+                    ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+                    : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+                )}
+              >
+                <span
+                  className={cn(
+                    'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+                    viewMode === 'files'
+                      ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+                      : 'bg-slate-800'
+                  )}
+                />
+                {(!hideShowsIcon || modeIconsOnly) && <FolderOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                {!modeIconsOnly && <span>Files</span>}
+              </button>
             </div>
 
             {(() => {
@@ -253,7 +308,7 @@ export function CalendarHeaderBar({
                 >
                   <Clock className="w-3 h-3 text-slate-450 shrink-0" />
                   <span className="truncate">
-                    {halfFilter ? activeTzOpt.offsetLabel : activeTzOpt.label.replace(' — ', ' · ')}
+                    {modeIconsOnly ? activeTzOpt.shortCode : activeTzOpt.commonName}
                   </span>
                 </div>
               );
@@ -261,116 +316,122 @@ export function CalendarHeaderBar({
           </div>
         )}
 
-        <div
-          className={cn(
-            'flex gap-2 items-center shrink-0 min-w-0',
-            isHeaderStacked ? 'w-full' : 'flex-nowrap',
-            isHeaderStacked && isUltraNarrowHeader && viewMode === 'calendar' && 'flex-col items-stretch gap-1.5'
-          )}
-        >
-          {!(isHeaderStacked && isUltraNarrowHeader && viewMode === 'calendar') && (
-            <Search className="w-3.5 h-3.5 text-slate-450 shrink-0" />
-          )}
-          {viewMode === 'calendar' ? (
-            <>
-              <div
-                className={cn(
-                  'relative transition-all min-w-0',
-                  isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-24 shrink-0' : 'w-36 sm:w-44 shrink-0'
-                )}
-              >
-                <input
-                  type="text"
-                  placeholder={halfFilter ? 'Announcements...' : 'Filter announcements...'}
-                  value={announcementFilterQuery}
-                  onChange={e => setAnnouncementFilterQuery(e.target.value)}
-                  className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
-                />
-                {announcementFilterQuery && (
-                  <button
-                    onClick={() => setAnnouncementFilterQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
-                    title="Clear announcement filter"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-
-              <div
-                className={cn(
-                  'relative transition-all min-w-0',
-                  isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-24 shrink-0' : 'w-36 sm:w-44 shrink-0'
-                )}
-              >
-                <input
-                  type="text"
-                  placeholder={halfFilter ? 'Shows...' : 'Filter shows...'}
-                  value={showFilterQuery}
-                  onChange={e => setShowFilterQuery(e.target.value)}
-                  className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
-                />
-                {showFilterQuery && (
-                  <button
-                    onClick={() => setShowFilterQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
-                    title="Clear show filter"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            </>
-          ) : (
-            <div
-              className={cn(
-                'relative transition-all min-w-0',
-                isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-28 shrink-0' : 'w-48 sm:w-56 shrink-0'
-              )}
-            >
-              <input
-                type="text"
-                placeholder={
-                  halfFilter
-                    ? viewMode === 'shows'
-                      ? 'Shows...'
-                      : 'Announcements...'
-                    : viewMode === 'shows'
-                      ? 'Filter shows...'
-                      : 'Filter announcements...'
-                }
-                value={viewMode === 'shows' ? showFilterQuery : announcementFilterQuery}
-                onChange={e =>
-                  viewMode === 'shows'
-                    ? setShowFilterQuery(e.target.value)
-                    : setAnnouncementFilterQuery(e.target.value)
-                }
-                className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
-              />
-              {((viewMode === 'shows' && showFilterQuery) ||
-                (viewMode !== 'shows' && announcementFilterQuery)) && (
-                <button
-                  onClick={() =>
-                    viewMode === 'shows' ? setShowFilterQuery('') : setAnnouncementFilterQuery('')
-                  }
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
-                  title="Clear filter"
+        {viewMode !== 'files' && (
+          <div
+            className={cn(
+              'flex gap-2 items-center shrink-0 min-w-0',
+              isHeaderStacked ? 'w-full' : 'flex-nowrap',
+              isHeaderStacked && isUltraNarrowHeader && viewMode === 'calendar' && 'flex-col items-stretch gap-1.5'
+            )}
+          >
+            {!(isHeaderStacked && isUltraNarrowHeader && viewMode === 'calendar') && (
+              <Search className="w-3.5 h-3.5 text-slate-450 shrink-0" />
+            )}
+            {viewMode === 'calendar' ? (
+              <>
+                <div
+                  className={cn(
+                    'relative transition-all min-w-0',
+                    isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-24 shrink-0' : 'w-36 sm:w-44 shrink-0'
+                  )}
                 >
-                  ×
-                </button>
-              )}
-            </div>
-          )}
+                  <input
+                    type="text"
+                    placeholder={halfFilter ? 'Announcements...' : 'Filter announcements...'}
+                    value={announcementFilterQuery}
+                    onChange={e => setAnnouncementFilterQuery(e.target.value)}
+                    className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
+                  />
+                  {announcementFilterQuery && (
+                    <button
+                      onClick={() => setAnnouncementFilterQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
+                      title="Clear announcement filter"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
 
-          {!isHeaderStacked && (
-            <button
-              onClick={viewMode === 'shows' ? createNewShow : createNew}
-              className="p-1.5 px-3 bg-blue-600 text-white rounded text-xs font-black tracking-tighter shadow-sm hover:bg-blue-700 transition-colors uppercase cursor-pointer h-8 border border-blue-700 shrink-0 whitespace-nowrap"
-            >
-              {addTextIconOnly ? '+' : addTextShort ? '+ ADD' : viewMode === 'shows' ? '+ ADD SHOW' : '+ ADD NEW'}
-            </button>
-          )}
-        </div>
+                <div
+                  className={cn(
+                    'relative transition-all min-w-0',
+                    isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-24 shrink-0' : 'w-36 sm:w-44 shrink-0'
+                  )}
+                >
+                  <input
+                    type="text"
+                    placeholder={halfFilter ? 'Shows...' : 'Filter shows...'}
+                    value={showFilterQuery}
+                    onChange={e => setShowFilterQuery(e.target.value)}
+                    className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
+                  />
+                  {showFilterQuery && (
+                    <button
+                      onClick={() => setShowFilterQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
+                      title="Clear show filter"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div
+                className={cn(
+                  'relative transition-all min-w-0',
+                  isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-28 shrink-0' : 'w-48 sm:w-56 shrink-0'
+                )}
+              >
+                <input
+                  type="text"
+                  placeholder={
+                    halfFilter
+                      ? 'Filter'
+                      : viewMode === 'shows'
+                        ? 'Filter shows...'
+                        : 'Filter announcements...'
+                  }
+                  value={viewMode === 'shows' ? showFilterQuery : announcementFilterQuery}
+                  onChange={e =>
+                    viewMode === 'shows'
+                      ? setShowFilterQuery(e.target.value)
+                      : setAnnouncementFilterQuery(e.target.value)
+                  }
+                  className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
+                />
+                {((viewMode === 'shows' && showFilterQuery) ||
+                  (viewMode !== 'shows' && announcementFilterQuery)) && (
+                  <button
+                    onClick={() =>
+                      viewMode === 'shows' ? setShowFilterQuery('') : setAnnouncementFilterQuery('')
+                    }
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
+                    title="Clear filter"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!isHeaderStacked && (
+              <button
+                onClick={viewMode === 'shows' ? createNewShow : createNew}
+                className="p-1.5 px-3 bg-blue-600 text-white rounded text-xs font-black tracking-tighter shadow-sm hover:bg-blue-700 transition-colors uppercase cursor-pointer h-8 border border-blue-700 shrink-0 whitespace-nowrap"
+              >
+                {addTextIconOnly
+                  ? '+'
+                  : addTextShort
+                    ? '+ ADD'
+                    : viewMode === 'shows'
+                      ? '+ ADD SHOW'
+                      : '+ ADD ANNOUNCEMENT'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {showPixelRuler && (
@@ -384,13 +445,13 @@ export function CalendarHeaderBar({
                   ? 'Ultra Narrow <360'
                   : isFullStacked
                     ? 'Full Stacked <390'
-                    : isHeaderStacked
-                      ? 'Header Stacked <640/540'
-                      : isCell3Below
-                        ? 'Cell 3 Below <630'
+                    : isCell3Below
+                      ? 'Cell 3 Below <560'
+                      : isHeaderStacked
+                        ? 'Header Stacked <640/540'
                         : isFilterModeSplit
-                          ? 'Filter/Mode Split <1130'
-                          : 'Full Width ≥1130'}
+                          ? 'Filter/Mode Split <860'
+                          : 'Single-Row Toolbar ≥860'}
                 )
               </span>
             </span>
@@ -405,8 +466,8 @@ export function CalendarHeaderBar({
               style={{ width: `${Math.max(headerContainerWidth, controlsContainerWidth, 1360)}px` }}
             >
               {[
-                320, 360, 390, 420, 450, 460, 480, 520, 540, 630, 640, 690, 780, 800, 840, 900, 920,
-                980, 1040, 1130, 1180, 1300, 1360,
+                320, 360, 390, 420, 460, 480, 520, 560, 640, 720, 760, 800, 860, 920,
+                990, 1080, 1140, 1180, 1300, 1360,
               ].map((px, idx) => {
                 const isTop = idx % 2 === 0;
                 return (

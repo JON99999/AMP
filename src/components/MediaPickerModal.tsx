@@ -61,6 +61,23 @@ export type PickerTypeFilter = 'all' | 'audio' | 'liveread';
 export type PickerSortField = 'name' | 'type' | 'fileDate' | 'lastUsed';
 export type PickerSortOrder = 'asc' | 'desc';
 
+export interface MediaPickerSelectOptions {
+  pairedBackupAudioFile?: string;
+  doNotAttachBackup?: boolean;
+  approximateReadTime?: string;
+  isAutoReadTime?: boolean;
+}
+
+export interface MediaPickerContextInfo {
+  mode: 'choose' | 'replace';
+  contextDescription: string;
+  currentFile?: {
+    name: string;
+    duration?: string;
+    approximateReadTime?: string;
+    playCount?: number;
+  } | null;
+}
 
 export interface MediaPickerModalProps {
   isOpen: boolean;
@@ -75,7 +92,7 @@ export interface MediaPickerModalProps {
   onNewCopy?: () => void;
   onEditScript?: (fileName: string) => void;
   onCopyScript?: (fileName: string) => void;
-  onSelectFile: (file: MediaPickerFile) => void;
+  onSelectFile: (file: MediaPickerFile, options?: MediaPickerSelectOptions) => void;
   onClose: () => void;
   onRefresh?: () => Promise<any> | void;
   isRefreshing: boolean;
@@ -90,6 +107,16 @@ export interface MediaPickerModalProps {
   onSelectMultipleFiles?: (files: MediaPickerFile[]) => void;
   onProceedWithoutFile?: () => void;
   highlightedFileName?: string | null;
+  replacingPlayedMediaInfo?: {
+    priorFileName: string;
+    playCount: number;
+  } | null;
+  pickerContextInfo?: MediaPickerContextInfo | null;
+  externalPendingConfirmSelection?: {
+    file: MediaPickerFile;
+    options?: MediaPickerSelectOptions;
+  } | null;
+  onClearExternalPendingConfirmSelection?: () => void;
 }
 
 export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
@@ -119,7 +146,11 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   allowProceedEmpty = false,
   onSelectMultipleFiles,
   onProceedWithoutFile,
-  highlightedFileName = null
+  highlightedFileName = null,
+  replacingPlayedMediaInfo = null,
+  pickerContextInfo = null,
+  externalPendingConfirmSelection = null,
+  onClearExternalPendingConfirmSelection
 }) => {
   const [typeFilter, setTypeFilter] = useState<PickerTypeFilter>(
     lockAudioOnly ? 'audio' : 'all'
@@ -129,10 +160,13 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   const [sortField, setSortField] = useState<PickerSortField>('name');
   const [sortOrder, setSortOrder] = useState<PickerSortOrder>('asc');
   const [usageDetailFile, setUsageDetailFile] = useState<FileScheduleUsageSummary | null>(null);
+  const [pendingReplaceConfirmFile, setPendingReplaceConfirmFile] = useState<MediaPickerFile | null>(null);
+  const [pendingReplaceConfirmOptions, setPendingReplaceConfirmOptions] = useState<MediaPickerSelectOptions | undefined>(undefined);
 
   // Responsive action button icon-collapse state (collapses actions to icons first when space is tight)
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const [collapseActionsToIcons, setCollapseActionsToIcons] = useState<boolean>(false);
+  const [tableScrollbarWidth, setTableScrollbarWidth] = useState<number>(0);
 
   // Upload state
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -162,13 +196,44 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
       setPendingUploadCollision(null);
       setUsageDetailFile(null);
       setCopyPromptState(null);
+      setPendingReplaceConfirmFile(null);
+      setPendingReplaceConfirmOptions(undefined);
       setSelectedFiles([]);
     }
   }, [isOpen, lockAudioOnly]);
 
   useEffect(() => {
+    if (isOpen && externalPendingConfirmSelection) {
+      const { file, options } = externalPendingConfirmSelection;
+      setRecentlyUploadedName(file.name);
+      setSelectedFiles([file]);
+      if (
+        replacingPlayedMediaInfo &&
+        replacingPlayedMediaInfo.playCount > 0 &&
+        getFilenameFromUrlOrPath(file.name).toLowerCase() !==
+          getFilenameFromUrlOrPath(replacingPlayedMediaInfo.priorFileName).toLowerCase()
+      ) {
+        setPendingReplaceConfirmFile(file);
+        setPendingReplaceConfirmOptions(options);
+      } else {
+        onSelectFile(file, options);
+      }
+      if (onClearExternalPendingConfirmSelection) {
+        onClearExternalPendingConfirmSelection();
+      }
+    }
+  }, [isOpen, externalPendingConfirmSelection, replacingPlayedMediaInfo, onSelectFile, onClearExternalPendingConfirmSelection]);
+
+  useEffect(() => {
     if (isOpen && highlightedFileName) {
       setRecentlyUploadedName(highlightedFileName);
+      const match = filteredFiles.find(
+        f => f.name.toLowerCase() === highlightedFileName.toLowerCase()
+      ) || { name: highlightedFileName };
+      setSelectedFiles(prev => {
+        const filtered = prev.filter(f => f.name.toLowerCase() !== highlightedFileName.toLowerCase());
+        return allowMultiSelect ? [...filtered, match] : [match];
+      });
     }
   }, [isOpen, highlightedFileName]);
 
@@ -197,6 +262,20 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     });
   };
 
+  const attemptSelectSingleFile = (file: MediaPickerFile, options?: MediaPickerSelectOptions) => {
+    if (
+      replacingPlayedMediaInfo &&
+      replacingPlayedMediaInfo.playCount > 0 &&
+      getFilenameFromUrlOrPath(file.name).toLowerCase() !==
+        getFilenameFromUrlOrPath(replacingPlayedMediaInfo.priorFileName).toLowerCase()
+    ) {
+      setPendingReplaceConfirmFile(file);
+      setPendingReplaceConfirmOptions(options);
+      return;
+    }
+    onSelectFile(file, options);
+  };
+
   useEffect(() => {
     if (!isOpen) return;
     const el = tableContainerRef.current;
@@ -205,18 +284,24 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     const checkWidth = () => {
       const width = el.clientWidth || window.innerWidth;
       setCollapseActionsToIcons(width < 640);
+      const borderWidth = (el.offsetWidth - el.clientWidth) >= 2 ? 2 : 0;
+      const sbWidth = Math.max(0, el.offsetWidth - el.clientWidth - borderWidth);
+      setTableScrollbarWidth(sbWidth);
     };
     checkWidth();
 
     if (typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(() => checkWidth());
       ro.observe(el);
+      if (el.firstElementChild) {
+        ro.observe(el.firstElementChild);
+      }
       return () => ro.disconnect();
     } else {
       window.addEventListener('resize', checkWidth);
       return () => window.removeEventListener('resize', checkWidth);
     }
-  }, [isOpen]);
+  }, [isOpen, filteredFiles.length, typeFilter, searchQuery]);
 
   const usageMap = useMemo(
     () => computeFileScheduleUsageMap(announcements, currentEditingAnnouncement),
@@ -345,13 +430,19 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   const generateUniqueCopyName = (originalName: string): string => {
     const ext = getFileExtension(originalName);
-    const stem = ext ? originalName.slice(0, -ext.length) : originalName;
-    const lowerSet = new Set(filteredFiles.map(f => f.name.toLowerCase()));
-    let candidate = `Copy of ${stem}${ext}`;
+    const rawStem = (ext ? originalName.slice(0, -ext.length) : originalName)
+      .replace(/^(?:Copy of\s+)+/i, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const baseStem = rawStem.replace(/\s*\(\d+\)$/, '').trim() || rawStem;
+    const lowerSet = new Set(
+      filteredFiles.map(f => f.name.replace(/\s{2,}/g, ' ').trim().toLowerCase())
+    );
     let counter = 2;
+    let candidate = `${baseStem} (${counter})${ext}`;
     while (lowerSet.has(candidate.toLowerCase())) {
-      candidate = `Copy of ${stem} (${counter})${ext}`;
       counter += 1;
+      candidate = `${baseStem} (${counter})${ext}`;
     }
     return candidate;
   };
@@ -374,7 +465,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   const executeDuplicateFile = async (allowOverwrite: boolean = false) => {
     if (!copyPromptState) return;
-    const cleanStem = copyPromptState.targetStem.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim();
+    const cleanStem = copyPromptState.targetStem
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
     if (!cleanStem) {
       setCopyPromptState(prev => prev ? { ...prev, error: 'Please enter a valid filename.' } : null);
       return;
@@ -457,6 +551,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
       }
 
       setRecentlyUploadedName(duplicatedFile.name);
+      setSelectedFiles(prev => {
+        const filtered = prev.filter(f => f.name.toLowerCase() !== duplicatedFile.name.toLowerCase());
+        return allowMultiSelect ? [...filtered, duplicatedFile] : [duplicatedFile];
+      });
       setCopyPromptState(null);
       if (onFileUploaded) {
         onFileUploaded(duplicatedFile);
@@ -502,16 +600,21 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
         allowOverwrite,
         isDriveActive
       });
+      const uploadedFileObj: MediaPickerFile = {
+        name: saved.name,
+        path: saved.path,
+        size: saved.size,
+        mtimeMs: saved.mtimeMs,
+        modifiedTime: saved.modifiedTime
+      };
       setPendingUploadCollision(null);
       setRecentlyUploadedName(saved.name);
+      setSelectedFiles(prev => {
+        const filtered = prev.filter(f => f.name.toLowerCase() !== saved.name.toLowerCase());
+        return allowMultiSelect ? [...filtered, uploadedFileObj] : [uploadedFileObj];
+      });
       if (onFileUploaded) {
-        onFileUploaded({
-          name: saved.name,
-          path: saved.path,
-          size: saved.size,
-          mtimeMs: saved.mtimeMs,
-          modifiedTime: saved.modifiedTime
-        });
+        onFileUploaded(uploadedFileObj);
       }
     } catch (err: any) {
       if (err && err.exists) {
@@ -549,13 +652,18 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     performFileUpload(selected, selected.name, false);
   };
 
-  const SortArrow = ({ field }: { field: PickerSortField }) => {
+  const SortArrow = ({ field, noMargin = false }: { field: PickerSortField; noMargin?: boolean }) => {
     const isActive = sortField === field;
     const isAsc = isActive && sortOrder === 'asc';
     const isDesc = isActive && sortOrder === 'desc';
 
     return (
-      <span className="inline-flex flex-col ml-1 shrink-0 select-none leading-none -space-y-1">
+      <span
+        className={cn(
+          "inline-flex flex-col shrink-0 select-none leading-none -space-y-1",
+          !noMargin && "ml-1"
+        )}
+      >
         <span
           className={cn(
             "text-[10px] leading-none transition-all",
@@ -576,6 +684,32 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
     );
   };
 
+  const renderCollapsibleDate = (label: string) => {
+    if (!label || label === '—' || label === 'Never' || label === 'Current' || label === 'Past') {
+      return <span>{label}</span>;
+    }
+    const match = label.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})(\d{2})(.*)$/);
+    if (match) {
+      const m = String(parseInt(match[1], 10));
+      const d = String(parseInt(match[2], 10));
+      const century = match[3];
+      const yy = match[4];
+      const rest = match[5];
+      if (collapseActionsToIcons) {
+        return <span>{`${m}/${d}/${yy}${rest}`}</span>;
+      }
+      return (
+        <span>
+          {`${m}/${d}/`}
+          <span className="picker-date-century">{century}</span>
+          {yy}
+          {rest}
+        </span>
+      );
+    }
+    return <span>{label}</span>;
+  };
+
   const acceptAttr = lockAudioOnly
     ? '.mp3,.wav,.flac,.ogg,.m4a,.aac'
     : '.mp3,.wav,.flac,.ogg,.m4a,.aac,.txt,.md,.pdf,.png,.jpg,.jpeg,.webp';
@@ -583,7 +717,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
   return (
     <div className={cn("fixed inset-0 flex items-center justify-center p-3 bg-slate-900/60 backdrop-blur-sm", zIndexClassName)}>
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-5xl overflow-hidden border border-slate-300 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
-        {/* Compact Header */}
+        {/* Compact Header: Filter + Refresh + Close grouped together so they wrap to row 2 as a unit */}
         <div className="py-2 px-3 bg-slate-50 border-b border-slate-200 flex items-center gap-3 justify-between shrink-0 flex-wrap">
           <div className="flex items-center gap-2 shrink-0">
             <div className="bg-blue-600 p-1.5 rounded">
@@ -591,7 +725,9 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             </div>
             <div className="flex items-baseline gap-2 flex-wrap">
               <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest leading-none">
-                Select Announcement
+                {pickerContextInfo?.mode === 'replace'
+                  ? 'Replace Announcement'
+                  : 'Choose New Announcement'}
               </h3>
               <span
                 className="text-xs font-bold text-slate-400 cursor-help"
@@ -608,40 +744,42 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             </div>
           </div>
 
-          <div className="relative flex-1 min-w-[180px] max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-            <input
-              type="text"
-              placeholder={
-                lockAudioOnly
-                  ? 'Search backup audio files...'
-                  : 'Search audio, scripts & images...'
-              }
-              value={searchQuery}
-              onChange={e => onSearchQueryChange(e.target.value)}
-              className="w-full pl-8 pr-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-800"
-            />
-          </div>
+          <div className="flex items-center gap-2 flex-1 min-w-[240px] justify-end">
+            <div className="relative flex-1 min-w-[160px] max-w-sm">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input
+                type="text"
+                placeholder={
+                  lockAudioOnly
+                    ? 'Search backup audio files...'
+                    : 'Search audio, scripts & images...'
+                }
+                value={searchQuery}
+                onChange={e => onSearchQueryChange(e.target.value)}
+                className="w-full pl-8 pr-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-800"
+              />
+            </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            {onRefresh && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              {onRefresh && (
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded hover:bg-slate-100 transition-colors"
+                  title="Refresh Files"
+                >
+                  <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+                </button>
+              )}
               <button
                 type="button"
-                onClick={onRefresh}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded hover:bg-slate-100 transition-colors"
-                title="Refresh Files"
+                onClick={onClose}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
+                title="Close"
               >
-                <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin")} />
+                <XCircle className="w-4.5 h-4.5" />
               </button>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-slate-400 hover:text-slate-600 cursor-pointer p-0.5"
-              title="Close"
-            >
-              <XCircle className="w-4.5 h-4.5" />
-            </button>
+            </div>
           </div>
         </div>
 
@@ -655,6 +793,230 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             className="hidden"
           />
 
+          {/* Context & Current File Row (Above Write New Live Read Toolbar Row) */}
+          {pickerContextInfo && (
+            <div className="rounded border border-slate-300 bg-white overflow-hidden shrink-0">
+              {pickerContextInfo.mode === 'replace' && pickerContextInfo.currentFile?.name ? (
+                (() => {
+                  const curName = getFilenameFromUrlOrPath(pickerContextInfo.currentFile.name);
+                  const curIsAudio = isAudioFile(curName);
+                  const curExt = getFileExtension(curName).toLowerCase();
+                  const curIsEditableTxt = curExt === '.txt' || curExt === '.md';
+                  const curCatalogMatch =
+                    filteredFiles.find(f => f.name.toLowerCase() === curName.toLowerCase()) ||
+                    availableFilesCache.get(curName);
+                  const curDispDuration = curIsAudio
+                    ? pickerDurations[curName] ||
+                      pickerContextInfo.currentFile.duration ||
+                      (curCatalogMatch?.duration ? String(curCatalogMatch.duration) : '')
+                    : (pickerContextInfo.currentFile.approximateReadTime || '').replace(/^~\s*/, '');
+                  const curMtimeMs = curCatalogMatch
+                    ? getFileMtimeMs(curCatalogMatch as MediaPickerFile)
+                    : 0;
+                  const curDateLabel = curMtimeMs > 0 ? formatShortDateMDY(curMtimeMs) : '—';
+                  const curUsage = getUsageForFile(curName);
+                  const curMeta = curIsAudio ? metadataCache[curName] : null;
+                  const curId3Tooltip =
+                    curMeta && (curMeta.title || curMeta.artist || curMeta.album)
+                      ? [curMeta.title, curMeta.artist, curMeta.album].filter(Boolean).join(' • ')
+                      : '';
+                  const curPlayCount = pickerContextInfo.currentFile.playCount;
+
+                  return (
+                    <div className="@container divide-y divide-slate-200 text-xs">
+                      <div className="py-1 px-2.5 bg-slate-100/90 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 shrink-0 select-none">
+                            Context:
+                          </span>
+                          <span
+                            className="font-bold text-slate-800 truncate"
+                            title={pickerContextInfo.contextDescription}
+                          >
+                            {pickerContextInfo.contextDescription}
+                          </span>
+                        </div>
+                      </div>
+                      <div
+                        className="bg-amber-50/40"
+                        style={{
+                          paddingRight: tableScrollbarWidth > 0 ? `${tableScrollbarWidth}px` : undefined
+                        }}
+                      >
+                        <table className="w-full border-collapse text-left table-fixed">
+                          <tbody>
+                            <tr className="text-xs">
+                              <td
+                                className="py-1 px-2.5 border-r border-slate-200/70 truncate w-auto"
+                                title={curId3Tooltip ? `${curName} (${curId3Tooltip})` : curName}
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-wider shrink-0 select-none">
+                                    Current
+                                  </span>
+                                  <span
+                                    className="inline-flex items-center justify-center shrink-0"
+                                    title={curIsAudio ? `Audio (${curExt || '.mp3'})` : `LiveRead (${curExt || '.txt'})`}
+                                  >
+                                    {curIsAudio ? (
+                                      <Music className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                                    ) : (
+                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                    )}
+                                  </span>
+                                  <span className="font-bold text-slate-900 truncate">
+                                    {curName}
+                                  </span>
+                                  {curDispDuration && curDispDuration !== '—' && (
+                                    <span className="font-mono font-bold text-slate-500 shrink-0">
+                                      ({curDispDuration})
+                                    </span>
+                                  )}
+                                  {typeof curPlayCount === 'number' && (
+                                    <span
+                                      className={cn(
+                                        "text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded border select-none shrink-0",
+                                        curPlayCount > 0
+                                          ? "bg-blue-50 text-blue-800 border-blue-200"
+                                          : "bg-slate-100 text-slate-600 border-slate-300"
+                                      )}
+                                    >
+                                      {curPlayCount} {curPlayCount === 1 ? 'play' : 'plays'}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td
+                                className="py-1 px-1.5 border-r border-slate-200/70 whitespace-nowrap font-medium text-slate-600 tabular-nums w-[68px] @[640px]:w-[82px]"
+                                title="File Modification Date"
+                              >
+                                {renderCollapsibleDate(curDateLabel)}
+                              </td>
+                            <td className="py-1 px-1.5 border-r border-slate-200/70 whitespace-nowrap w-[68px] @[640px]:w-[82px]">
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setUsageDetailFile(curUsage);
+                                }}
+                                className={cn(
+                                  "font-bold inline-flex items-center gap-1 leading-none cursor-pointer hover:underline tabular-nums",
+                                  curUsage.isCurrent
+                                    ? "text-emerald-700 font-black"
+                                    : curUsage.isUsed
+                                      ? "text-amber-800"
+                                      : "text-slate-500"
+                                )}
+                                title={
+                                  curUsage.isUsed
+                                    ? `Scheduled in ${curUsage.entries.length} slot(s). Click to view schedule usage history.`
+                                    : 'Never scheduled. Click for details.'
+                                }
+                              >
+                                {renderCollapsibleDate(curUsage.lastUsedLabel)}
+                              </button>
+                            </td>
+                            <td className="py-1 px-1.5 text-right whitespace-nowrap overflow-hidden w-[84px]">
+                              <div className="inline-flex items-center justify-end max-w-full">
+                                <div className="inline-flex items-center rounded border border-slate-300 bg-white divide-x divide-slate-300 overflow-hidden shrink-0">
+                                  {!curIsAudio ? (
+                                    <button
+                                      type="button"
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        onPreviewScript(curName);
+                                      }}
+                                      className="text-xs font-bold uppercase text-blue-600 bg-white hover:bg-blue-50 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
+                                      title="Preview current file"
+                                    >
+                                      <FileText className="w-3 h-3 shrink-0" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        onTogglePreview(curName);
+                                      }}
+                                      className={cn(
+                                        "text-xs font-bold uppercase cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0",
+                                        previewUrl === curName
+                                          ? "bg-slate-900 text-white"
+                                          : "bg-white text-blue-600 hover:bg-blue-50"
+                                      )}
+                                      title={previewUrl === curName ? 'Stop audio preview' : 'Preview current audio'}
+                                    >
+                                      {previewUrl === curName ? (
+                                        <Square className="w-2.5 h-2.5 fill-current shrink-0" />
+                                      ) : (
+                                        <Play className="w-2.5 h-2.5 fill-current shrink-0" />
+                                      )}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      if (curIsEditableTxt && onCopyScript) {
+                                        onCopyScript(curName);
+                                      } else {
+                                        openDuplicateFilePrompt({
+                                          name: curName,
+                                          duration: curDispDuration || undefined
+                                        });
+                                      }
+                                    }}
+                                    className="text-xs font-bold uppercase text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
+                                    title={
+                                      curIsEditableTxt
+                                        ? 'Duplicate live read and open in editor'
+                                        : `Duplicate ${curIsAudio ? 'audio' : 'live read'} file with a new name`
+                                    }
+                                  >
+                                    <Copy className="w-3 h-3 shrink-0" />
+                                  </button>
+                                  {curIsEditableTxt && onEditScript && (
+                                    <button
+                                      type="button"
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        onEditScript(curName);
+                                      }}
+                                      className="text-xs font-bold uppercase text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
+                                      title="Edit .txt live read"
+                                    >
+                                      <Edit3 className="w-3 h-3 shrink-0" />
+                                    </button>
+                                  )}
+                                </div>
+                                {!(curIsEditableTxt && onEditScript) && (
+                                  <span className="inline-block h-6 w-6 shrink-0" aria-hidden="true" />
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : (
+                <div className="py-1.5 px-2.5 bg-slate-50 flex items-center gap-1.5 text-xs">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-blue-700 shrink-0 select-none">
+                    Context:
+                  </span>
+                  <span
+                    className="font-bold text-slate-800 truncate"
+                    title={pickerContextInfo.contextDescription}
+                  >
+                    {pickerContextInfo.contextDescription}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Compact Pinned Toolbar Row: Actions + Type Filter + Unused First + Count */}
           <div className="py-1.5 px-2.5 rounded bg-slate-100 border border-slate-300 flex flex-wrap items-center justify-between gap-2 shrink-0">
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -663,9 +1025,9 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                   type="button"
                   onClick={onNewCopy}
                   className="px-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer h-6"
-                  title="Create a new .txt Live Read announcement"
+                  title="Write a new .txt Live Read announcement"
                 >
-                  <span>+ CREATE LIVE READ</span>
+                  <span>+ Write New Live Read</span>
                 </button>
               )}
               <button
@@ -680,7 +1042,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 ) : (
                   <Upload className="w-3 h-3 stroke-[2.5]" />
                 )}
-                <span>{isUploading ? 'UPLOADING...' : '+ UPLOAD FILE'}</span>
+                <span>{isUploading ? 'Uploading...' : 'Upload'}</span>
               </button>
             </div>
 
@@ -818,40 +1180,40 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
           {/* Windows Explorer "Details" / Spreadsheet Table View */}
           <div
             ref={tableContainerRef}
-            className="border border-slate-300 rounded bg-white flex-1 min-h-0 max-h-[460px] overflow-y-auto overflow-x-hidden custom-scrollbar"
+            className="@container border border-slate-300 rounded bg-white flex-1 min-h-0 max-h-[460px] overflow-y-auto overflow-x-hidden custom-scrollbar"
           >
             <table className="w-full border-collapse text-left table-fixed">
               <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-300 text-xs font-black text-slate-650 uppercase tracking-wider select-none">
                 <tr>
-                  <th className="py-1.5 px-2.5 border-r border-slate-200 w-[48%]">
-                    <button
-                      type="button"
-                      onClick={() => toggleSort('name')}
-                      className={cn(
-                        "flex items-center gap-0.5 cursor-pointer hover:text-slate-900 transition-colors uppercase",
-                        sortField === 'name' ? "text-blue-700" : "text-slate-650"
-                      )}
-                      title="Sort by Filename (A–Z / Z–A)"
-                    >
-                      <span>Name</span>
-                      <SortArrow field="name" />
-                    </button>
+                  <th className="p-0 border-r border-slate-200 w-auto">
+                    <div className="flex items-stretch min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('type')}
+                        className={cn(
+                          "py-1.5 pl-[26px] pr-1.5 border-r border-slate-200 inline-flex items-center justify-center cursor-pointer hover:text-slate-900 transition-colors shrink-0",
+                          sortField === 'type' ? "text-blue-700" : "text-slate-650"
+                        )}
+                        title="File Type"
+                        aria-label="File Type"
+                      >
+                        <SortArrow field="type" noMargin />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleSort('name')}
+                        className={cn(
+                          "py-1.5 px-2 flex-1 flex items-center gap-0.5 cursor-pointer hover:text-slate-900 transition-colors uppercase min-w-0",
+                          sortField === 'name' ? "text-blue-700" : "text-slate-650"
+                        )}
+                        title="Sort by Filename (A–Z / Z–A)"
+                      >
+                        <span>Name</span>
+                        <SortArrow field="name" />
+                      </button>
+                    </div>
                   </th>
-                  <th className="py-1.5 px-1.5 border-r border-slate-200 w-[7%] text-center">
-                    <button
-                      type="button"
-                      onClick={() => toggleSort('type')}
-                      className={cn(
-                        "inline-flex items-center justify-center gap-0.5 cursor-pointer hover:text-slate-900 transition-colors uppercase",
-                        sortField === 'type' ? "text-blue-700" : "text-slate-650"
-                      )}
-                      title="Sort by File Type (Audio / LiveRead)"
-                    >
-                      <span>Type</span>
-                      <SortArrow field="type" />
-                    </button>
-                  </th>
-                  <th className="py-1.5 px-2 border-r border-slate-200 w-[13%]">
+                  <th className="py-1.5 px-1.5 border-r border-slate-200 w-[68px] @[640px]:w-[82px]">
                     <button
                       type="button"
                       onClick={() => toggleSort('fileDate')}
@@ -865,7 +1227,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                       <SortArrow field="fileDate" />
                     </button>
                   </th>
-                  <th className="py-1.5 px-2 border-r border-slate-200 w-[14%]">
+                  <th className="py-1.5 px-1.5 border-r border-slate-200 w-[68px] @[640px]:w-[82px]">
                     <button
                       type="button"
                       onClick={() => toggleSort('lastUsed')}
@@ -879,7 +1241,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                       <SortArrow field="lastUsed" />
                     </button>
                   </th>
-                  <th className="py-1.5 px-2 text-right w-[18%]">
+                  <th className="py-1.5 px-1.5 text-right w-[84px]">
                     <span>Actions</span>
                   </th>
                 </tr>
@@ -904,7 +1266,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                         ? [meta.title, meta.artist, meta.album].filter(Boolean).join(' • ')
                         : '';
 
-                     const typeCellTooltip = isAudio
+                    const typeCellTooltip = isAudio
                       ? `Audio (${ext || '.mp3'})`
                       : `LiveRead (${ext || '.txt'})`;
                     const selectedIdx = selectedFiles.findIndex(
@@ -917,31 +1279,29 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                         key={file.name || i}
                         data-recently-uploaded={isJustUploaded ? 'true' : undefined}
                         onClick={() => toggleSelectFile(file)}
-                        onDoubleClick={() => onSelectFile(file)}
+                        onDoubleClick={() => attemptSelectSingleFile(file)}
                         className={cn(
-                          "transition-colors hover:bg-blue-50/70 cursor-pointer",
+                          "transition-colors cursor-pointer",
                           isRowSelected
-                            ? "bg-blue-50/90"
+                            ? "bg-blue-200/85 hover:bg-blue-200"
                             : isJustUploaded
-                              ? "bg-blue-50/90"
+                              ? "bg-blue-100/90 hover:bg-blue-100"
                               : i % 2 === 0
-                                ? "bg-white"
-                                : "bg-slate-50/70"
+                                ? "bg-white hover:bg-blue-50/70"
+                                : "bg-slate-50/70 hover:bg-blue-50/70"
                         )}
                       >
-                        {/* Column 1: Name + Duration */}
+                        {/* Column 1: Checkbox + Type Icon + Name + Duration */}
                         <td
                           className="py-1 px-2.5 border-r border-slate-200/70 truncate"
                           title={id3Tooltip ? `${file.name} (${id3Tooltip})` : file.name}
                         >
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <label
-                              className="inline-flex items-center gap-1 shrink-0 cursor-pointer"
-                              onClick={e => e.stopPropagation()}
-                            >
+                            <span className="inline-flex items-center gap-1 shrink-0">
                               <input
                                 type="checkbox"
                                 checked={isRowSelected}
+                                onClick={e => e.stopPropagation()}
                                 onChange={() => toggleSelectFile(file)}
                                 className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                               />
@@ -950,12 +1310,22 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                   {selectedIdx + 1}
                                 </span>
                               )}
-                            </label>
-                            <span className="font-bold text-slate-800 truncate">
+                            </span>
+                            <span
+                              className="inline-flex items-center justify-center shrink-0"
+                              title={typeCellTooltip}
+                            >
+                              {isAudio ? (
+                                <Music className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              ) : (
+                                <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                              )}
+                            </span>
+                            <span className="font-bold text-slate-900 truncate">
                               {file.name}
                             </span>
                             {isAudio && dispDuration && dispDuration !== '—' && (
-                              <span className="font-mono font-bold text-slate-400 shrink-0">
+                              <span className="font-mono font-bold text-slate-500 shrink-0">
                                 ({dispDuration})
                               </span>
                             )}
@@ -967,27 +1337,13 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                           </div>
                         </td>
 
-                        {/* Column 2: Type (Icon Only) */}
-                        <td
-                          className="py-1 px-1.5 border-r border-slate-200/70 text-center whitespace-nowrap"
-                          title={typeCellTooltip}
-                        >
-                          <div className="inline-flex items-center justify-center">
-                            {isAudio ? (
-                              <Music className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                            ) : (
-                              <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                            )}
-                          </div>
+                        {/* Column 3: File Date (folds to m/d/yy when narrow) */}
+                        <td className="py-1 px-1.5 border-r border-slate-200/70 whitespace-nowrap font-medium text-slate-600 tabular-nums">
+                          {renderCollapsibleDate(fileDateLabel)}
                         </td>
 
-                        {/* Column 3: File Date */}
-                        <td className="py-1 px-2 border-r border-slate-200/70 whitespace-nowrap font-medium text-slate-600 tabular-nums">
-                          {fileDateLabel}
-                        </td>
-
-                        {/* Column 4: Last Used (Plain Text, No Blob Wrapper) */}
-                        <td className="py-1 px-2 border-r border-slate-200/70 whitespace-nowrap">
+                        {/* Column 4: Last Used (folds to m/d/yy when narrow) */}
+                        <td className="py-1 px-1.5 border-r border-slate-200/70 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={e => {
@@ -1008,86 +1364,88 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                                 : 'Never scheduled. Click for details.'
                             }
                           >
-                            <span>{usage.lastUsedLabel}</span>
+                            {renderCollapsibleDate(usage.lastUsedLabel)}
                           </button>
                         </td>
 
-                        {/* Column 5: Actions (Order: Preview -> Copy -> Edit; secondary actions rendered as compact icons) */}
-                        <td
-                          className="py-1 px-1.5 text-right whitespace-nowrap overflow-hidden"
-                          onClick={e => e.stopPropagation()}
-                        >
-                          <div className="inline-flex items-center justify-end gap-1 max-w-full">
-                            {/* 1. Preview */}
-                            {!isAudio ? (
-                              <button
-                                type="button"
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  onPreviewScript(file.name);
-                                }}
-                                className="rounded text-xs font-bold uppercase border border-blue-300 text-blue-600 bg-white hover:bg-blue-50 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
-                                title="Preview file"
-                              >
-                                <FileText className="w-3 h-3 shrink-0" />
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  onTogglePreview(file.name);
-                                }}
-                                className={cn(
-                                  "rounded text-xs font-bold uppercase border cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0",
-                                  previewUrl === file.name
-                                    ? "bg-slate-900 text-white border-slate-900"
-                                    : "bg-white text-blue-600 border-blue-300 hover:bg-blue-50"
-                                )}
-                                title={previewUrl === file.name ? 'Stop audio preview' : 'Preview audio'}
-                              >
-                                {previewUrl === file.name ? (
-                                  <Square className="w-2.5 h-2.5 fill-current shrink-0" />
-                                ) : (
-                                  <Play className="w-2.5 h-2.5 fill-current shrink-0" />
-                                )}
-                              </button>
-                            )}
+                        {/* Column 5: Actions (Joined segmented group; Play/Preview & Copy vertically aligned; Edit in its own right-hand land) */}
+                        <td className="py-1 px-1.5 text-right whitespace-nowrap overflow-hidden">
+                          <div className="inline-flex items-center justify-end max-w-full">
+                            <div className="inline-flex items-center rounded border border-slate-300 bg-white divide-x divide-slate-300 overflow-hidden shrink-0">
+                              {/* 1. Preview / Play */}
+                              {!isAudio ? (
+                                <button
+                                  type="button"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    onPreviewScript(file.name);
+                                  }}
+                                  className="text-xs font-bold uppercase text-blue-600 bg-white hover:bg-blue-50 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
+                                  title="Preview file"
+                                >
+                                  <FileText className="w-3 h-3 shrink-0" />
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    onTogglePreview(file.name);
+                                  }}
+                                  className={cn(
+                                    "text-xs font-bold uppercase cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0",
+                                    previewUrl === file.name
+                                      ? "bg-slate-900 text-white"
+                                      : "bg-white text-blue-600 hover:bg-blue-50"
+                                  )}
+                                  title={previewUrl === file.name ? 'Stop audio preview' : 'Preview audio'}
+                                >
+                                  {previewUrl === file.name ? (
+                                    <Square className="w-2.5 h-2.5 fill-current shrink-0" />
+                                  ) : (
+                                    <Play className="w-2.5 h-2.5 fill-current shrink-0" />
+                                  )}
+                                </button>
+                              )}
 
-                            {/* 3. Copy (Duplicate on both Audio & LiveRead) */}
-                            <button
-                              type="button"
-                              onClick={e => {
-                                e.stopPropagation();
-                                if (isEditableTxt && onCopyScript) {
-                                  onCopyScript(file.name);
-                                } else {
-                                  openDuplicateFilePrompt(file);
+                              {/* 2. Copy (Duplicate on both Audio & LiveRead) */}
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  if (isEditableTxt && onCopyScript) {
+                                    onCopyScript(file.name);
+                                  } else {
+                                    openDuplicateFilePrompt(file);
+                                  }
+                                }}
+                                className="text-xs font-bold uppercase text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
+                                title={
+                                  isEditableTxt
+                                    ? 'Duplicate live read and open in editor'
+                                    : `Duplicate ${isAudio ? 'audio' : 'live read'} file with a new name`
                                 }
-                              }}
-                              className="rounded text-xs font-bold uppercase border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
-                              title={
-                                isEditableTxt
-                                  ? 'Duplicate live read and open in editor'
-                                  : `Duplicate ${isAudio ? 'audio' : 'live read'} file with a new name`
-                              }
-                            >
-                              <Copy className="w-3 h-3 shrink-0" />
-                            </button>
-
-                            {/* 4. Edit (Editable text scripts) */}
-                            {isEditableTxt && onEditScript && (
-                              <button
-                                type="button"
-                                onClick={e => {
-                                  e.stopPropagation();
-                                  onEditScript(file.name);
-                                }}
-                                className="rounded text-xs font-bold uppercase border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
-                                title="Edit .txt live read"
                               >
-                                <Edit3 className="w-3 h-3 shrink-0" />
+                                <Copy className="w-3 h-3 shrink-0" />
                               </button>
+
+                              {/* 3. Edit (Editable text scripts) */}
+                              {isEditableTxt && onEditScript && (
+                                <button
+                                  type="button"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    onEditScript(file.name);
+                                  }}
+                                  className="text-xs font-bold uppercase text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
+                                  title="Edit .txt live read"
+                                >
+                                  <Edit3 className="w-3 h-3 shrink-0" />
+                                </button>
+                              )}
+                            </div>
+                            {!(isEditableTxt && onEditScript) && (
+                              <span className="inline-block h-6 w-6 shrink-0" aria-hidden="true" />
                             )}
                           </div>
                         </td>
@@ -1096,14 +1454,14 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                   })
                 ) : (
                   <tr>
-                    <td colSpan={5} className="py-10 text-center">
+                    <td colSpan={4} className="py-10 text-center">
                       <AlertCircle className="w-6 h-6 text-amber-500/60 mx-auto mb-1.5" />
                       <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
                         {isDriveActive ? 'No files inside Drive folder' : 'No matching resources'}
                       </p>
                       {isDriveActive && (
                         <p className="text-xs text-slate-400 mt-1 max-w-[260px] mx-auto leading-relaxed uppercase font-bold">
-                          Use &quot;+ UPLOAD FILE&quot; above or upload files into your Google Drive media_announcements folder.
+                          Use &quot;Upload&quot; above or upload files into your Google Drive media_announcements folder.
                         </p>
                       )}
                     </td>
@@ -1158,20 +1516,21 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={isUploading}
                 onClick={onClose}
-                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                disabled={selectedFiles.length === 0}
+                disabled={selectedFiles.length === 0 || isUploading}
                 onClick={() => {
                   if (selectedFiles.length === 0) return;
                   if (allowMultiSelect && onSelectMultipleFiles) {
                     onSelectMultipleFiles(selectedFiles);
                   } else {
-                    onSelectFile(selectedFiles[0]);
+                    attemptSelectSingleFile(selectedFiles[0]);
                   }
                 }}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
@@ -1183,6 +1542,134 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Confirmation Popup Before Leaving Select Announcement When Replacing a Media Item With Logged Plays (7.c) */}
+      {pendingReplaceConfirmFile && replacingPlayedMediaInfo && (
+        <div
+          className="fixed inset-0 z-[195] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          onClick={() => setPendingReplaceConfirmFile(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
+                  Replace Played Media
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingReplaceConfirmFile(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+                title="Cancel"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-2.5 text-xs text-slate-700 leading-relaxed">
+              <p className="font-bold text-slate-900">
+                Replace &quot;{replacingPlayedMediaInfo.priorFileName}&quot; with &quot;
+                {pendingReplaceConfirmFile.name}&quot;?
+              </p>
+              <p className="font-medium text-slate-600">
+                &quot;{replacingPlayedMediaInfo.priorFileName}&quot; has{' '}
+                <strong className="text-slate-900">
+                  {replacingPlayedMediaInfo.playCount}{' '}
+                  {replacingPlayedMediaInfo.playCount === 1 ? 'logged play' : 'logged plays'}
+                </strong>{' '}
+                and will be moved to the{' '}
+                <strong className="text-slate-900">Past / Inactivated Media</strong> section of this
+                gate so its broadcast history is preserved.
+              </p>
+            </div>
+
+            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingReplaceConfirmFile(null);
+                  setPendingReplaceConfirmOptions(undefined);
+                }}
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const chosen = pendingReplaceConfirmFile;
+                  const opts = pendingReplaceConfirmOptions;
+                  setPendingReplaceConfirmFile(null);
+                  setPendingReplaceConfirmOptions(undefined);
+                  onSelectFile(chosen, opts);
+                }}
+                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer inline-flex items-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>Confirm &amp; Replace</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocking Upload Status / Error Overlay Modal */}
+      {(isUploading || uploadError) && (
+        <div
+          className="fixed inset-0 z-[190] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm border border-slate-200 overflow-hidden p-4 space-y-3">
+            {isUploading ? (
+              <>
+                <div className="flex items-center gap-2.5">
+                  <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                      Uploading File...
+                    </h4>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">
+                      Please wait while the file upload completes.
+                    </p>
+                  </div>
+                </div>
+                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-600 rounded-full w-2/3 animate-pulse" />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-red-900">
+                      Upload Failed
+                    </h4>
+                    <p className="text-xs text-red-700 font-medium mt-1 leading-relaxed">
+                      {uploadError}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setUploadError(null)}
+                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Duplicate & Rename Prompt Modal for Audio / Non-Editable Files */}
       {copyPromptState && (

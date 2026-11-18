@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { driveFileNameCache, availableFilesCache, rawBlobCache, mp3MetadataCache, cacheMP3 } from './driveService';
+import { driveFileNameCache, availableFilesCache, rawBlobCache, mp3MetadataCache, mp3DurationCache, cacheMP3, getStorageApiHeaders } from './driveService';
 import { Announcement, AnnouncementRevision, AnnouncementType, ResolvedTimeGatedMp3, Show, TimeGatedMediaItem, TimeGatedMp3, UpNextPromoConfig } from '../types';
 import { getStationTimezone, getStationNow, toStationDateParts, stationSlotDateToUtcIso, getUpNextPromoConfig, estimateWpmReadTimeFromText, isMissingApproxReadTime } from './compatibility';
 
@@ -55,6 +55,9 @@ export const EXCLUDED_EXTENSIONS = [
  */
 export function getCleanFilename(urlOrPath: string | undefined | null): string {
   if (!urlOrPath) return '';
+  if (isUpNextPromoUrl(urlOrPath)) {
+    return formatUpNextPromoFilename(urlOrPath);
+  }
   let cleanName = urlOrPath;
   if (cleanName.includes('/api/media/stream') || cleanName.includes('/api/shows/playlist/stream-file')) {
     const parts = cleanName.split(/(?:file|path)=/);
@@ -117,6 +120,33 @@ export function decodeUpNextPromoText(filenameOrUrl: string | undefined | null):
   }
 }
 
+export function formatUpNextPromoFilename(
+  filenameOrUrl: string | undefined | null,
+  fallbackAnnouncementName?: string
+): string {
+  if (
+    fallbackAnnouncementName &&
+    /^Up Next:/i.test(fallbackAnnouncementName.trim())
+  ) {
+    return fallbackAnnouncementName.trim();
+  }
+  const decoded = decodeUpNextPromoText(filenameOrUrl);
+  if (decoded) {
+    const thatsMatch = decoded.match(/That's\s+(.+?)\s+at\s+\d{1,2}:\d{2}/i);
+    if (thatsMatch && thatsMatch[1]) {
+      return `Up Next: ${thatsMatch[1].trim()}`;
+    }
+    const leadMatch = decoded.match(/^Up Next is\s+(.+?)\s+(?:with\s+.+?\s+)?from\s+\d{1,2}:\d{2}/i);
+    if (leadMatch && leadMatch[1]) {
+      return `Up Next: ${leadMatch[1].trim()}`;
+    }
+  }
+  if (fallbackAnnouncementName && fallbackAnnouncementName.trim()) {
+    return `Up Next: ${fallbackAnnouncementName.trim().replace(/^Up Next:\s*/i, '')}`;
+  }
+  return 'Up Next Promo';
+}
+
 /**
  * Checks if a file path or URL represents a script/document or visual text asset.
  */
@@ -170,7 +200,7 @@ export const getMP3Status = (url: string | undefined) => {
     return {
       exists: true,
       valid: true,
-      filename: 'Up Next Promo (Auto-Seeded)'
+      filename: formatUpNextPromoFilename(url)
     };
   }
 
@@ -252,6 +282,51 @@ export const formatDuration = (seconds: number) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+export const formatDurationMmSs = (duration?: string | number): string => {
+  if (duration === undefined || duration === null || duration === '') return '';
+  if (typeof duration === 'number') {
+    if (isNaN(duration) || duration < 0) return '';
+    return formatDuration(duration);
+  }
+  const clean = String(duration).replace(/^~\s*/, '').trim();
+  if (!clean) return '';
+
+  const minSecMatch = clean.match(/^(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s(?:ec(?:ond)?s?)?$/i);
+  if (minSecMatch) {
+    const mins = parseInt(minSecMatch[1], 10) || 0;
+    const secs = parseInt(minSecMatch[2], 10) || 0;
+    return formatDuration(mins * 60 + secs);
+  }
+
+  const onlyMinMatch = clean.match(/^(\d+)\s*m(?:in(?:ute)?s?)?$/i);
+  if (onlyMinMatch) {
+    return formatDuration((parseInt(onlyMinMatch[1], 10) || 0) * 60);
+  }
+
+  const onlySecMatch = clean.match(/^(\d+)\s*s(?:ec(?:ond)?s?)?$/i);
+  if (onlySecMatch) {
+    return formatDuration(parseInt(onlySecMatch[1], 10) || 0);
+  }
+
+  if (clean.includes(':')) {
+    const parts = clean.split(':').map(p => (p === '' ? 0 : parseFloat(p)));
+    if (!parts.some(p => isNaN(p))) {
+      if (parts.length === 2) {
+        return formatDuration(parts[0] * 60 + parts[1]);
+      }
+      if (parts.length === 3) {
+        return formatDuration(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+      }
+    }
+  }
+
+  const num = parseFloat(clean);
+  if (!isNaN(num) && num >= 0 && /^\d+(\.\d+)?$/.test(clean)) {
+    return formatDuration(num);
+  }
+  return clean;
+};
+
 export const formatTotalTrackTime = (seconds: number): string => {
   const totalSec = Math.max(0, Math.round(seconds));
   const days = Math.floor(totalSec / 86400);
@@ -304,17 +379,86 @@ export function parseID3v1Bytes(bytes: Uint8Array): Mp3ID3Metadata | null {
 
 // Pure-JS ID3v2 & ID3v1 metadata parser
 
+function cacheAndDispatchAudioDuration(url: string, cleanName: string, durationSeconds?: number) {
+  if (!durationSeconds || isNaN(durationSeconds) || durationSeconds <= 0 || !isFinite(durationSeconds)) return;
+  const formatted = formatDuration(durationSeconds);
+  if (!formatted) return;
+  if (url) mp3DurationCache.set(url, formatted);
+  if (cleanName) {
+    mp3DurationCache.set(cleanName, formatted);
+    const existing = availableFilesCache.get(cleanName);
+    if (existing && !existing.duration) {
+      availableFilesCache.set(cleanName, { ...existing, duration: formatted });
+    }
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('mp3-duration-cached', {
+        detail: {
+          name: cleanName || url,
+          fileName: cleanName || url,
+          url,
+          resolvedUrl: url,
+          duration: formatted
+        }
+      })
+    );
+  }
+}
+
+function parseCatalogSizeToBytes(sizeStr?: string | number): number | undefined {
+  if (sizeStr === undefined || sizeStr === null || sizeStr === '') return undefined;
+  const match = String(sizeStr).match(/([\d.]+)\s*(MB|KB|B)/i);
+  if (!match) return undefined;
+  const val = parseFloat(match[1]);
+  if (isNaN(val) || val <= 0) return undefined;
+  const unit = match[2].toUpperCase();
+  if (unit === 'MB') return Math.round(val * 1024 * 1024);
+  if (unit === 'KB') return Math.round(val * 1024);
+  return Math.round(val);
+}
+
 export async function readMp3ID3Metadata(url: string, authToken?: string): Promise<Mp3ID3Metadata | null> {
   if (!url || !isAudioFile(url)) {
     return null;
   }
   try {
-    // 1. Check if metadata is already cached in RAM
-    if (mp3MetadataCache.has(url)) {
+    const cleanName = getFilenameFromUrlOrPath(url) || getCleanFilename(url);
+    const catalogEntry =
+      (cleanName ? availableFilesCache.get(cleanName) : undefined) ||
+      availableFilesCache.get(url);
+    const catalogBytes = parseCatalogSizeToBytes(catalogEntry?.size);
+
+    // 1. Check if raw blob is already cached in RAM — read metadata & duration directly from cached blob in 1 pass
+    const cachedBlob =
+      rawBlobCache.get(url) ||
+      (cleanName ? rawBlobCache.get(cleanName) : undefined) ||
+      (catalogEntry?.path ? rawBlobCache.get(catalogEntry.path) : undefined);
+    if (cachedBlob) {
+      const existingMeta = mp3MetadataCache.get(url) || (cleanName ? mp3MetadataCache.get(cleanName) : undefined);
+      if (existingMeta && (mp3DurationCache.has(url) || (cleanName && mp3DurationCache.has(cleanName)))) {
+        return existingMeta;
+      }
+      try {
+        const arrayBuf = await cachedBlob.arrayBuffer();
+        const meta = extractAudioMetadataBytes(new Uint8Array(arrayBuf), cleanName || url, cachedBlob.size);
+        if (meta) {
+          if (meta.durationSeconds) {
+            cacheAndDispatchAudioDuration(url, cleanName, meta.durationSeconds);
+          }
+          mp3MetadataCache.set(url, meta);
+          if (cleanName) mp3MetadataCache.set(cleanName, meta);
+          return meta;
+        }
+      } catch (_) {}
+    }
+
+    // 2. Check if metadata AND duration are already cached in RAM
+    if (mp3MetadataCache.has(url) && (mp3DurationCache.has(url) || (cleanName && mp3DurationCache.has(cleanName)))) {
       return mp3MetadataCache.get(url)!;
     }
 
-    // 2. If it's a local streamUrl endpoint, call server endpoint directly
+    // 3. If it's a local streamUrl endpoint, call server endpoint directly
     if (url.startsWith('/api/shows/playlist/stream-file') || url.startsWith('/api/media/stream')) {
       const query = url.substring(url.indexOf('?'));
       const metaRes = await fetch(`/api/shows/playlist/file-metadata${query}`);
@@ -325,87 +469,94 @@ export async function readMp3ID3Metadata(url: string, authToken?: string): Promi
             title: d.metadata.title,
             artist: d.metadata.artist,
             albumArtist: d.metadata.albumArtist || d.metadata.artist,
-            album: d.metadata.album
+            album: d.metadata.album,
+            durationSeconds: d.metadata.durationSeconds
           };
+          if (meta.durationSeconds) {
+            cacheAndDispatchAudioDuration(url, cleanName, meta.durationSeconds);
+          }
           mp3MetadataCache.set(url, meta);
-          return meta;
+          if (cleanName) mp3MetadataCache.set(cleanName, meta);
+          if (meta.title || meta.artist || meta.album || meta.durationSeconds) {
+            return meta;
+          }
         }
       }
     }
 
-    // 3. If raw blob is already cached in RAM, parse it instantly with pure-JS metadata parser
-    const cachedBlob = rawBlobCache.get(url);
-    if (cachedBlob) {
-      try {
-        const arrayBuf = await cachedBlob.arrayBuffer();
-        const meta = extractAudioMetadataBytes(new Uint8Array(arrayBuf), url);
-        if (meta && (meta.title || meta.artist || meta.albumArtist || meta.album)) {
-          mp3MetadataCache.set(url, meta);
-          return meta;
-        }
-      } catch (e) {}
-    }
-
-    // 4. For Google Drive or other web URLs, trigger cacheMP3 (which deduplicates fetches and extracts metadata from blob)
+    // 4. Small-bite 64KB read-ahead (works for both Local and Google Drive via /api/media/stream or direct URL)
     const isDriveUrl = url.includes('googleapis.com/drive') || url.includes('drive.google.com');
-    if (isDriveUrl && authToken) {
-      await cacheMP3(url, authToken);
-      if (mp3MetadataCache.has(url)) {
-        return mp3MetadataCache.get(url)!;
-      }
-    }
-
-    const headers: Record<string, string> = {};
-    if (authToken && isDriveUrl) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-
-    // Parse directly on fetch using pure-JS byte parser
-    try {
-      const response = await fetch(url, { headers });
-      if (response.ok) {
-        const blob = await response.blob();
-        rawBlobCache.set(url, blob);
-        const arrayBuf = await blob.arrayBuffer();
-        const meta = extractAudioMetadataBytes(new Uint8Array(arrayBuf), url);
-        if (meta && (meta.title || meta.artist || meta.albumArtist || meta.album)) {
-          mp3MetadataCache.set(url, meta);
-          return meta;
-        }
-      }
-    } catch (e) {
-      // Fallback to manual byte parsing
+    let fetchTargetUrl = url;
+    let baseHeaders: Record<string, string> = {};
+    if (isDriveUrl && cleanName) {
+      fetchTargetUrl = `/api/media/stream?path=${encodeURIComponent(cleanName)}`;
+      try {
+        baseHeaders = await getStorageApiHeaders();
+      } catch (_) {}
+    } else if (authToken && isDriveUrl) {
+      baseHeaders['Authorization'] = `Bearer ${authToken}`;
+    } else if (url.startsWith('/api/media/stream')) {
+      try {
+        baseHeaders = await getStorageApiHeaders();
+      } catch (_) {}
     }
 
     const rangeHeaders: Record<string, string> = {
-      ...headers,
-      'Range': 'bytes=0-65535' // Request first 64KB only
+      ...baseHeaders,
+      'Range': 'bytes=0-65535' // Small-bite: first 64KB only
     };
 
-    const response = await fetch(url, { headers: rangeHeaders });
     let buffer: ArrayBuffer;
-    if (response.ok || response.status === 206) {
-      buffer = await response.arrayBuffer();
-    } else {
-      const fallbackResponse = await fetch(url, { headers });
-      if (!fallbackResponse.ok) return null;
-      buffer = await fallbackResponse.arrayBuffer();
+    let totalFileSizeBytes: number | undefined = catalogBytes;
+    try {
+      const response = await fetch(fetchTargetUrl, { headers: rangeHeaders });
+      if (response.ok || response.status === 206) {
+        const contentRange = response.headers.get('content-range');
+        if (contentRange) {
+          const slashIdx = contentRange.lastIndexOf('/');
+          if (slashIdx !== -1) {
+            const parsedTotal = parseInt(contentRange.slice(slashIdx + 1).trim(), 10);
+            if (!isNaN(parsedTotal) && parsedTotal > 0) {
+              totalFileSizeBytes = parsedTotal;
+            }
+          }
+        }
+        if (!totalFileSizeBytes && response.status === 200) {
+          const contentLen = parseInt(response.headers.get('content-length') || '', 10);
+          if (!isNaN(contentLen) && contentLen > 0) {
+            totalFileSizeBytes = contentLen;
+          }
+        }
+        buffer = await response.arrayBuffer();
+      } else {
+        return null;
+      }
+    } catch {
+      return null;
     }
+
     const bytes = new Uint8Array(buffer);
-    const audioMeta = extractAudioMetadataBytes(bytes, url);
+    if (!totalFileSizeBytes && bytes.length < 65536) {
+      totalFileSizeBytes = bytes.length;
+    }
+    const audioMeta = extractAudioMetadataBytes(bytes, cleanName || url, totalFileSizeBytes);
+    if (audioMeta?.durationSeconds) {
+      cacheAndDispatchAudioDuration(url, cleanName, audioMeta.durationSeconds);
+    }
 
     if (audioMeta && audioMeta.title && audioMeta.artist) {
       mp3MetadataCache.set(url, audioMeta);
+      if (cleanName) mp3MetadataCache.set(cleanName, audioMeta);
       return audioMeta;
     }
 
     // Try fetching last 128 bytes for ID3v1 fallback if ID3v2 is incomplete or missing
     try {
       const v1Headers: Record<string, string> = {
-        ...headers,
+        ...baseHeaders,
         'Range': 'bytes=-128'
       };
-      const v1Response = await fetch(url, { headers: v1Headers });
+      const v1Response = await fetch(fetchTargetUrl, { headers: v1Headers });
       if (v1Response.ok || v1Response.status === 206) {
         const v1Buffer = await v1Response.arrayBuffer();
         const v1Meta = parseID3v1Bytes(new Uint8Array(v1Buffer));
@@ -414,9 +565,11 @@ export async function readMp3ID3Metadata(url: string, authToken?: string): Promi
             title: audioMeta?.title || v1Meta.title,
             artist: audioMeta?.artist || v1Meta.artist,
             albumArtist: audioMeta?.albumArtist || v1Meta.albumArtist || v1Meta.artist,
-            album: audioMeta?.album || v1Meta.album
+            album: audioMeta?.album || v1Meta.album,
+            durationSeconds: audioMeta?.durationSeconds
           };
           mp3MetadataCache.set(url, combined);
+          if (cleanName) mp3MetadataCache.set(cleanName, combined);
           return combined;
         }
       }
@@ -424,6 +577,7 @@ export async function readMp3ID3Metadata(url: string, authToken?: string): Promi
 
     if (audioMeta) {
       mp3MetadataCache.set(url, audioMeta);
+      if (cleanName) mp3MetadataCache.set(cleanName, audioMeta);
     }
     return audioMeta;
   } catch (err) {
@@ -685,43 +839,222 @@ export function parseMp4MetadataBytes(bytes: Uint8Array): Mp3ID3Metadata | null 
 }
 
 /**
- * Universal audio metadata parser supporting MP3 (ID3v1/ID3v2), WAV (RIFF INFO/ID3),
- * FLAC (Vorbis Comments), OGG (Vorbis Comments), and M4A/AAC (MP4 Atoms).
+ * Pure-JS audio duration estimator from a byte slice (e.g. 64KB small-bite range read or full cached buffer).
+ * Supports MP3 (Xing/Info VBR, VBRI, and CBR frame headers), WAV (RIFF fmt), FLAC (STREAMINFO), and M4A (mvhd).
  */
-export function extractAudioMetadataBytes(bytes: Uint8Array, filenameOrUrl?: string): Mp3ID3Metadata | null {
+export function estimateAudioDurationSecondsFromBytes(
+  bytes: Uint8Array,
+  totalFileSizeBytes?: number
+): number | undefined {
+  if (!bytes || bytes.length < 16) return undefined;
+  const totalBytes = totalFileSizeBytes && totalFileSizeBytes > bytes.length ? totalFileSizeBytes : bytes.length;
+
+  const readUint32BE = (pos: number) =>
+    ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
+  const readUint32LE = (pos: number) =>
+    (bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16) | (bytes[pos + 3] << 24)) >>> 0;
+
+  // 1. WAV ('RIFF' ... 'WAVE')
+  if (
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x41 && bytes[10] === 0x56 && bytes[11] === 0x45
+  ) {
+    let off = 12;
+    let byteRate = 0;
+    let dataSize = 0;
+    while (off + 8 <= bytes.length) {
+      const chunkId = String.fromCharCode(bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]);
+      const chunkSize = readUint32LE(off + 4);
+      off += 8;
+      if (chunkId === 'fmt ' && off + 12 <= bytes.length) {
+        byteRate = readUint32LE(off + 8);
+      } else if (chunkId === 'data') {
+        dataSize = chunkSize;
+        break;
+      }
+      if (chunkSize <= 0 || off + chunkSize > bytes.length) break;
+      off += chunkSize + (chunkSize % 2);
+    }
+    if (byteRate > 0) {
+      const effectiveDataBytes = dataSize > 0 ? dataSize : Math.max(0, totalBytes - 44);
+      const sec = Math.round(effectiveDataBytes / byteRate);
+      if (sec > 0 && sec < 86400) return sec;
+    }
+  }
+
+  // 2. FLAC ('fLaC')
+  let flacOff = 0;
+  if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33 && bytes.length >= 10) {
+    flacOff = 10 + (((bytes[6] & 0x7f) << 21) | ((bytes[7] & 0x7f) << 14) | ((bytes[8] & 0x7f) << 7) | (bytes[9] & 0x7f));
+  }
+  if (
+    flacOff + 42 <= bytes.length &&
+    bytes[flacOff] === 0x66 && bytes[flacOff + 1] === 0x4c && bytes[flacOff + 2] === 0x61 && bytes[flacOff + 3] === 0x43
+  ) {
+    const blockHeader = bytes[flacOff + 4];
+    const blockType = blockHeader & 0x7f;
+    if (blockType === 0) {
+      const sb = flacOff + 8;
+      const sampleRate = (bytes[sb + 10] << 12) | (bytes[sb + 11] << 4) | (bytes[sb + 12] >> 4);
+      const totalSamplesHigh = bytes[sb + 13] & 0x0f;
+      const totalSamplesLow = readUint32BE(sb + 14);
+      const totalSamples = totalSamplesHigh * 4294967296 + totalSamplesLow;
+      if (sampleRate > 0 && totalSamples > 0) {
+        const sec = Math.round(totalSamples / sampleRate);
+        if (sec > 0 && sec < 86400) return sec;
+      }
+    }
+  }
+
+  // 3. MP4 / M4A ('mvhd' atom box)
+  for (let i = 0; i + 32 <= bytes.length; i++) {
+    if (bytes[i + 4] === 0x6d && bytes[i + 5] === 0x76 && bytes[i + 6] === 0x68 && bytes[i + 7] === 0x64) {
+      const version = bytes[i + 8];
+      if (version === 0 && i + 28 <= bytes.length) {
+        const timeScale = readUint32BE(i + 20);
+        const duration = readUint32BE(i + 24);
+        if (timeScale > 0 && duration > 0) {
+          const sec = Math.round(duration / timeScale);
+          if (sec > 0 && sec < 86400) return sec;
+        }
+      }
+      break;
+    }
+  }
+
+  // 4. MP3 (ID3v2 skip + Xing/Info/VBRI/CBR frame header)
+  let id3Offset = 0;
+  if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33 && bytes.length >= 10) {
+    const id3Size =
+      ((bytes[6] & 0x7f) << 21) |
+      ((bytes[7] & 0x7f) << 14) |
+      ((bytes[8] & 0x7f) << 7) |
+      (bytes[9] & 0x7f);
+    id3Offset = 10 + id3Size;
+  }
+
+  const scanStart = id3Offset < bytes.length - 4 ? id3Offset : 0;
+  const bitratesMpeg1L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+  const bitratesMpeg2L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+  const sampleRatesMpeg1 = [44100, 48000, 32000, 0];
+  const sampleRatesMpeg2 = [22050, 24000, 16000, 0];
+  const sampleRatesMpeg25 = [11025, 12000, 8000, 0];
+
+  for (let i = scanStart; i < bytes.length - 4; i++) {
+    if (bytes[i] === 0xff && (bytes[i + 1] & 0xe0) === 0xe0) {
+      const b1 = bytes[i + 1];
+      const b2 = bytes[i + 2];
+      const versionBits = (b1 >> 3) & 0x03; // 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
+      const layerBits = (b1 >> 1) & 0x03;   // 1 = Layer III
+      const brIdx = (b2 >> 4) & 0x0f;
+      const srIdx = (b2 >> 2) & 0x03;
+      if (versionBits === 1 || layerBits !== 1 || brIdx === 0 || brIdx === 15 || srIdx === 3) {
+        continue;
+      }
+
+      const isMpeg1 = versionBits === 3;
+      const kbps = isMpeg1 ? bitratesMpeg1L3[brIdx] : bitratesMpeg2L3[brIdx];
+      const sampleRate =
+        versionBits === 3
+          ? sampleRatesMpeg1[srIdx]
+          : versionBits === 2
+            ? sampleRatesMpeg2[srIdx]
+            : sampleRatesMpeg25[srIdx];
+      const samplesPerFrame = isMpeg1 ? 1152 : 576;
+
+      // Check for Xing / Info VBR header inside the first frame
+      const searchEnd = Math.min(bytes.length - 16, i + 200);
+      for (let x = i + 4; x < searchEnd; x++) {
+        const isXing =
+          bytes[x] === 0x58 && bytes[x + 1] === 0x69 && bytes[x + 2] === 0x6e && bytes[x + 3] === 0x67;
+        const isInfo =
+          bytes[x] === 0x49 && bytes[x + 1] === 0x6e && bytes[x + 2] === 0x66 && bytes[x + 3] === 0x6f;
+        if ((isXing || isInfo) && sampleRate > 0) {
+          const flags = readUint32BE(x + 4);
+          if ((flags & 0x01) !== 0 && x + 12 <= bytes.length) {
+            const totalFrames = readUint32BE(x + 8);
+            if (totalFrames > 0) {
+              const sec = Math.round((totalFrames * samplesPerFrame) / sampleRate);
+              if (sec > 0 && sec < 86400) return sec;
+            }
+          }
+        }
+        const isVbri =
+          bytes[x] === 0x56 && bytes[x + 1] === 0x42 && bytes[x + 2] === 0x52 && bytes[x + 3] === 0x49;
+        if (isVbri && sampleRate > 0 && x + 18 <= bytes.length) {
+          const totalFrames = readUint32BE(x + 14);
+          if (totalFrames > 0) {
+            const sec = Math.round((totalFrames * samplesPerFrame) / sampleRate);
+            if (sec > 0 && sec < 86400) return sec;
+          }
+        }
+      }
+
+      if (kbps > 0) {
+        const audioBytes = Math.max(0, totalBytes - id3Offset);
+        const sec = Math.round((audioBytes * 8) / (kbps * 1000));
+        if (sec > 0 && sec < 86400) return sec;
+      }
+      break;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Universal audio metadata parser supporting MP3 (ID3v1/ID3v2), WAV (RIFF INFO/ID3),
+ * FLAC (Vorbis Comments), OGG (Vorbis Comments), and M4A/AAC (MP4 Atoms), plus duration.
+ */
+export function extractAudioMetadataBytes(
+  bytes: Uint8Array,
+  filenameOrUrl?: string,
+  totalFileSizeBytes?: number
+): Mp3ID3Metadata | null {
   if (!bytes || bytes.length < 10) return null;
+
+  const durationSeconds = estimateAudioDurationSecondsFromBytes(bytes, totalFileSizeBytes);
+  const attachDuration = (meta: Mp3ID3Metadata | null): Mp3ID3Metadata | null => {
+    if (meta) {
+      return durationSeconds && !meta.durationSeconds ? { ...meta, durationSeconds } : meta;
+    }
+    if (durationSeconds) {
+      return { durationSeconds };
+    }
+    return null;
+  };
 
   // 1. Try ID3 parser (MP3, WAV with ID3 chunk, or prepended ID3)
   const id3 = parseID3Bytes(bytes);
   if (id3 && (id3.title || id3.artist || id3.album)) {
-    return id3;
+    return attachDuration(id3);
   }
 
   // 2. Try RIFF INFO parser (WAV)
   const riff = parseRiffInfoBytes(bytes);
   if (riff && (riff.title || riff.artist || riff.album)) {
-    return riff;
+    return attachDuration(riff);
   }
 
   // 3. Try FLAC Vorbis Comment parser
   const flac = parseFlacMetadataBytes(bytes);
   if (flac && (flac.title || flac.artist || flac.album)) {
-    return flac;
+    return attachDuration(flac);
   }
 
   // 4. Try OGG Vorbis / Opus Comment parser
   const ogg = parseOggVorbisBytes(bytes);
   if (ogg && (ogg.title || ogg.artist || ogg.album)) {
-    return ogg;
+    return attachDuration(ogg);
   }
 
   // 5. Try MP4 Atom Box parser (M4A)
   const mp4 = parseMp4MetadataBytes(bytes);
   if (mp4 && (mp4.title || mp4.artist || mp4.album)) {
-    return mp4;
+    return attachDuration(mp4);
   }
 
-  return id3;
+  return attachDuration(id3);
 }
 
 export function parseID3Bytes(bytes: Uint8Array): Mp3ID3Metadata | null {
@@ -855,6 +1188,9 @@ export function extractFolderId(input: string): string {
 
 export const getFilenameFromUrlOrPath = (pathOrUrl: string | undefined): string => {
   if (!pathOrUrl) return '';
+  if (isUpNextPromoUrl(pathOrUrl)) {
+    return formatUpNextPromoFilename(pathOrUrl);
+  }
   
   // Try matching search from availableFilesCache path
   for (const [name, info] of Array.from(availableFilesCache.entries())) {

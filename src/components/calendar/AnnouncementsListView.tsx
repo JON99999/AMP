@@ -1,6 +1,21 @@
 import React from 'react';
-import { FileText, Copy, Eye, XCircle, Square, Play, Music, AlertCircle } from 'lucide-react';
-import { Announcement, AnnouncementType } from '../../types';
+import {
+  FileText,
+  Copy,
+  Eye,
+  XCircle,
+  Square,
+  Play,
+  Music,
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  Archive,
+  Trash2,
+  CheckCircle,
+  Plus,
+} from 'lucide-react';
+import { Announcement, AnnouncementType, LogEntry } from '../../types';
 import {
   cn,
   getMP3Status,
@@ -12,7 +27,12 @@ import {
   getGateMediaItems,
 } from '../../lib/utils';
 import {
+  calculateGatedTrackAudit,
+  formatSlotAssessmentTooltip,
+} from '../../lib/temporalReconciliation';
+import {
   getAnnouncementSummary,
+  formatMetadataDate,
   AnnouncementConflict,
   AnnouncementGap,
   PreviewScriptOriginState,
@@ -20,16 +40,25 @@ import {
 
 export interface AnnouncementsListViewProps {
   announcements: Announcement[];
+  logs?: LogEntry[];
   now: Date;
   announcementFilterQuery: string;
   selectedListMediaByAnnId: Record<string, string>;
   setSelectedListMediaByAnnId: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  startEdit: (s: Announcement) => void;
+  startEdit: (
+    s: Announcement,
+    fromAudit?: boolean,
+    focusTarget?: { slotIso?: string; gateId?: string; itemIndex?: number; mp3Url?: string }
+  ) => void;
+  createNew?: () => void;
   duplicate: (s: Announcement, e: React.MouseEvent) => void;
+  onInactivateOrReactivate?: (s: Announcement, nextEnabled: boolean, e: React.MouseEvent) => void;
+  onDeleteAnnouncementCard?: (s: Announcement, e: React.MouseEvent) => void;
   listCardHideTypeTag: boolean;
   listCardHideSummaryTag: boolean;
   listCardCollapseViewEditText: boolean;
   listCardCollapseCopyText: boolean;
+  listCardCollapseDetailsText?: boolean;
   listCardCollapsePreviewText: boolean;
   previewUrl: string | null;
   togglePreview: (url: string | undefined, e?: React.MouseEvent) => void;
@@ -45,16 +74,21 @@ export interface AnnouncementsListViewProps {
 
 export function AnnouncementsListView({
   announcements,
+  logs = [],
   now,
   announcementFilterQuery,
   selectedListMediaByAnnId,
   setSelectedListMediaByAnnId,
   startEdit,
+  createNew,
   duplicate,
+  onInactivateOrReactivate,
+  onDeleteAnnouncementCard,
   listCardHideTypeTag,
   listCardHideSummaryTag,
   listCardCollapseViewEditText,
   listCardCollapseCopyText,
+  listCardCollapseDetailsText,
   listCardCollapsePreviewText,
   previewUrl,
   togglePreview,
@@ -67,6 +101,35 @@ export function AnnouncementsListView({
   inactiveSortMode,
   setInactiveSortMode,
 }: AnnouncementsListViewProps) {
+  const [expandedDetailsByAnnId, setExpandedDetailsByAnnId] = React.useState<Record<string, boolean>>({});
+  const [isInactiveSectionOpen, setIsInactiveSectionOpen] = React.useState<boolean>(false);
+  const [highlightedCardId, setHighlightedCardId] = React.useState<string | null>(null);
+
+  const focusAnnouncementCard = React.useCallback((annId: string, expandInactiveSection?: boolean) => {
+    if (expandInactiveSection) {
+      setIsInactiveSectionOpen(true);
+    }
+    setHighlightedCardId(annId);
+    window.setTimeout(() => {
+      if (typeof document === 'undefined') return;
+      const cardEl = document.querySelector(`[data-ann-card-id="${annId}"]`) as HTMLElement | null;
+      if (cardEl && typeof cardEl.scrollIntoView === 'function') {
+        cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 80);
+    window.setTimeout(() => {
+      setHighlightedCardId(prev => (prev === annId ? null : prev));
+    }, 2400);
+  }, []);
+
+  const toggleDetailsDrawer = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedDetailsByAnnId(prev => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  };
+
   return (
     <div className="flex flex-col gap-6 overflow-y-auto flex-1 pb-4 pr-1.5 custom-scrollbar min-h-0">
       {/* Active Announcements Section */}
@@ -245,14 +308,29 @@ export function AnnouncementsListView({
                       displayLabel: 'File not found.',
                     };
                   const isScript = selectedMedia.isScript;
+                  const targetGateObj = sortedGates[selectedMedia.gateIndex];
+                  const cardFocusTarget = {
+                    gateId: targetGateObj?.id,
+                    itemIndex: selectedMedia.itemIndex,
+                    mp3Url: selectedMedia.mp3Url,
+                  };
+                  const annAudit = calculateGatedTrackAudit(s.id, '', logs, { announcement: s });
+                  const annFirstUsed = annAudit.firstUsedAt
+                    ? formatDatetime12(formatToDatetimeLocal(annAudit.firstUsedAt))
+                    : '—';
+                  const annLastUsed = annAudit.lastUsedAt
+                    ? formatDatetime12(formatToDatetimeLocal(annAudit.lastUsedAt))
+                    : '—';
                   return (
                     <div
                       key={s.id}
-                      onClick={() => startEdit(s)}
+                      data-ann-card-id={s.id}
+                      onClick={() => startEdit(s, false, cardFocusTarget)}
                       className={cn(
                         'transition-all cursor-pointer group relative flex items-stretch min-h-[64px]',
                         idx % 2 === 0 ? 'bg-white' : 'bg-slate-205',
-                        isScript ? 'border-l-4 border-l-blue-500' : 'border-l-4 border-l-purple-500'
+                        isScript ? 'border-l-4 border-l-blue-500' : 'border-l-4 border-l-purple-500',
+                        highlightedCardId === s.id && 'ring-2 ring-blue-500 bg-blue-50/40'
                       )}
                     >
                       <div className="shrink-0 flex items-center justify-center p-1 bg-slate-50 border-r border-grid-active w-[64px] select-none">
@@ -356,17 +434,17 @@ export function AnnouncementsListView({
                               <button
                                 onClick={e => {
                                   e.stopPropagation();
-                                  startEdit(s);
+                                  startEdit(s, false, cardFocusTarget);
                                 }}
                                 className={cn(
                                   'flex items-center gap-1 py-0.5 hover:bg-blue-600 hover:text-white bg-white border border-blue-300 rounded text-blue-700 transition-all shadow-sm group/btn cursor-pointer',
                                   listCardCollapseViewEditText ? 'px-1.5' : 'px-2'
                                 )}
-                                title="View or Edit Announcement"
+                                title="Edit Announcement"
                               >
                                 <FileText className="w-2.5 h-2.5 shrink-0" />
                                 {!listCardCollapseViewEditText && (
-                                  <span className="text-xs font-black uppercase">View/Edit</span>
+                                  <span className="text-xs font-black uppercase">Edit</span>
                                 )}
                               </button>
                               <button
@@ -382,6 +460,73 @@ export function AnnouncementsListView({
                                   <span className="text-xs font-black uppercase">Copy</span>
                                 )}
                               </button>
+                              <button
+                                type="button"
+                                onClick={e => toggleDetailsDrawer(s.id, e)}
+                                className={cn(
+                                  'flex items-center gap-0.5 py-0.5 hover:bg-slate-100 bg-white border border-slate-350 rounded text-slate-600 transition-all shadow-sm cursor-pointer',
+                                  listCardCollapseDetailsText ? 'px-1' : 'px-1.5'
+                                )}
+                                title="Show or hide Gate and Modified details"
+                              >
+                                {expandedDetailsByAnnId[s.id] ? (
+                                  <ChevronDown className="w-3 h-3 shrink-0" />
+                                ) : (
+                                  <ChevronRight className="w-3 h-3 shrink-0" />
+                                )}
+                                {!listCardCollapseDetailsText && (
+                                  <span className="text-xs font-black uppercase">Details</span>
+                                )}
+                              </button>
+                              <span
+                                onClick={e => e.stopPropagation()}
+                                className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 select-none cursor-help"
+                                title={formatSlotAssessmentTooltip(annAudit, {
+                                  scopeTitle: `${s.name} Assessment (History)`,
+                                  firstUsedFormatted: annFirstUsed,
+                                  lastUsedFormatted: annLastUsed,
+                                })}
+                              >
+                                {!listCardCollapseDetailsText ? `History (${annAudit.totalPlays})` : `${annAudit.totalPlays}`}
+                              </span>
+                              {annAudit.totalPlays > 0 ? (
+                                onInactivateOrReactivate && (
+                                  <button
+                                    type="button"
+                                    onClick={e => {
+                                      onInactivateOrReactivate(s, false, e);
+                                      focusAnnouncementCard(s.id, true);
+                                    }}
+                                    className={cn(
+                                      'flex items-center gap-1 py-0.5 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded text-amber-800 transition-all shadow-sm cursor-pointer',
+                                      listCardCollapseDetailsText ? 'px-1.5' : 'px-2'
+                                    )}
+                                    title="Inactivate Announcement (move to Inactive Announcements)"
+                                  >
+                                    <Archive className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                                    {!listCardCollapseDetailsText && (
+                                      <span className="text-xs font-black uppercase">Inactivate</span>
+                                    )}
+                                  </button>
+                                )
+                              ) : (
+                                onDeleteAnnouncementCard && (
+                                  <button
+                                    type="button"
+                                    onClick={e => onDeleteAnnouncementCard(s, e)}
+                                    className={cn(
+                                      'flex items-center gap-1 py-0.5 bg-white hover:bg-red-50 border border-red-200 hover:border-red-300 rounded text-red-600 transition-all shadow-sm cursor-pointer',
+                                      listCardCollapseDetailsText ? 'px-1.5' : 'px-2'
+                                    )}
+                                    title="Delete unused announcement (0 logged plays)"
+                                  >
+                                    <Trash2 className="w-2.5 h-2.5 text-red-500 shrink-0" />
+                                    {!listCardCollapseDetailsText && (
+                                      <span className="text-xs font-black uppercase">Delete</span>
+                                    )}
+                                  </button>
+                                )
+                              )}
                             </div>
                           </div>
 
@@ -697,6 +842,45 @@ export function AnnouncementsListView({
                             </div>
                           );
                         })()}
+
+                        {expandedDetailsByAnnId[s.id] && (
+                          <div
+                            onClick={e => e.stopPropagation()}
+                            className="mt-1.5 pt-1.5 border-t border-slate-200/70 text-[11px] font-bold text-slate-600 space-y-1 cursor-default"
+                          >
+                            {sortedGates.length > 0 && (
+                              <div className="space-y-0.5">
+                                {sortedGates.map((gate, gIdx) => {
+                                  const itemsCount = getGateMediaItems(gate).length;
+                                  const startStr = gate.startDate ? formatDatetime12(gate.startDate) : 'Open start';
+                                  const endStr =
+                                    gate.endDate && gate.endDate.trim()
+                                      ? formatDatetime12(gate.endDate)
+                                      : 'Open-ended';
+                                  return (
+                                    <div key={gate.id || gIdx} className="flex flex-wrap items-center gap-1.5">
+                                      <span className="font-black text-slate-700">Gate #{gIdx + 1}:</span>
+                                      <span>
+                                        {startStr} – {endStr}
+                                      </span>
+                                      <span className="text-slate-450">
+                                        ({itemsCount} {itemsCount === 1 ? 'file' : 'files'})
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-500">
+                              {s.metadata?.createdDate && (
+                                <span>Created: {formatMetadataDate(s.metadata.createdDate)}</span>
+                              )}
+                              {s.metadata?.lastModifiedDate && (
+                                <span>Modified: {formatMetadataDate(s.metadata.lastModifiedDate)}</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -704,6 +888,22 @@ export function AnnouncementsListView({
             </div>
           );
         })()}
+
+        {createNew && (
+          <div className="border-2 border-dashed border-slate-300 rounded-lg overflow-hidden bg-slate-100/70">
+            <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 bg-slate-200/60">
+              <button
+                type="button"
+                onClick={createNew}
+                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer shadow-xs select-none"
+                title="Add a new announcement"
+              >
+                <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                <span>ADD ANNOUNCEMENT</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Inactive Announcements Section */}
@@ -797,11 +997,23 @@ export function AnnouncementsListView({
             <>
               <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <div className="h-px bg-slate-300 flex-1 min-w-[24px]"></div>
-                <span className="text-xs font-black text-slate-600 uppercase tracking-widest leading-none">
-                  Inactive Announcements
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsInactiveSectionOpen(prev => !prev)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded hover:bg-slate-200/70 transition-colors cursor-pointer select-none"
+                  title={isInactiveSectionOpen ? 'Collapse Inactive Announcements' : 'Expand Inactive Announcements'}
+                >
+                  {isInactiveSectionOpen ? (
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                  )}
+                  <span className="text-xs font-black text-slate-600 uppercase tracking-widest leading-none">
+                    Inactive Announcements ({inactiveOnes.length})
+                  </span>
+                </button>
                 <div className="h-px bg-slate-300 flex-1 min-w-[24px]"></div>
-                {hasAnyInactiveDate && inactiveOnes.length > 0 && (
+                {isInactiveSectionOpen && hasAnyInactiveDate && inactiveOnes.length > 0 && (
                   <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 rounded p-0.5 shrink-0 select-none">
                     <span className="text-xs font-black text-slate-500 uppercase tracking-wider px-1.5">
                       Sort:
@@ -834,7 +1046,7 @@ export function AnnouncementsListView({
                 )}
               </div>
 
-              {inactiveOnes.length === 0 ? (
+              {!isInactiveSectionOpen ? null : inactiveOnes.length === 0 ? (
                 <div className="py-4 text-center">
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">No inactive items</p>
                 </div>
@@ -981,14 +1193,29 @@ export function AnnouncementsListView({
                             displayLabel: 'File not found.',
                           };
                         const isScript = selectedMedia.isScript;
+                        const targetGateObj = sortedGates[selectedMedia.gateIndex];
+                        const cardFocusTarget = {
+                          gateId: targetGateObj?.id,
+                          itemIndex: selectedMedia.itemIndex,
+                          mp3Url: selectedMedia.mp3Url,
+                        };
+                        const annAudit = calculateGatedTrackAudit(s.id, '', logs, { announcement: s });
+                        const annFirstUsed = annAudit.firstUsedAt
+                          ? formatDatetime12(formatToDatetimeLocal(annAudit.firstUsedAt))
+                          : '—';
+                        const annLastUsed = annAudit.lastUsedAt
+                          ? formatDatetime12(formatToDatetimeLocal(annAudit.lastUsedAt))
+                          : '—';
                         return (
                           <div
                             key={s.id}
-                            onClick={() => startEdit(s)}
+                            data-ann-card-id={s.id}
+                            onClick={() => startEdit(s, false, cardFocusTarget)}
                             className={cn(
                               'transition-all cursor-pointer group relative flex items-stretch min-h-[64px]',
                               idx % 2 === 0 ? 'bg-white' : 'bg-slate-205',
-                              isScript ? 'border-l-4 border-l-blue-500' : 'border-l-4 border-l-purple-500'
+                              isScript ? 'border-l-4 border-l-blue-500' : 'border-l-4 border-l-purple-500',
+                              highlightedCardId === s.id && 'ring-2 ring-blue-500 bg-blue-50/40'
                             )}
                           >
                             <div className="shrink-0 flex items-center justify-center p-1 bg-slate-100/55 border-r border-grid-inactive w-[64px] select-none">
@@ -1078,7 +1305,7 @@ export function AnnouncementsListView({
                                   <span
                                     className="text-slate-500 font-bold"
                                     title={`${getAnnouncementSummary(s)} • ${
-                                      isExpired ? 'EXPIRED' : 'SUSPENDED'
+                                      isExpired ? 'EXPIRED' : 'INACTIVATED'
                                     }${inactiveDateInfo.hasDate ? `: ${inactiveDateInfo.formatted12}` : ''}`}
                                   >
                                     {isExpired ? (
@@ -1087,8 +1314,8 @@ export function AnnouncementsListView({
                                         {inactiveDateInfo.hasDate ? `: ${inactiveDateInfo.formatted12}` : ''}
                                       </span>
                                     ) : (
-                                      <span>
-                                        SUSPENDED
+                                      <span className="text-amber-700 font-black">
+                                        INACTIVATED
                                         {inactiveDateInfo.hasDate ? `: ${inactiveDateInfo.formatted12}` : ''}
                                       </span>
                                     )}
@@ -1106,23 +1333,23 @@ export function AnnouncementsListView({
                                     <button
                                       onClick={e => {
                                         e.stopPropagation();
-                                        startEdit(s);
+                                        startEdit(s, false, cardFocusTarget);
                                       }}
                                       className={cn(
                                         'flex items-center gap-1 py-0.5 hover:bg-slate-100 hover:text-slate-600 bg-white border border-slate-300 rounded text-slate-400 transition-all shadow-sm cursor-pointer',
                                         listCardCollapseViewEditText ? 'px-1.5' : 'px-2'
                                       )}
-                                      title="View or Edit Announcement"
+                                      title="Edit Announcement"
                                     >
                                       <FileText className="w-2.5 h-2.5 shrink-0" />
                                       {!listCardCollapseViewEditText && (
-                                        <span className="text-xs font-black uppercase">View/Edit</span>
+                                        <span className="text-xs font-black uppercase">Edit</span>
                                       )}
                                     </button>
                                     <button
                                       onClick={e => duplicate(s, e)}
                                       className={cn(
-                                        'flex items-center gap-1 py-0.5 hover:bg-white hover:text-slate-600 bg-slate-100/50 border border-slate-300 rounded text-slate-400 transition-all shadow-sm cursor-pointer',
+                                        'flex items-center gap-1 py-0.5 hover:bg-slate-100 hover:text-slate-600 bg-white border border-slate-300 rounded text-slate-400 transition-all shadow-sm cursor-pointer',
                                         listCardCollapseCopyText ? 'px-1.5' : 'px-2'
                                       )}
                                       title="Copy Announcement"
@@ -1132,6 +1359,70 @@ export function AnnouncementsListView({
                                         <span className="text-xs font-black uppercase">Copy</span>
                                       )}
                                     </button>
+                                    <button
+                                      type="button"
+                                      onClick={e => toggleDetailsDrawer(s.id, e)}
+                                      className={cn(
+                                        'flex items-center gap-0.5 py-0.5 hover:bg-slate-100 hover:text-slate-600 bg-white border border-slate-300 rounded text-slate-400 transition-all shadow-sm cursor-pointer',
+                                        listCardCollapseDetailsText ? 'px-1' : 'px-1.5'
+                                      )}
+                                      title="Show or hide Gate and Modified details"
+                                    >
+                                      {expandedDetailsByAnnId[s.id] ? (
+                                        <ChevronDown className="w-3 h-3 shrink-0" />
+                                      ) : (
+                                        <ChevronRight className="w-3 h-3 shrink-0" />
+                                      )}
+                                      {!listCardCollapseDetailsText && (
+                                        <span className="text-xs font-black uppercase">Details</span>
+                                      )}
+                                    </button>
+                                    <span
+                                      onClick={e => e.stopPropagation()}
+                                      className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-300 select-none cursor-help"
+                                      title={formatSlotAssessmentTooltip(annAudit, {
+                                        scopeTitle: `${s.name} Assessment (History)`,
+                                        firstUsedFormatted: annFirstUsed,
+                                        lastUsedFormatted: annLastUsed,
+                                      })}
+                                    >
+                                      {!listCardCollapseDetailsText ? `History (${annAudit.totalPlays})` : `${annAudit.totalPlays}`}
+                                    </span>
+                                    {!s.enabled && !isExpired && onInactivateOrReactivate && (
+                                      <button
+                                        type="button"
+                                        onClick={e => {
+                                          onInactivateOrReactivate(s, true, e);
+                                          focusAnnouncementCard(s.id, false);
+                                        }}
+                                        className={cn(
+                                          'flex items-center gap-1 py-0.5 bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 rounded text-white transition-all shadow-sm cursor-pointer',
+                                          listCardCollapseDetailsText ? 'px-1.5' : 'px-2'
+                                        )}
+                                        title="Reactivate Announcement"
+                                      >
+                                        <CheckCircle className="w-2.5 h-2.5 shrink-0" />
+                                        {!listCardCollapseDetailsText && (
+                                          <span className="text-xs font-black uppercase">Reactivate</span>
+                                        )}
+                                      </button>
+                                    )}
+                                    {annAudit.totalPlays === 0 && onDeleteAnnouncementCard && (
+                                      <button
+                                        type="button"
+                                        onClick={e => onDeleteAnnouncementCard(s, e)}
+                                        className={cn(
+                                          'flex items-center gap-1 py-0.5 bg-white hover:bg-red-50 border border-red-200 hover:border-red-300 rounded text-red-600 transition-all shadow-sm cursor-pointer',
+                                          listCardCollapseDetailsText ? 'px-1.5' : 'px-2'
+                                        )}
+                                        title="Delete unused announcement (0 logged plays)"
+                                      >
+                                        <Trash2 className="w-2.5 h-2.5 text-red-500 shrink-0" />
+                                        {!listCardCollapseDetailsText && (
+                                          <span className="text-xs font-black uppercase">Delete</span>
+                                        )}
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
 
@@ -1447,6 +1738,60 @@ export function AnnouncementsListView({
                                   </div>
                                 );
                               })()}
+
+                              {expandedDetailsByAnnId[s.id] && (
+                                <div
+                                  onClick={e => e.stopPropagation()}
+                                  className="mt-1.5 pt-1.5 border-t border-slate-200/70 text-[11px] font-bold text-slate-600 space-y-1 cursor-default"
+                                >
+                                  {sortedGates.length > 0 && (
+                                    <div className="space-y-0.5">
+                                      {sortedGates.map((gate, gIdx) => {
+                                        const itemsCount = getGateMediaItems(gate).length;
+                                        const startStr = gate.startDate
+                                          ? formatDatetime12(gate.startDate)
+                                          : 'Open start';
+                                        const endStr =
+                                          gate.endDate && gate.endDate.trim()
+                                            ? formatDatetime12(gate.endDate)
+                                            : 'Open-ended';
+                                        return (
+                                          <div
+                                            key={gate.id || gIdx}
+                                            className="flex flex-wrap items-center gap-1.5"
+                                          >
+                                            <span className="font-black text-slate-700">
+                                              Gate #{gIdx + 1}:
+                                            </span>
+                                            <span>
+                                              {startStr} – {endStr}
+                                            </span>
+                                            <span className="text-slate-450">
+                                              ({itemsCount} {itemsCount === 1 ? 'file' : 'files'})
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-500">
+                                    {inactiveDateInfo.hasDate && (
+                                      <span>
+                                        {isExpired ? 'Expired' : 'Suspended'}:{' '}
+                                        {inactiveDateInfo.formatted12}
+                                      </span>
+                                    )}
+                                    {s.metadata?.createdDate && (
+                                      <span>Created: {formatMetadataDate(s.metadata.createdDate)}</span>
+                                    )}
+                                    {s.metadata?.lastModifiedDate && (
+                                      <span>
+                                        Modified: {formatMetadataDate(s.metadata.lastModifiedDate)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         );

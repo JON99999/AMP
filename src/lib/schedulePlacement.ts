@@ -19,6 +19,16 @@ import {
 } from './utils';
 import { TimeGatedMediaItem } from '../types';
 
+export interface EditablePlacementGate {
+  id: string;
+  gateNumber: number;
+  title: string;
+  startDate: string;
+  startTime: string;
+  endDate: string;
+  endTime: string;
+}
+
 export interface SchedulePresetOption {
   id: string;
   label: string;
@@ -33,11 +43,14 @@ export interface SchedulePresetOption {
   endTime: string;
   suggestedStartDate?: string;
   suggestedStartTime?: string;
+  defaultPreviousGateEndDate?: string;
+  defaultPreviousGateEndTime?: string;
   transitionMp3Id?: string;
   transitionMp3Index?: number;
   transitionMp3Title?: string;
   referenceStartDate?: string;
   isLeadingGap?: boolean;
+  isLastItemUnboundedFuture?: boolean;
 }
 
 export interface AnnouncementPlacementModalState {
@@ -62,6 +75,7 @@ export interface AnnouncementPlacementModalState {
   transitionMp3Title?: string;
   previousGateEndDate?: string;
   previousGateEndTime?: string;
+  activeGates?: EditablePlacementGate[];
 }
 
 export function computeSchedulePlacementOptions(
@@ -69,7 +83,12 @@ export function computeSchedulePlacementOptions(
   profileStartDate?: string,
   profileEndDate?: string,
   nowIso: string = getCurrentDatetimeLocal()
-): { presets: SchedulePresetOption[]; sorted: TimeGatedMp3[]; hasLeadingGap: boolean } {
+): {
+  presets: SchedulePresetOption[];
+  sorted: TimeGatedMp3[];
+  activeGates: EditablePlacementGate[];
+  hasLeadingGap: boolean;
+} {
   const sorted = sortMp3sByStartDate(current);
   const presets: SchedulePresetOption[] = [];
 
@@ -92,6 +111,21 @@ export function computeSchedulePlacementOptions(
   const activeSorted = sorted.filter(
     m => !isGateExpiredOrInactivated(m, nowIso)
   );
+
+  const activeGates: EditablePlacementGate[] = activeSorted.map(m => {
+    const fullIdx = sorted.findIndex(s => s.id === m.id) + 1;
+    const sFormatted = m.startDate ? formatToDatetimeLocal(m.startDate) : '';
+    const eFormatted = m.endDate && m.endDate.trim() ? formatToDatetimeLocal(m.endDate) : '';
+    return {
+      id: m.id,
+      gateNumber: fullIdx,
+      title: getItemTitle(m),
+      startDate: sFormatted ? getDatePart(sFormatted) : '',
+      startTime: sFormatted ? (getTimePart(sFormatted) || '00:00') : '00:00',
+      endDate: eFormatted ? getDatePart(eFormatted) : '',
+      endTime: eFormatted ? (getTimePart(eFormatted) || '23:59') : '',
+    };
+  });
 
   // 1. Check for leading gap from effective schedule start to first active/upcoming gate's startDate
   const firstItem = activeSorted[0];
@@ -127,6 +161,7 @@ export function computeSchedulePlacementOptions(
       endDate: fEndDate,
       endTime: fEndTime,
       isLeadingGap: isLeadFromNow,
+      isLastItemUnboundedFuture: false,
     });
   }
 
@@ -138,13 +173,15 @@ export function computeSchedulePlacementOptions(
       const itemEnd = formatToDatetimeLocal(item.endDate);
       const nextStart = formatToDatetimeLocal(nextItem.startDate);
       if (itemEnd < nextStart && !isContiguousMidnightTransition(itemEnd, nextStart)) {
+        const idxA = sorted.findIndex(s => s.id === item.id) + 1;
+        const idxB = sorted.findIndex(s => s.id === nextItem.id) + 1;
         const titleA = getItemTitle(item);
         const titleB = getItemTitle(nextItem);
         const autoFillStart = getNextGapAutoFillStart(itemEnd);
         const autoFillEnd = computeBackfilledEndTime(nextStart);
         presets.push({
           id: `gap-${i}`,
-          label: `Between #${i + 1} ${titleA} and #${i + 2} ${titleB}`,
+          label: `Between #${idxA} ${titleA} and #${idxB} ${titleB}`,
           displayStartDate: autoFillStart.startDate,
           displayStartTime: autoFillStart.startTime,
           displayEndDate: getDatePart(autoFillEnd),
@@ -153,6 +190,7 @@ export function computeSchedulePlacementOptions(
           startTime: autoFillStart.startTime,
           endDate: getDatePart(autoFillEnd),
           endTime: getTimePart(autoFillEnd) || '00:00',
+          isLastItemUnboundedFuture: false,
         });
       }
     }
@@ -182,6 +220,7 @@ export function computeSchedulePlacementOptions(
         startTime: autoFillStart.startTime,
         endDate: validProfEnd ? getDatePart(validProfEnd) : '',
         endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
+        isLastItemUnboundedFuture: !validProfEnd,
       });
     } else {
       // Open-ended last item -> Prompt user for when Gate #lastIdx should end
@@ -201,8 +240,11 @@ export function computeSchedulePlacementOptions(
           suggestedDate = `${baseDate.getFullYear()}-${pad(baseDate.getMonth() + 1)}-${pad(baseDate.getDate())}`;
         }
       }
-      const suggestedTime = lastSetTime;
+      const suggestedTime = '00:00';
       const suggestedIso = `${suggestedDate}T${suggestedTime}`;
+      const defaultPrevEndIso = computeBackfilledEndTime(suggestedIso);
+      const defaultPrevEndDate = getDatePart(defaultPrevEndIso);
+      const defaultPrevEndTime = getTimePart(defaultPrevEndIso) || '23:59';
       const validProfEnd = profEnd && profEnd >= suggestedIso ? profEnd : '';
 
       presets.push({
@@ -210,16 +252,19 @@ export function computeSchedulePlacementOptions(
         label: `After #${lastIdx} ${lastTitle} (Open-Ended)`,
         displayStartDate: lastSetDate,
         displayStartTime: lastSetTime,
-        startDate: '',
-        startTime: '',
+        startDate: suggestedDate,
+        startTime: suggestedTime,
         suggestedStartDate: suggestedDate,
         suggestedStartTime: suggestedTime,
+        defaultPreviousGateEndDate: defaultPrevEndDate,
+        defaultPreviousGateEndTime: defaultPrevEndTime,
         endDate: validProfEnd ? getDatePart(validProfEnd) : '',
         endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
         transitionMp3Id: lastItem.id,
         transitionMp3Index: lastIdx,
         transitionMp3Title: lastTitle,
         referenceStartDate: lastFormatted || `${nowDate}T${nowTime}`,
+        isLastItemUnboundedFuture: !validProfEnd,
       });
     }
   } else if (sorted.length > 0) {
@@ -237,6 +282,7 @@ export function computeSchedulePlacementOptions(
       endDate: validProfEnd ? getDatePart(validProfEnd) : '',
       endTime: validProfEnd ? (getTimePart(validProfEnd) || '23:59') : '',
       isLeadingGap: isLeadFromNow,
+      isLastItemUnboundedFuture: !validProfEnd,
     });
   }
 
@@ -244,13 +290,14 @@ export function computeSchedulePlacementOptions(
   presets.push({
     id: 'custom',
     label: 'Enter My Own',
-    startDate: '',
-    startTime: '',
+    startDate: leadStartDate,
+    startTime: leadStartTime,
     endDate: '',
     endTime: '',
+    isLastItemUnboundedFuture: true,
   });
 
-  return { presets, sorted, hasLeadingGap };
+  return { presets, sorted, activeGates, hasLeadingGap };
 }
 
 export function cleanNameShort(val: string): string {

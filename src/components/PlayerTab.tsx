@@ -2962,7 +2962,7 @@ export default function PlayerTab({
         timestamp: playedAt,
         announcementTime: slotISO,
         mp3Name: targetMp3Url,
-        announcementName: s.name,
+        announcementName: formatRotatedAnnouncementName(s.name, activeMp3),
         announcementId: s.id,
         status: 'played',
         playMode: playMode,
@@ -3006,7 +3006,7 @@ export default function PlayerTab({
         timestamp: failedAt,
         announcementTime: slotISO,
         mp3Name: targetMp3Url,
-        announcementName: s.name,
+        announcementName: formatRotatedAnnouncementName(s.name, activeMp3),
         announcementId: s.id,
         status: 'failed',
         playMode: playMode,
@@ -3031,13 +3031,14 @@ export default function PlayerTab({
       const slotISO = stationSlotDateToUtcIso(slot);
       const activeShow = getShowForSlot(slot);
       const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
+      const activeMp3 = getActiveMp3ForSlot(s, slot);
       
       if (!skipLogging) {
         const logEntry: LogEntry = {
           timestamp: playedAt,
           announcementTime: slotISO,
           mp3Name: backupUrl,
-          announcementName: s.name,
+          announcementName: formatRotatedAnnouncementName(s.name, activeMp3),
           announcementId: s.id,
           status: 'backup play',
           playMode: playMode,
@@ -3396,11 +3397,16 @@ export default function PlayerTab({
         const activeShow = exportActiveShow || (shows && shows.find(show => isTimeInShow(show, dayName, hour, minute)));
         const showStart = activeShow ? getActualShowStart(activeShow, slot) : undefined;
 
+        const matchingAnn = announcements.find(a => a.id === item.announcementId);
+        const activeMp3ForExportLog = matchingAnn ? getActiveMp3ForSlot(matchingAnn, slot) : undefined;
+
         await onLog({
           timestamp: nowISO,
           announcementTime: item.slotISO,
           mp3Name: item.fileName,
-          announcementName: item.announcementName,
+          announcementName: matchingAnn
+            ? formatRotatedAnnouncementName(matchingAnn.name, activeMp3ForExportLog)
+            : item.announcementName,
           announcementId: item.announcementId,
           status: 'played',
           playMode: 'Export',

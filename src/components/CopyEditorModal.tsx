@@ -26,6 +26,7 @@ import {
   hasInlineFormattingMarkers,
   serializeTxtScriptContent,
   calculateLiveReadWordStats,
+  isParseableReadTimeFormat,
   parseReadTimeToSeconds,
   normalizeReadTimeDisplay,
   markdownTxtToEditableHtml,
@@ -39,7 +40,9 @@ import {
   getStorageApiHeaders,
   registerSavedAnnouncementFileInCache,
   availableFilesCache,
-  getPlayableUrl
+  getPlayableUrl,
+  cacheMP3,
+  getAccessToken
 } from '../lib/driveService';
 import { Announcement } from '../types';
 import { MediaPickerModal, MediaPickerFile } from './MediaPickerModal';
@@ -54,6 +57,7 @@ export interface CopyEditorModalProps {
   sourceFileToCopy?: string;
   initialReadTime?: string;
   initialIsAutoReadTime?: boolean;
+  initialBackupMp3Url?: string;
   suggestedBaseName?: string;
   isDriveActive: boolean;
   existingFileNames: string[];
@@ -80,7 +84,30 @@ export interface CopyEditorModalProps {
 const normalizeStem = (raw: string) => {
   const base = raw.trim().split(/[/\\]/).pop() || '';
   const dotIdx = base.lastIndexOf('.');
-  return dotIdx > 0 ? base.slice(0, dotIdx) : base;
+  const stem = dotIdx > 0 ? base.slice(0, dotIdx) : base;
+  return stem.replace(/\s{2,}/g, ' ').trim();
+};
+
+const generateIncrementedCopyStem = (
+  rawStem: string,
+  extWithDot: string,
+  existingNames: string[]
+): string => {
+  const collapsed = rawStem
+    .replace(/^(?:Copy of\s+)+/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const baseStem = collapsed.replace(/\s*\(\d+\)$/, '').trim() || collapsed;
+  const lowerSet = new Set(
+    existingNames.map(n => n.replace(/\s{2,}/g, ' ').trim().toLowerCase())
+  );
+  let copyNum = 2;
+  let candidateStem = `${baseStem} (${copyNum})`;
+  while (lowerSet.has(`${candidateStem}${extWithDot}`.toLowerCase())) {
+    copyNum += 1;
+    candidateStem = `${baseStem} (${copyNum})`;
+  }
+  return candidateStem;
 };
 
 function fragmentToPlainTextWithNewlines(node: Node): string {
@@ -121,6 +148,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   sourceFileToCopy,
   initialReadTime,
   initialIsAutoReadTime,
+  initialBackupMp3Url,
   suggestedBaseName,
   isDriveActive,
   existingFileNames,
@@ -145,8 +173,6 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
   const [fileNameStem, setFileNameStem] = useState('');
   const [initialSuggestedStem, setInitialSuggestedStem] = useState('');
-  const [hasEditedFileName, setHasEditedFileName] = useState(false);
-  const [confirmDefaultNamePrompt, setConfirmDefaultNamePrompt] = useState(false);
   const [bodyText, setBodyText] = useState('');
   const [plainWordStats, setPlainWordStats] = useState(() =>
     calculateLiveReadWordStats('')
@@ -161,9 +187,11 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   const [overwritePromptName, setOverwritePromptName] = useState<string | null>(null);
   const [autoApplyReadTime, setAutoApplyReadTime] = useState(true);
   const [manualReadTime, setManualReadTime] = useState('');
+  const [readTimeWarning, setReadTimeWarning] = useState<string | null>(null);
   const [nonTextPreviewUrl, setNonTextPreviewUrl] = useState('');
   const [adoptNewSplitFile, setAdoptNewSplitFile] = useState<boolean>(true);
   const fileNameInputRef = useRef<HTMLInputElement | null>(null);
+  const readTimeInputRef = useRef<HTMLInputElement | null>(null);
 
   const currentSessionKey = isOpen
     ? `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseName || ''}`
@@ -230,6 +258,12 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
   const initialIsAutoReadTimeRef = useRef<boolean | undefined>(initialIsAutoReadTime);
   initialIsAutoReadTimeRef.current = initialIsAutoReadTime;
+  const initialBackupMp3UrlRef = useRef<string | undefined>(initialBackupMp3Url);
+  initialBackupMp3UrlRef.current = initialBackupMp3Url;
+  const announcementsRef = useRef<Announcement[]>(announcements);
+  announcementsRef.current = announcements;
+  const currentEditingAnnouncementRef = useRef<Partial<Announcement> | null>(currentEditingAnnouncement);
+  currentEditingAnnouncementRef.current = currentEditingAnnouncement;
 
   const populateRichEditorDom = useCallback(
     (rawMarkdownText: string, initReadTimeClean?: string, sessionKeyToCommit?: string | null) => {
@@ -346,7 +380,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     const activeSessionKey = `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseNameRef.current || ''}`;
     setErrorMsg(null);
     setOverwritePromptName(null);
-    setConfirmDefaultNamePrompt(false);
+    setReadTimeWarning(null);
     setNonTextPreviewUrl('');
     setShowMarkdown(false);
     setCopiedMarkdown(false);
@@ -366,33 +400,92 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
     const fileToLoad = sourceFileToCopy || initialFileName;
 
+    // Resolve any explicitly attached or base-stem paired backup audio for fileToLoad
+    const findExistingAudioMatch = (candidateName?: string | null): string | null => {
+      if (!candidateName || !candidateName.trim()) return null;
+      const cleanCandidate = getFilenameFromUrlOrPath(candidateName).toLowerCase();
+      const foundInList = existingFileNamesRef.current.find(
+        f => isAudioFile(f) && f.toLowerCase() === cleanCandidate
+      );
+      if (foundInList) return foundInList;
+      const cached = availableFilesCache.get(candidateName);
+      if (cached && isAudioFile(candidateName)) return getFilenameFromUrlOrPath(candidateName);
+      return null;
+    };
+
+    const resolveFallbackBackupForScript = (scriptName: string): string | null => {
+      // 1. Explicit initialBackupMp3Url prop
+      const fromProp = findExistingAudioMatch(initialBackupMp3UrlRef.current);
+      if (fromProp) return fromProp;
+
+      // 2. Check currentEditingAnnouncement or announcements for a gate media item using scriptName
+      const cleanScriptLower = getFilenameFromUrlOrPath(scriptName).toLowerCase();
+      const allAnns: Array<Partial<Announcement>> = [];
+      if (currentEditingAnnouncementRef.current) allAnns.push(currentEditingAnnouncementRef.current);
+      if (Array.isArray(announcementsRef.current)) allAnns.push(...announcementsRef.current);
+      for (const ann of allAnns) {
+        for (const gate of ann?.timeGatedMp3s || []) {
+          for (const mi of getGateMediaItems(gate)) {
+            if (
+              getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === cleanScriptLower &&
+              mi.backupMp3Url
+            ) {
+              const matched = findExistingAudioMatch(mi.backupMp3Url);
+              if (matched) return matched;
+            }
+          }
+        }
+      }
+
+      // 3. Check if scriptName is a "Copy of X (2)" variant whose base stem X has an audio file
+      const rawStem = normalizeStem(scriptName);
+      const strippedStem = rawStem
+        .replace(/^(?:Copy of\s+)+/i, '')
+        .replace(/\s*\(\d+\)$/, '')
+        .trim()
+        .toLowerCase();
+      if (strippedStem && strippedStem !== rawStem.toLowerCase()) {
+        const baseMatch = existingFileNamesRef.current.find(
+          f => isAudioFile(f) && normalizeStem(f).toLowerCase() === strippedStem
+        );
+        if (baseMatch) return baseMatch;
+      }
+      return null;
+    };
+
     if (sourceFileToCopy && sourceFileToCopy.trim()) {
       const sourceStemLower = normalizeStem(sourceFileToCopy).toLowerCase();
-      const matchedAudio = existingFileNamesRef.current.find(
-        f => isAudioFile(f) && normalizeStem(f).toLowerCase() === sourceStemLower
-      );
+      const matchedAudio =
+        existingFileNamesRef.current.find(
+          f => isAudioFile(f) && normalizeStem(f).toLowerCase() === sourceStemLower
+        ) || resolveFallbackBackupForScript(sourceFileToCopy);
       setPendingDuplicateSourceAudio(matchedAudio || null);
+    } else if (initialFileName && initialFileName.trim()) {
+      setPendingDuplicateSourceAudio(null);
+      const exactStemLower = normalizeStem(initialFileName).toLowerCase();
+      const hasExactStemAudio = existingFileNamesRef.current.some(
+        f => isAudioFile(f) && normalizeStem(f).toLowerCase() === exactStemLower
+      );
+      if (!hasExactStemAudio) {
+        const fallbackBackup = resolveFallbackBackupForScript(initialFileName);
+        if (fallbackBackup) {
+          setCustomSelectedBackupAudio(fallbackBackup);
+        }
+      }
     } else {
       setPendingDuplicateSourceAudio(null);
     }
 
     if (fileToLoad && fileToLoad.trim()) {
       setInitialSuggestedStem('');
-      setHasEditedFileName(true);
       const cleanStem = normalizeStem(fileToLoad);
       if (sourceFileToCopy) {
         const copyExt = isNonTextCopyMode ? sourceExt : '.txt';
-        const lowerSet = new Set(existingFileNamesRef.current.map(n => n.toLowerCase()));
-        const baseCopyPrefix = cleanStem.replace(/\s*\(\d+\)$/, '');
-        const firstCandidate = /^Copy of\s+/i.test(baseCopyPrefix)
-          ? baseCopyPrefix.replace(/^Copy of\s+/i, 'Copy of ')
-          : `Copy of ${cleanStem}`;
-        let nextStem = firstCandidate;
-        let copyNum = 2;
-        while (lowerSet.has(`${nextStem}${copyExt}`.toLowerCase())) {
-          nextStem = `${firstCandidate} (${copyNum})`;
-          copyNum += 1;
-        }
+        const nextStem = generateIncrementedCopyStem(
+          cleanStem,
+          copyExt,
+          existingFileNamesRef.current
+        );
         setFileNameStem(nextStem);
       } else {
         setFileNameStem(cleanStem);
@@ -472,11 +565,10 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     } else {
       const currentSuggested = suggestedBaseNameRef.current;
       const defaultStem = currentSuggested
-        ? normalizeStem(currentSuggested).replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim()
+        ? normalizeStem(currentSuggested).replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/\s{2,}/g, ' ').trim()
         : '';
       setFileNameStem(defaultStem);
       setInitialSuggestedStem(defaultStem);
-      setHasEditedFileName(false);
       populateRichEditorDom('', '', activeSessionKey);
       setManualReadTime('0m00s');
       setAutoApplyReadTime(true);
@@ -498,9 +590,12 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   const stats = plainWordStats;
 
   const targetExtension = isNonTextCopyMode ? sourceExt : '.txt';
-  const sanitizedStem = fileNameStem.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim();
+  const sanitizedStem = fileNameStem
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
   const escapedExtRegex = new RegExp(`\\${targetExtension}$`, 'i');
-  const cleanStemWithoutExt = sanitizedStem.replace(escapedExtRegex, '');
+  const cleanStemWithoutExt = sanitizedStem.replace(escapedExtRegex, '').trim();
   const finalFileName = cleanStemWithoutExt
     ? `${cleanStemWithoutExt}${targetExtension}`
     : '';
@@ -656,6 +751,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           name: saved.name,
           path: saved.path,
           size: saved.size,
+          ...(saved.duration ? { duration: saved.duration } : {}),
           mtimeMs: saved.mtimeMs,
           modifiedTime: saved.modifiedTime
         });
@@ -665,13 +761,8 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         const existingName = err.name || resolvedTargetName || file.name;
         const collExt = getFileExtension(existingName) || '.mp3';
         const stem = existingName.slice(0, -collExt.length);
-        const lowerSet = new Set(existingFileNames.map(n => n.toLowerCase()));
-        let copyCandidate = `Copy of ${stem}${collExt}`;
-        let counter = 2;
-        while (lowerSet.has(copyCandidate.toLowerCase())) {
-          copyCandidate = `Copy of ${stem} (${counter})${collExt}`;
-          counter += 1;
-        }
+        const copyStem = generateIncrementedCopyStem(stem, collExt, existingFileNames);
+        const copyCandidate = `${copyStem}${collExt}`;
         setPendingAudioUploadCollision({
           file,
           existingName,
@@ -705,13 +796,8 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     if (existingMatch && isAudioFileUsedElsewhere(existingMatch)) {
       const collExt = getFileExtension(existingMatch) || '.mp3';
       const stem = existingMatch.slice(0, -collExt.length);
-      const lowerSet = new Set(existingFileNames.map(n => n.toLowerCase()));
-      let copyCandidate = `Copy of ${stem}${collExt}`;
-      let counter = 2;
-      while (lowerSet.has(copyCandidate.toLowerCase())) {
-        copyCandidate = `Copy of ${stem} (${counter})${collExt}`;
-        counter += 1;
-      }
+      const copyStem = generateIncrementedCopyStem(stem, collExt, existingFileNames);
+      const copyCandidate = `${copyStem}${collExt}`;
       setPendingAudioUploadCollision({
         file: selected,
         existingName: existingMatch,
@@ -823,7 +909,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     }
   };
 
-  const handleToggleAudioPreview = (audioFileName: string) => {
+  const handleToggleAudioPreview = async (audioFileName: string) => {
     if (!audioFileName) return;
     if (previewingAudioFile === audioFileName && audioPreviewRef.current) {
       stopAudioPreview();
@@ -831,9 +917,17 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     }
     stopAudioPreview();
     const cleanName = audioFileName.split(/[/\\]/).pop() || audioFileName;
-    const playable =
+    let playable =
       getPlayableUrl(audioFileName) ||
       `/api/media/stream?path=${encodeURIComponent(cleanName)}`;
+    if (playable.includes('googleapis.com') && !playable.startsWith('blob:')) {
+      try {
+        const cachedBlobUrl = await cacheMP3(audioFileName, getAccessToken() || '');
+        if (cachedBlobUrl) {
+          playable = cachedBlobUrl;
+        }
+      } catch (_) {}
+    }
     const audio = new Audio(playable);
     audioPreviewRef.current = audio;
     audio
@@ -1134,9 +1228,9 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             return audioData.name;
           }
         }
-        return targetAudioFileName;
+        return effectivePendingDuplicateSourceAudio;
       } catch (_) {
-        return undefined;
+        return effectivePendingDuplicateSourceAudio;
       }
     }
     if (matchedExistingAudioForStem) {
@@ -1210,14 +1304,10 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     }
   };
 
-  const isUneditedDefaultName =
-    !isEditingExisting &&
-    !sourceFileToCopy &&
-    Boolean(initialSuggestedStem) &&
-    !hasEditedFileName &&
-    cleanStemWithoutExt === initialSuggestedStem;
+  const READ_TIME_PARSE_WARNING =
+    'Unrecognized Approx. Read Time format. Use 0m20s, 0:20, or seconds (e.g. 20).';
 
-  const handlePrimarySave = (bypassDefaultNameConfirm = false) => {
+  const handlePrimarySave = () => {
     if (!finalFileName) {
       setErrorMsg(`Please enter a filename for the ${targetExtension} file.`);
       return;
@@ -1237,11 +1327,29 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       setErrorMsg('Please enter live read copy text before saving.');
       return;
     }
-    if (isUneditedDefaultName && !bypassDefaultNameConfirm && !confirmDefaultNamePrompt) {
-      setConfirmDefaultNamePrompt(true);
-      return;
+
+    if (!autoApplyReadTime) {
+      const trimmedManual = manualReadTime.trim();
+      if (
+        !trimmedManual ||
+        !isParseableReadTimeFormat(trimmedManual) ||
+        parseReadTimeToSeconds(trimmedManual) <= 0
+      ) {
+        setReadTimeWarning(READ_TIME_PARSE_WARNING);
+        setErrorMsg(READ_TIME_PARSE_WARNING);
+        if (readTimeInputRef.current) {
+          readTimeInputRef.current.focus();
+          readTimeInputRef.current.select();
+        }
+        return;
+      }
+      const coercedManual = normalizeReadTimeDisplay(trimmedManual);
+      if (coercedManual !== manualReadTime) {
+        setManualReadTime(coercedManual);
+      }
+      setReadTimeWarning(null);
     }
-    setConfirmDefaultNamePrompt(false);
+
     if (isSameAsInitial) {
       executeSaveText(finalFileName, latestBody, true);
       return;
@@ -1254,28 +1362,12 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   };
 
   const handleSaveAsNewCopy = () => {
-    const lowerSet = new Set(existingFileNames.map(n => n.toLowerCase()));
-    if (/^Copy of\s+/i.test(cleanStemWithoutExt)) {
-      const baseCopy = cleanStemWithoutExt.replace(/\s*\(\d+\)$/, '');
-      let copyNum = 2;
-      let candidateName = `${baseCopy} (${copyNum})${targetExtension}`;
-      while (lowerSet.has(candidateName.toLowerCase())) {
-        copyNum += 1;
-        candidateName = `${baseCopy} (${copyNum})${targetExtension}`;
-      }
-      setFileNameStem(candidateName.replace(escapedExtRegex, ''));
-    } else {
-      const baseClean = cleanStemWithoutExt.replace(/-copy(-\d+)?$/i, '');
-      let candidateNum = 2;
-      let candidateName = `${baseClean}-v${candidateNum}${targetExtension}`;
-      while (lowerSet.has(candidateName.toLowerCase())) {
-        candidateNum += 1;
-        candidateName = `${baseClean}-v${candidateNum}${targetExtension}`;
-      }
-      setFileNameStem(candidateName.replace(escapedExtRegex, ''));
-    }
-    setHasEditedFileName(true);
-    setConfirmDefaultNamePrompt(false);
+    const nextStem = generateIncrementedCopyStem(
+      cleanStemWithoutExt,
+      targetExtension,
+      existingFileNames
+    );
+    setFileNameStem(nextStem);
     setAdoptNewSplitFile(true);
     setOverwritePromptName(null);
   };
@@ -1431,36 +1523,24 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           )}
 
           {/* Filename & Read Time Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
             <div className={cn(isNonTextCopyMode ? "sm:col-span-12" : "sm:col-span-7", "space-y-1")}>
               <div className="flex items-center justify-between gap-2">
                 <label className="text-xs font-black text-slate-600 uppercase tracking-wider block">
                   Filename ({targetExtension})
                 </label>
-                {isUneditedDefaultName && (
-                  <span
-                    className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded"
-                    title="Pre-filled from announcement name — edit filename or confirm on save"
-                  >
-                    Default name
-                  </span>
-                )}
               </div>
-              <div
-                className={cn(
-                  "flex items-center border rounded-lg bg-white overflow-hidden focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500",
-                  isUneditedDefaultName ? "border-amber-400" : "border-slate-300"
-                )}
-              >
+              <div className="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
                 <input
                   ref={fileNameInputRef}
                   type="text"
                   value={fileNameStem}
                   onChange={e => {
                     setFileNameStem(e.target.value);
-                    setHasEditedFileName(true);
-                    setConfirmDefaultNamePrompt(false);
                     setOverwritePromptName(null);
+                  }}
+                  onBlur={() => {
+                    setFileNameStem(prev => prev.replace(/\s{2,}/g, ' ').trim());
                   }}
                   placeholder="e.g. underwriting-community-garden"
                   className="flex-1 px-3 py-1.5 text-xs font-bold text-slate-800 outline-none bg-transparent"
@@ -1484,25 +1564,55 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <div className="w-24 shrink-0 flex items-center gap-1.5 border border-slate-300 rounded-lg bg-white px-2 py-1.5 focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
-                    <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <div
+                    className={cn(
+                      "w-24 shrink-0 flex items-center gap-1.5 border rounded-lg bg-white px-2 py-1.5 focus-within:ring-1",
+                      readTimeWarning && !autoApplyReadTime
+                        ? "border-amber-500 bg-amber-50/40 focus-within:ring-amber-500 focus-within:border-amber-500"
+                        : "border-slate-300 focus-within:ring-blue-500 focus-within:border-blue-500"
+                    )}
+                  >
+                    <Clock
+                      className={cn(
+                        "w-3.5 h-3.5 shrink-0",
+                        readTimeWarning && !autoApplyReadTime ? "text-amber-600" : "text-slate-400"
+                      )}
+                    />
                     <input
+                      ref={readTimeInputRef}
                       type="text"
                       value={autoApplyReadTime ? stats.formattedReadTime : manualReadTime}
                       onChange={e => {
                         const val = e.target.value;
                         setManualReadTime(val);
+                        setReadTimeWarning(null);
+                        if (errorMsg === READ_TIME_PARSE_WARNING) {
+                          setErrorMsg(null);
+                        }
                         if (autoApplyReadTime) {
                           setAutoApplyReadTime(false);
                         }
                       }}
                       onBlur={() => {
-                        if (!autoApplyReadTime && manualReadTime.trim()) {
-                          setManualReadTime(normalizeReadTimeDisplay(manualReadTime));
+                        if (!autoApplyReadTime) {
+                          const trimmed = manualReadTime.trim();
+                          if (
+                            trimmed &&
+                            isParseableReadTimeFormat(trimmed) &&
+                            parseReadTimeToSeconds(trimmed) > 0
+                          ) {
+                            setManualReadTime(normalizeReadTimeDisplay(trimmed));
+                            setReadTimeWarning(null);
+                            if (errorMsg === READ_TIME_PARSE_WARNING) {
+                              setErrorMsg(null);
+                            }
+                          } else {
+                            setReadTimeWarning(READ_TIME_PARSE_WARNING);
+                          }
                         }
                       }}
                       placeholder="0m30s"
-                      title="Enter as 0m30s, 0:30, or 30s"
+                      title="Enter as 0m30s, 0:30, 30s, or seconds (e.g. 20)"
                       className="w-full text-xs font-mono font-bold outline-none bg-transparent text-slate-900"
                     />
                   </div>
@@ -1517,6 +1627,10 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                         const checked = e.target.checked;
                         setAutoApplyReadTime(checked);
                         setManualReadTime(stats.formattedReadTime);
+                        setReadTimeWarning(null);
+                        if (errorMsg === READ_TIME_PARSE_WARNING) {
+                          setErrorMsg(null);
+                        }
                       }}
                       className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                       title={`${getLiveReadWpm()} wpm`}
@@ -1530,6 +1644,12 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                     Est: ~{stats.formattedReadTime}
                   </span>
                 </div>
+                {readTimeWarning && !autoApplyReadTime && (
+                  <div className="flex items-start gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1 leading-tight">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                    <span>{readTimeWarning}</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2065,79 +2185,6 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             </>
           )}
 
-          {/* Default Filename Unedited Confirmation Prompt (#89) */}
-          {confirmDefaultNamePrompt && (
-            <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
-                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>
-                  Filename is still set to the default announcement name &quot;{finalFileName}&quot;. Keep this default filename or edit it first?
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConfirmDefaultNamePrompt(false);
-                    if (fileNameInputRef.current) {
-                      fileNameInputRef.current.focus();
-                      fileNameInputRef.current.select();
-                    }
-                  }}
-                  className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase cursor-pointer"
-                >
-                  Edit Filename
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setHasEditedFileName(true);
-                    setConfirmDefaultNamePrompt(false);
-                    handlePrimarySave(true);
-                  }}
-                  className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase cursor-pointer"
-                >
-                  Keep Default &amp; Save
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Overwrite Confirmation Prompt */}
-          {overwritePromptName && (
-            <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
-                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>
-                  &quot;{overwritePromptName}&quot; already exists in Media Announcements. Overwrite it or save under a new name?
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleSaveAsNewCopy}
-                  className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase cursor-pointer"
-                >
-                  Use New Name
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isNonTextCopyMode) {
-                      executeSaveNonTextCopy(overwritePromptName, true);
-                    } else {
-                      const latest = syncEditorToMarkdownState();
-                      executeSaveText(overwritePromptName, latest, true);
-                    }
-                  }}
-                  className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase cursor-pointer"
-                >
-                  Overwrite Existing
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Error Banner */}
           {errorMsg && (
             <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-xs font-bold text-red-700">
@@ -2164,7 +2211,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={isSaving}
+              disabled={isSaving || isUploadingBackupAudio}
               onClick={onClose}
               className="px-3.5 py-1.5 border border-slate-200 rounded text-xs font-black text-slate-600 hover:bg-slate-100 uppercase tracking-wider bg-white cursor-pointer disabled:opacity-50"
             >
@@ -2172,8 +2219,8 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             </button>
             <button
               type="button"
-              disabled={isSaving || loadingContent || (!isSessionLoaded && !isNonTextCopyMode) || !finalFileName}
-              onClick={() => handlePrimarySave(false)}
+              disabled={isSaving || isUploadingBackupAudio || loadingContent || (!isSessionLoaded && !isNonTextCopyMode) || !finalFileName}
+              onClick={() => handlePrimarySave()}
               className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
             >
               {isSaving ? (
@@ -2194,6 +2241,128 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Centered Pop-Up Modal for Filename Collision / Overwrite Prompt (#102) */}
+      {overwritePromptName && (
+        <div
+          className="fixed inset-0 z-[185] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          onClick={() => setOverwritePromptName(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
+                  File Already Exists
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOverwritePromptName(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+                title="Close"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 text-xs font-bold text-slate-800 leading-relaxed">
+              &quot;{overwritePromptName}&quot; already exists in Media Announcements. Overwrite it or save under a new name?
+            </div>
+
+            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setOverwritePromptName(null);
+                  requestAnimationFrame(() => {
+                    if (fileNameInputRef.current) {
+                      fileNameInputRef.current.focus();
+                      fileNameInputRef.current.select();
+                    }
+                  });
+                }}
+                className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase cursor-pointer"
+              >
+                Edit Filename
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = overwritePromptName;
+                  setOverwritePromptName(null);
+                  if (isNonTextCopyMode) {
+                    executeSaveNonTextCopy(target, true);
+                  } else {
+                    const latest = syncEditorToMarkdownState();
+                    executeSaveText(target, latest, true);
+                  }
+                }}
+                className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+              >
+                Overwrite Existing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocking Upload Status / Error Overlay Modal */}
+      {(isUploadingBackupAudio || (errorMsg && errorMsg.toLowerCase().includes('upload'))) && (
+        <div
+          className="fixed inset-0 z-[190] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm border border-slate-200 overflow-hidden p-4 space-y-3">
+            {isUploadingBackupAudio ? (
+              <>
+                <div className="flex items-center gap-2.5">
+                  <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                      Uploading Audio File...
+                    </h4>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">
+                      Please wait while the backup audio upload completes.
+                    </p>
+                  </div>
+                </div>
+                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-600 rounded-full w-2/3 animate-pulse" />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-red-900">
+                      Upload Failed
+                    </h4>
+                    <p className="text-xs text-red-700 font-medium mt-1 leading-relaxed">
+                      {errorMsg}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setErrorMsg(null)}
+                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {testPopupContent !== null && (
         <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-950/80">
@@ -2256,6 +2425,31 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           announcements={announcements}
           currentEditingAnnouncement={currentEditingAnnouncement}
           lockAudioOnly={true}
+          pickerContextInfo={{
+            mode:
+              !doNotAttachAudio &&
+              Boolean(
+                customSelectedBackupAudio ||
+                  effectivePendingDuplicateSourceAudio ||
+                  matchedExistingAudioForStem
+              )
+                ? 'replace'
+                : 'choose',
+            contextDescription: `Backup Audio for Live Read "${finalFileName || initialFileName || 'Untitled.txt'}"`,
+            currentFile:
+              !doNotAttachAudio &&
+              (customSelectedBackupAudio ||
+                effectivePendingDuplicateSourceAudio ||
+                matchedExistingAudioForStem)
+                ? {
+                    name:
+                      customSelectedBackupAudio ||
+                      effectivePendingDuplicateSourceAudio ||
+                      matchedExistingAudioForStem ||
+                      '',
+                  }
+                : null,
+          }}
           onFileUploaded={async uploaded => {
             const origName = uploaded.name;
             const ext = getFileExtension(origName) || '.mp3';

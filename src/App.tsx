@@ -153,7 +153,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"player" | "calendar" | "log" | "live_dev">(
     "player",
   );
-  const [calendarSubTab, setCalendarSubTab] = useState<"calendar" | "list" | "shows">(
+  const [calendarSubTab, setCalendarSubTab] = useState<"calendar" | "list" | "shows" | "files">(
     "calendar",
   );
 
@@ -433,7 +433,7 @@ export default function App() {
   const [startupPhaseLabel, setStartupPhaseLabel] = useState<string>("Initializing AMP...");
 
   useEffect(() => {
-    const timer = setTimeout(() => setMinSplashElapsed(true), 500);
+    const timer = setTimeout(() => setMinSplashElapsed(true), 6000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -1392,7 +1392,7 @@ export default function App() {
             confirmNavActionRef.current(() => {
               setActiveTab(tab as "player" | "calendar" | "log");
               if (tab === "calendar" && subTab) {
-                setCalendarSubTab(subTab as "calendar" | "list" | "shows");
+                setCalendarSubTab(subTab as "calendar" | "list" | "shows" | "files");
               }
             });
           }
@@ -2260,13 +2260,17 @@ export default function App() {
 
   if (!isInitialStartupComplete) {
     const editionLabel = isLiveApp ? "AMP Live" : isStudioApp ? "AMP Studio" : "AMP Admin";
+    const isReadyWaitingForSplashHold =
+      !loading && hasCompletedInitialFetch && hasCompletedInitialCache && !isInitialAudioCaching;
     const splashStatusText = isInitialAudioCaching
       ? cachingProgress.total > 0
         ? `Caching live audio assets (${cachingProgress.current} / ${cachingProgress.total})...`
         : "Caching live audio assets..."
-      : startupStatus === "VERIFY_PATHS" || startupStatus === "VERIFY_FILES"
-        ? startupMessage || startupPhaseLabel
-        : startupPhaseLabel;
+      : isReadyWaitingForSplashHold
+        ? "Ready — opening AMP..."
+        : startupStatus === "VERIFY_PATHS" || startupStatus === "VERIFY_FILES"
+          ? startupMessage || startupPhaseLabel
+          : startupPhaseLabel;
 
     return (
       <div
@@ -2281,12 +2285,12 @@ export default function App() {
               src={appFlavorIconUrl}
               alt={editionLabel}
               onError={() => setAppFlavorIconError(true)}
-              className="w-20 h-20 object-contain rounded-2xl shadow-lg mb-3.5 pointer-events-none"
+              className="w-20 h-20 object-contain mb-3.5 pointer-events-none"
             />
           ) : (
             <div
               className={cn(
-                "w-20 h-20 rounded-2xl flex items-center justify-center shadow-lg mb-3.5",
+                "w-20 h-20 flex items-center justify-center shadow-lg mb-3.5",
                 isLiveApp
                   ? "bg-purple-600"
                   : isStudioApp
@@ -2952,11 +2956,75 @@ export default function App() {
                     currentViewMode={calendarSubTab}
                     onViewModeChange={(mode) => setCalendarSubTab(mode)}
                     showPixelRuler={showPixelRuler}
+                    showLocationsModal={showLocationsModal}
                     onOpenLocationsModal={() => setShowLocationsModal(true)}
                     onOpenLocalStationFolder={
                       locationMode === "Local" && (localPathAmp || localPathMediaEvergreens || localPathMediaShows)
                         ? () => handleOpenLocalPath(localPathAmp || localPathMediaEvergreens || localPathMediaShows)
                         : undefined
+                    }
+                    onOpenEvergreensFolder={
+                      locationMode === "Local"
+                        ? (resolvedLocalPath?: string) => {
+                            const fallbackLocal =
+                              localPathMediaEvergreens ||
+                              (localPathAmp ? `${localPathAmp.replace(/[\\/]+$/, "")}/media_evergreens` : "");
+                            handleOpenLocalPath(resolvedLocalPath || fallbackLocal);
+                          }
+                        : locationMode === "Drive"
+                          ? (_resolvedLocalPath?: string, resolvedDriveId?: string) => {
+                              handleOpenDriveFolder(resolvedDriveId || driveFolderEvergreens || driveFolderAmp);
+                            }
+                          : undefined
+                    }
+                    onOpenShowsFolder={
+                      locationMode === "Local"
+                        ? (resolvedLocalPath?: string) => {
+                            const fallbackLocal =
+                              localPathMediaShows ||
+                              (localPathAmp ? `${localPathAmp.replace(/[\\/]+$/, "")}/media_shows` : "");
+                            handleOpenLocalPath(resolvedLocalPath || fallbackLocal);
+                          }
+                        : locationMode === "Drive"
+                          ? (_resolvedLocalPath?: string, resolvedDriveId?: string) => {
+                              handleOpenDriveFolder(resolvedDriveId || driveFolderShows || driveFolderAmp);
+                            }
+                          : undefined
+                    }
+                    onOpenAnnouncementsFolder={
+                      locationMode === "Local"
+                        ? (
+                            bucket: "active" | "archived" | "deleted",
+                            resolvedLocalPath?: string,
+                          ) => {
+                            const baseLocal =
+                              localPathMediaAnnouncements ||
+                              localPathMP3s ||
+                              (localPathAmp
+                                ? `${localPathAmp.replace(/[\\/]+$/, "")}/media_announcements`
+                                : "");
+                            const fallbackLocal =
+                              bucket === "archived" && baseLocal
+                                ? `${baseLocal.replace(/[\\/]+$/, "")}/archived`
+                                : bucket === "deleted" && baseLocal
+                                  ? `${baseLocal.replace(/[\\/]+$/, "")}/deleted_in_AMP_OK_to_purge`
+                                  : baseLocal;
+                            handleOpenLocalPath(resolvedLocalPath || fallbackLocal);
+                          }
+                        : locationMode === "Drive"
+                          ? (
+                              _bucket: "active" | "archived" | "deleted",
+                              _resolvedLocalPath?: string,
+                              resolvedDriveId?: string,
+                            ) => {
+                              handleOpenDriveFolder(
+                                resolvedDriveId ||
+                                  driveFolderAnnouncements ||
+                                  driveFolderMP3s ||
+                                  driveFolderAmp,
+                              );
+                            }
+                          : undefined
                     }
                   />
                 </motion.div>

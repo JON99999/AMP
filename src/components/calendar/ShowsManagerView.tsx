@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, Trash2, RefreshCw, Save, AlertCircle, Clock, FileText, FolderOpen } from 'lucide-react';
+import { BookOpen, Trash2, RefreshCw, Save, AlertCircle, Clock, FileText, FolderOpen, HelpCircle } from 'lucide-react';
 import { Show } from '../../types';
 import { cn, getSortedShows, getShowShade, formatTime12 } from '../../lib/utils';
 import { cleanNameShort, ShowConflict, ShowGap } from './calendarHelpers';
@@ -69,7 +69,9 @@ export function ShowEditorForm({
       const original = shows.find(s => s.id === editingShowId);
       if (original) {
         setShowFormData({ ...original });
-        setIsNameShortManuallyEdited(false);
+        setIsNameShortManuallyEdited(
+          Boolean(original.nameShort && original.nameShort !== cleanNameShort(original.name || ''))
+        );
       }
     }
   };
@@ -127,8 +129,10 @@ export function ShowEditorForm({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
-                Show Name <span className="text-red-500">*</span>
+              <label className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center h-4">
+                <span>
+                  Show Name <span className="text-red-500">*</span>
+                </span>
               </label>
               <input
                 type="text"
@@ -151,9 +155,41 @@ export function ShowEditorForm({
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
-                Short Name (for filenames) <span className="text-red-500">*</span>
-              </label>
+              <div className="flex items-center justify-between gap-2 h-4">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs font-black text-slate-700 uppercase tracking-wider block">
+                    Short Name (for filenames) <span className="text-red-500">*</span>
+                  </label>
+                  <span
+                    title="Max 24 characters. Alphanumeric and underscores only."
+                    className="text-slate-400 hover:text-slate-600 cursor-help inline-flex items-center"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </span>
+                </div>
+                <label
+                  className="inline-flex items-center gap-1 text-[11px] font-black uppercase tracking-wider text-slate-600 cursor-pointer select-none"
+                  title="Automatically generate Short Name from Show Name"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!isNameShortManuallyEdited}
+                    onChange={e => {
+                      const nextAuto = e.target.checked;
+                      setIsNameShortManuallyEdited(!nextAuto);
+                      if (nextAuto) {
+                        onClearShowValidationErrors?.();
+                        setShowFormData(prev => ({
+                          ...prev,
+                          nameShort: cleanNameShort(prev.name || ''),
+                        }));
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span>Auto</span>
+                </label>
+              </div>
               <input
                 type="text"
                 placeholder="Enter Short name"
@@ -170,9 +206,6 @@ export function ShowEditorForm({
                   isShortNameInvalid ? 'border-red-400 bg-red-50/30' : 'border-slate-300'
                 )}
               />
-              <p className="text-xs text-slate-400 font-medium">
-                Max 24 characters. Alphanumeric and underscores only.
-              </p>
             </div>
           </div>
 
@@ -338,59 +371,67 @@ export function ShowEditorForm({
             />
           </div>
 
-          <div className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-200 rounded-lg">
-            <div>
-              <span className="text-xs font-black text-slate-700 uppercase tracking-wide block">
-                Show Broadcast Status
-              </span>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Define whether this show&apos;s profile is currently active in the weekly schedule listings.
-              </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-xs font-black text-slate-700 uppercase tracking-wide truncate">
+                  Show Broadcast Status
+                </span>
+                <span
+                  title="Define whether this show's profile is currently active in the weekly schedule listings."
+                  className="text-slate-400 hover:text-slate-600 cursor-help inline-flex items-center shrink-0"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </span>
+              </div>
+              <div className="flex items-center -space-x-px shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowFormData({ ...showFormData, active: true })}
+                  className={cn(
+                    'px-3 py-1 text-xs font-black uppercase rounded-l border cursor-pointer',
+                    showFormData.active
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-white text-slate-400 border-slate-250 hover:bg-slate-50'
+                  )}
+                >
+                  Active
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowFormData({ ...showFormData, active: false })}
+                  className={cn(
+                    'px-3 py-1 text-xs font-black uppercase rounded-r border cursor-pointer',
+                    !showFormData.active
+                      ? 'bg-slate-600 text-white border-slate-600'
+                      : 'bg-white text-slate-400 border-slate-250 hover:bg-slate-50'
+                  )}
+                >
+                  Inactive
+                </button>
+              </div>
             </div>
-            <div className="flex items-center -space-x-px">
-              <button
-                type="button"
-                onClick={() => setShowFormData({ ...showFormData, active: true })}
-                className={cn(
-                  'px-4 py-1.5 text-xs font-black uppercase rounded-l border cursor-pointer',
-                  showFormData.active
-                    ? 'bg-emerald-600 text-white border-emerald-600'
-                    : 'bg-white text-slate-400 border-slate-250 hover:bg-slate-50'
-                )}
-              >
-                Active
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowFormData({ ...showFormData, active: false })}
-                className={cn(
-                  'px-4 py-1.5 text-xs font-black uppercase rounded-r border cursor-pointer',
-                  !showFormData.active
-                    ? 'bg-slate-600 text-white border-slate-600'
-                    : 'bg-white text-slate-400 border-slate-250 hover:bg-slate-50'
-                )}
-              >
-                Inactive
-              </button>
-            </div>
-          </div>
 
-          <label className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-200 rounded-lg cursor-pointer select-none">
-            <div className="pr-4">
-              <span className="text-xs font-black text-slate-700 uppercase tracking-wide block">
-                Include in &ldquo;Up Next&rdquo; Promo Cards
-              </span>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Automatically seeds an &ldquo;Up Next: [Show Name]&rdquo; Live Read card before this show begins when Up Next promos are enabled.
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              checked={showFormData.includeInUpNext !== false}
-              onChange={e => setShowFormData({ ...showFormData, includeInUpNext: e.target.checked })}
-              className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
-            />
-          </label>
+            <label className="flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg cursor-pointer select-none">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-xs font-black text-slate-700 uppercase tracking-wide truncate">
+                  Include in &ldquo;Up Next&rdquo; Promo Cards
+                </span>
+                <span
+                  title="Automatically seeds an 'Up Next: [Show Name]' Live Read card before this show begins when Up Next promos are enabled."
+                  className="text-slate-400 hover:text-slate-600 cursor-help inline-flex items-center shrink-0"
+                >
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={showFormData.includeInUpNext !== false}
+                onChange={e => setShowFormData({ ...showFormData, includeInUpNext: e.target.checked })}
+                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+              />
+            </label>
+          </div>
         </div>
 
         <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
@@ -530,23 +571,36 @@ export function ShowsManagerList({
     );
   }
 
+  const combinedCautionText = showConflicts.map(c => c.message).join('; ');
+  const combinedGapText = showGaps.map(g => g.message).join('; ');
+
   return (
     <div className="flex flex-col flex-1 min-h-0 pb-1">
       {(showConflicts.length > 0 || showGaps.length > 0) && (
-        <div className="bg-amber-50/80 border border-amber-200/90 rounded-xl p-2.5 px-3.5 mb-3 text-amber-800 text-xs italic flex items-start gap-2.5 shadow-2xs shrink-0">
-          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5 not-italic" />
-          <div className="space-y-1">
+        <div
+          className="bg-amber-50/80 border border-amber-200/90 rounded-lg py-1.5 px-3 mb-2.5 text-amber-800 text-xs flex items-center gap-2 shadow-2xs shrink-0 overflow-hidden"
+          title={
+            [
+              combinedCautionText ? `Show Caution: ${combinedCautionText}` : '',
+              combinedGapText ? `Show Gap: ${combinedGapText}` : '',
+            ]
+              .filter(Boolean)
+              .join(' | ')
+          }
+        >
+          <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+          <div className="truncate flex items-center gap-3 min-w-0">
             {showConflicts.length > 0 && (
-              <div>
-                <span className="font-semibold not-italic text-amber-900">Show Caution: </span>
-                {showConflicts.map(c => c.message).join('; ')}
-              </div>
+              <span className="truncate">
+                <span className="font-bold text-amber-900">Show Caution: </span>
+                <span>{combinedCautionText}</span>
+              </span>
             )}
             {showGaps.length > 0 && (
-              <div>
-                <span className="font-semibold not-italic text-amber-900">Show Gap: </span>
-                {showGaps.map(g => g.message).join('; ')}
-              </div>
+              <span className="truncate">
+                <span className="font-bold text-amber-900">Show Gap: </span>
+                <span>{combinedGapText}</span>
+              </span>
             )}
           </div>
         </div>

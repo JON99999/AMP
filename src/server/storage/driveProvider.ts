@@ -1033,7 +1033,7 @@ export async function triggerServerDriveBackup(
 export async function verifyServerDriveEvergreens(req: express.Request): Promise<any> {
   const evergreensId = await resolveServerDriveEvergreensFolderId(req);
   const playlistsId = await resolveServerDriveShowsFolderId(req);
-  await resolveServerDriveAnnouncementsFolderId(req);
+  const announcementsId = await resolveServerDriveAnnouncementsFolderId(req);
 
   const hasBodyShows = Array.isArray(req.body?.shows);
   let shows: Show[];
@@ -1045,9 +1045,10 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
     await readDriveLogs(req);
   }
 
-  const [evergreenChildren, playlistChildren] = await Promise.all([
+  const [evergreenChildren, playlistChildren, announcementChildren] = await Promise.all([
     serverDriveListFolderFiles(req, evergreensId),
-    serverDriveListFolderFiles(req, playlistsId)
+    serverDriveListFolderFiles(req, playlistsId),
+    serverDriveListFolderFiles(req, announcementsId)
   ]);
 
   const existingEvergreenLower = new Set(
@@ -1058,6 +1059,41 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
   );
 
   const folderMime = 'application/vnd.google-apps.folder';
+  const createdAnnouncementSubfolders: string[] = [];
+
+  // Verify & auto-create media_announcements/archived and media_announcements/deleted_in_AMP_OK_to_purge (#26)
+  const ensureAnnouncementSubfolder = async (
+    cachePrefix: string,
+    candidates: string[],
+    targetName: string
+  ) => {
+    const matched = announcementChildren.find(
+      f =>
+        f.mimeType === folderMime &&
+        candidates.some(c => String(f.name || '').toLowerCase() === c.toLowerCase())
+    );
+    if (matched) {
+      serverDriveFolderCache.set(`${cachePrefix}:${announcementsId}`, matched.id);
+      return matched.id;
+    }
+    const createdId = await serverDriveCreateFileInFolder(
+      req,
+      targetName,
+      announcementsId,
+      folderMime
+    );
+    serverDriveFolderCache.set(`${cachePrefix}:${announcementsId}`, createdId);
+    createdAnnouncementSubfolders.push(targetName);
+    return createdId;
+  };
+
+  await ensureAnnouncementSubfolder('announcements_archived', ['archived'], 'archived');
+  await ensureAnnouncementSubfolder(
+    'announcements_deleted',
+    ['deleted_in_AMP_OK_to_purge', 'deleted in app (ok to purge)'],
+    'deleted_in_AMP_OK_to_purge'
+  );
+
   const activeShows = shows.filter(s => !s?.isDeleted);
   const knownShortNamesLower = new Set<string>();
   const createdFolders: string[] = [];
@@ -1135,9 +1171,13 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
     announcementsPath: isAmp
       ? 'Google Drive: [Station]/media_announcements'
       : 'Google Drive: /medialibrary/Announcements',
+    evergreensFolderId: evergreensId,
+    playlistsFolderId: playlistsId,
+    announcementsFolderId: announcementsId,
     checkedShowCount,
     createdEvergreenFolders,
     createdPlaylistFolders,
+    createdAnnouncementSubfolders,
     createdFolders,
     extraEvergreenFolders,
     extraPlaylistFolders
@@ -1263,34 +1303,43 @@ export async function mergeServerDriveStrandedFolder(
   req: express.Request,
   params: {
     folderCategory: 'media_evergreens' | 'media_shows';
+    targetFolderCategory?: 'media_evergreens' | 'media_shows';
     sourceFolderName: string;
     targetShowShortName: string;
   }
 ): Promise<{
   success: boolean;
   folderCategory: string;
+  targetFolderCategory: string;
   sourceFolderName: string;
   targetShowShortName: string;
   movedCount: number;
   skippedCount: number;
   removedSourceFolder: boolean;
 }> {
-  const parentId =
+  const targetCategory = params.targetFolderCategory || params.folderCategory;
+  const sourceParentId =
     params.folderCategory === 'media_evergreens'
       ? await resolveServerDriveEvergreensFolderId(req)
       : await resolveServerDriveShowsFolderId(req);
+  const targetParentId =
+    targetCategory === params.folderCategory
+      ? sourceParentId
+      : targetCategory === 'media_evergreens'
+        ? await resolveServerDriveEvergreensFolderId(req)
+        : await resolveServerDriveShowsFolderId(req);
 
-  const sourceFolder = await serverDriveFindFileCaseInsensitive(req, params.sourceFolderName, parentId);
+  const sourceFolder = await serverDriveFindFileCaseInsensitive(req, params.sourceFolderName, sourceParentId);
   if (!sourceFolder) {
     throw new Error(`Stranded folder "${params.sourceFolderName}" was not found in ${params.folderCategory}.`);
   }
 
-  let targetFolder = await serverDriveFindFileCaseInsensitive(req, params.targetShowShortName, parentId);
+  let targetFolder = await serverDriveFindFileCaseInsensitive(req, params.targetShowShortName, targetParentId);
   if (!targetFolder) {
     const createdId = await serverDriveCreateFileInFolder(
       req,
       params.targetShowShortName,
-      parentId,
+      targetParentId,
       'application/vnd.google-apps.folder'
     );
     targetFolder = {
@@ -1339,6 +1388,7 @@ export async function mergeServerDriveStrandedFolder(
   return {
     success: true,
     folderCategory: params.folderCategory,
+    targetFolderCategory: targetCategory,
     sourceFolderName: params.sourceFolderName,
     targetShowShortName: params.targetShowShortName,
     movedCount,
@@ -2001,6 +2051,309 @@ export async function listServerDriveAnnouncementMedia(req: express.Request): Pr
     });
 }
 
+export async function resolveServerDriveAnnouncementsSubfolders(
+  req: express.Request,
+  announcementsFolderId?: string
+): Promise<{ activeFolderId: string; archivedFolderId: string; deletedFolderId: string }> {
+  const activeFolderId =
+    announcementsFolderId || (await resolveServerDriveAnnouncementsFolderId(req));
+  const [archivedFolderId, deletedFolderId] = await Promise.all([
+    resolveOrCreateSubfolderInRoot(
+      req,
+      activeFolderId,
+      'announcements_archived',
+      ['archived'],
+      'archived'
+    ),
+    resolveOrCreateSubfolderInRoot(
+      req,
+      activeFolderId,
+      'announcements_deleted',
+      ['deleted_in_AMP_OK_to_purge', 'deleted in app (ok to purge)'],
+      'deleted_in_AMP_OK_to_purge'
+    )
+  ]);
+  return { activeFolderId, archivedFolderId, deletedFolderId };
+}
+
+export async function serverDriveFindAnnouncementFileAnyBucket(
+  req: express.Request,
+  name: string,
+  announcementsFolderId?: string
+): Promise<{
+  file: { id: string; name: string; mimeType: string; size?: string; modifiedTime?: string };
+  bucket: 'active' | 'archived' | 'deleted';
+  folderId: string;
+} | null> {
+  const { activeFolderId, archivedFolderId, deletedFolderId } =
+    await resolveServerDriveAnnouncementsSubfolders(req, announcementsFolderId);
+  const inActive = await serverDriveFindFileCaseInsensitive(req, name, activeFolderId);
+  if (inActive) return { file: inActive, bucket: 'active', folderId: activeFolderId };
+  const inArchived = await serverDriveFindFileCaseInsensitive(req, name, archivedFolderId);
+  if (inArchived) return { file: inArchived, bucket: 'archived', folderId: archivedFolderId };
+  const inDeleted = await serverDriveFindFileCaseInsensitive(req, name, deletedFolderId);
+  if (inDeleted) return { file: inDeleted, bucket: 'deleted', folderId: deletedFolderId };
+  return null;
+}
+
+export async function listServerDriveAnnouncementFileManager(req: express.Request): Promise<{
+  files: any[];
+  folderIds: { active: string; archived: string; deleted: string };
+  driveFolderIds: { active: string; archived: string; deleted: string };
+}> {
+  const { activeFolderId, archivedFolderId, deletedFolderId } =
+    await resolveServerDriveAnnouncementsSubfolders(req);
+  const [activeRaw, archivedRaw, deletedRaw] = await Promise.all([
+    serverDriveListFolderFiles(req, activeFolderId),
+    serverDriveListFolderFiles(req, archivedFolderId),
+    serverDriveListFolderFiles(req, deletedFolderId)
+  ]);
+
+  const allowedExtensions = [
+    '.mp3',
+    '.wav',
+    '.flac',
+    '.ogg',
+    '.m4a',
+    '.aac',
+    '.txt',
+    '.pdf',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.webp',
+    '.md'
+  ];
+
+  const mapBucketFiles = (
+    rawList: Array<{ id: string; name: string; mimeType: string; size?: string; modifiedTime?: string }>,
+    folderBucket: 'active' | 'archived' | 'deleted'
+  ) =>
+    rawList
+      .filter(f => {
+        if (f.mimeType === 'application/vnd.google-apps.folder') return false;
+        const ext = path.extname(String(f.name || '')).toLowerCase();
+        return allowedExtensions.includes(ext);
+      })
+      .map(f => {
+        const bytes = parseInt(f.size || '0', 10);
+        const sizeStr =
+          bytes > 0 ? `${Math.max(0.1, bytes / (1024 * 1024)).toFixed(1)} MB` : '0.1 MB';
+        const mtimeMs = f.modifiedTime ? new Date(f.modifiedTime).getTime() : undefined;
+        return {
+          id: f.id,
+          name: f.name,
+          folderBucket,
+          size: sizeStr,
+          duration: '',
+          path: `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`,
+          mtimeMs,
+          modifiedTime: f.modifiedTime
+        };
+      });
+
+  const resolvedIds = {
+    active: activeFolderId,
+    archived: archivedFolderId,
+    deleted: deletedFolderId
+  };
+
+  return {
+    files: [
+      ...mapBucketFiles(activeRaw, 'active'),
+      ...mapBucketFiles(archivedRaw, 'archived'),
+      ...mapBucketFiles(deletedRaw, 'deleted')
+    ],
+    folderIds: resolvedIds,
+    driveFolderIds: resolvedIds
+  };
+}
+
+function buildIncrementedFileName(baseName: string, existingNamesLower: Set<string>): string {
+  const ext = path.extname(baseName);
+  const rawStem = ext ? baseName.slice(0, -ext.length) : baseName;
+  const trailingMatch = rawStem.match(/^(.*?)\s*\((\d+)\)$/);
+  const baseStem = trailingMatch ? trailingMatch[1].trim() : rawStem.trim();
+  let counter = trailingMatch ? Math.max(2, parseInt(trailingMatch[2], 10) + 1) : 2;
+  let candidate = `${baseStem} (${counter})${ext}`;
+  while (existingNamesLower.has(candidate.toLowerCase())) {
+    counter += 1;
+    candidate = `${baseStem} (${counter})${ext}`;
+  }
+  return candidate;
+}
+
+export async function moveServerDriveAnnouncementFiles(
+  req: express.Request,
+  body: {
+    fileNames?: string[];
+    targetBucket?: 'active' | 'archived' | 'deleted';
+    collisionResolution?: 'prompt' | 'overwrite' | 'rename';
+  }
+): Promise<any> {
+  const rawNames = Array.isArray(body?.fileNames) ? body.fileNames : [];
+  const targetBucket = body?.targetBucket || 'archived';
+  const collisionResolution = body?.collisionResolution || 'prompt';
+
+  if (rawNames.length === 0) {
+    return {
+      success: true,
+      movedCount: 0,
+      alreadyInTargetCount: 0,
+      missingExternalFiles: [],
+      movedFiles: []
+    };
+  }
+
+  const { activeFolderId, archivedFolderId, deletedFolderId } =
+    await resolveServerDriveAnnouncementsSubfolders(req);
+  const bucketFolderMap: Record<'active' | 'archived' | 'deleted', string> = {
+    active: activeFolderId,
+    archived: archivedFolderId,
+    deleted: deletedFolderId
+  };
+
+  const [activeFiles, archivedFiles, deletedFiles] = await Promise.all([
+    serverDriveListFolderFiles(req, activeFolderId),
+    serverDriveListFolderFiles(req, archivedFolderId),
+    serverDriveListFolderFiles(req, deletedFolderId)
+  ]);
+
+  const bucketFilesMap: Record<
+    'active' | 'archived' | 'deleted',
+    Array<{ id: string; name: string; mimeType: string; size?: string; modifiedTime?: string }>
+  > = {
+    active: activeFiles,
+    archived: archivedFiles,
+    deleted: deletedFiles
+  };
+
+  const targetFolderId = bucketFolderMap[targetBucket];
+  const targetExistingList = bucketFilesMap[targetBucket];
+  const targetExistingNamesLower = new Set(
+    targetExistingList.map(f => String(f.name || '').toLowerCase())
+  );
+
+  const conflicts: string[] = [];
+  const resolvedPlan: Array<{
+    requestedName: string;
+    sourceFile?: { id: string; name: string; mimeType: string };
+    sourceBucket?: 'active' | 'archived' | 'deleted';
+    status: 'move' | 'already_in_target' | 'missing_external';
+    existingTargetFile?: { id: string; name: string };
+  }> = [];
+
+  for (const raw of rawNames) {
+    const clean = path.basename(String(raw || '').trim());
+    if (!clean) continue;
+    const lower = clean.toLowerCase();
+
+    // Check if already in target bucket
+    const inTarget = targetExistingList.find(f => String(f.name || '').toLowerCase() === lower);
+    const otherBuckets = (['active', 'archived', 'deleted'] as const).filter(b => b !== targetBucket);
+    let foundSource: {
+      file: { id: string; name: string; mimeType: string };
+      bucket: 'active' | 'archived' | 'deleted';
+    } | null = null;
+
+    for (const b of otherBuckets) {
+      const match = bucketFilesMap[b].find(f => String(f.name || '').toLowerCase() === lower);
+      if (match) {
+        foundSource = { file: match, bucket: b };
+        break;
+      }
+    }
+
+    if (!foundSource) {
+      if (inTarget) {
+        resolvedPlan.push({ requestedName: clean, status: 'already_in_target' });
+      } else {
+        resolvedPlan.push({ requestedName: clean, status: 'missing_external' });
+      }
+      continue;
+    }
+
+    if (inTarget) {
+      conflicts.push(clean);
+    }
+
+    resolvedPlan.push({
+      requestedName: clean,
+      sourceFile: foundSource.file,
+      sourceBucket: foundSource.bucket,
+      status: 'move',
+      existingTargetFile: inTarget
+    });
+  }
+
+  if (conflicts.length > 0 && collisionResolution === 'prompt') {
+    return {
+      collision: true,
+      conflicts,
+      targetBucket
+    };
+  }
+
+  let movedCount = 0;
+  let alreadyInTargetCount = 0;
+  const missingExternalFiles: string[] = [];
+  const movedFiles: Array<{ fromName: string; toName: string; targetBucket: string }> = [];
+
+  for (const item of resolvedPlan) {
+    if (item.status === 'already_in_target') {
+      alreadyInTargetCount += 1;
+      continue;
+    }
+    if (item.status === 'missing_external' || !item.sourceFile || !item.sourceBucket) {
+      missingExternalFiles.push(item.requestedName);
+      continue;
+    }
+
+    const sourceFolderId = bucketFolderMap[item.sourceBucket];
+    let finalName = item.sourceFile.name;
+
+    if (item.existingTargetFile) {
+      if (collisionResolution === 'overwrite') {
+        try {
+          await serverDriveFetch(req, `drive/v3/files/${item.existingTargetFile.id}`, {
+            method: 'DELETE'
+          });
+        } catch (_) {}
+      } else if (collisionResolution === 'rename') {
+        finalName = buildIncrementedFileName(item.sourceFile.name, targetExistingNamesLower);
+      }
+    }
+
+    await serverDriveFetch(
+      req,
+      `drive/v3/files/${item.sourceFile.id}?addParents=${encodeURIComponent(
+        targetFolderId
+      )}&removeParents=${encodeURIComponent(sourceFolderId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: finalName })
+      }
+    );
+
+    targetExistingNamesLower.add(finalName.toLowerCase());
+    movedCount += 1;
+    movedFiles.push({
+      fromName: item.sourceFile.name,
+      toName: finalName,
+      targetBucket
+    });
+  }
+
+  return {
+    success: true,
+    movedCount,
+    alreadyInTargetCount,
+    missingExternalFiles,
+    movedFiles
+  };
+}
+
 export async function streamServerDriveFile(
   req: express.Request,
   res: express.Response,
@@ -2015,10 +2368,9 @@ export async function streamServerDriveFile(
     } else if (/^[a-zA-Z0-9_-]{25,50}$/.test(trimmed)) {
       fileId = trimmed;
     } else if (isServerDriveStorageRequest(req)) {
-      const folderId = await resolveServerDriveAnnouncementsFolderId(req);
       const cleanName = path.basename(trimmed);
-      const found = await serverDriveFindFileCaseInsensitive(req, cleanName, folderId);
-      if (found) fileId = found.id;
+      const anyMatch = await serverDriveFindAnnouncementFileAnyBucket(req, cleanName);
+      if (anyMatch) fileId = anyMatch.file.id;
     }
 
     if (!fileId) return false;

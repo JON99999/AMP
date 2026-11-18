@@ -12,7 +12,7 @@ import {
   backfillLegacyAnnouncementRevisions,
   isLogPrerecordOrExport
 } from './compatibility';
-import { formatTime12, formatToDatetimeLocal, getGateMediaItems } from './utils';
+import { formatTime12, formatToDatetimeLocal, getGateMediaItems, getFilenameFromUrlOrPath } from './utils';
 
 export interface AuditSlotReconciliation {
   slotId: string;
@@ -221,9 +221,14 @@ export function resolveAnnouncementsForDate(
     }
 
     // Inactivation is a point-in-time event affecting forward dates:
-    // If an announcement has an endDate, any slot at or prior to endDate acts as "did exist" (enabled: true).
+    // For past/backward dates at or prior to endDate, an inactivated announcement with an endDate acts as "did exist" (enabled: true).
+    // Going forward (present/future dates), an inactivated announcement (enabled === false) is excluded unless includeInactive is true (#106).
     if (!resolved.enabled) {
-      if (resolved.endDate && resolved.endDate.trim()) {
+      const stationNow = getStationNow();
+      const pad2 = (n: number) => String(n).padStart(2, '0');
+      const nowLocalStr = `${stationNow.getFullYear()}-${pad2(stationNow.getMonth() + 1)}-${pad2(stationNow.getDate())}T${pad2(stationNow.getHours())}:${pad2(stationNow.getMinutes())}`;
+      const checkLocalStr = slotLocal || dayStartLocal;
+      if (checkLocalStr <= nowLocalStr && resolved.endDate && resolved.endDate.trim()) {
         resolved = {
           ...resolved,
           enabled: true
@@ -637,11 +642,35 @@ export function calculateGateSlotAssessment(
 
   const annId = String(announcement.id || '');
   const extractFileName = (url?: string) =>
-    url ? (url.split('/').pop()?.split('\\').pop() || '').toLowerCase() : '';
+    url ? (getFilenameFromUrlOrPath(url) || url.split('/').pop()?.split('\\').pop() || '').toLowerCase() : '';
 
   const itemFileNames = mediaItems.map(mi => extractFileName(mi.mp3Url));
+  const itemBackupFileNames = mediaItems.map(mi => extractFileName(mi.backupMp3Url));
 
-  // Filter logs strictly to this announcement AND this gate's active window [effectiveStart, effectiveEnd]
+  const doesLogMatchItemIdx = (logFile: string, idx: number): boolean => {
+    if (!logFile) return mediaItems.length === 1 && idx === 0;
+    const primary = itemFileNames[idx];
+    const backup = itemBackupFileNames[idx];
+    if ((Boolean(primary) && logFile === primary) || (Boolean(backup) && logFile === backup)) {
+      return true;
+    }
+    return mediaItems.length === 1 && idx === 0;
+  };
+
+  const findMatchingItemIdx = (logFile: string): number => {
+    for (let i = 0; i < mediaItems.length; i++) {
+      const primary = itemFileNames[i];
+      const backup = itemBackupFileNames[i];
+      if (logFile && ((Boolean(primary) && logFile === primary) || (Boolean(backup) && logFile === backup))) {
+        return i;
+      }
+    }
+    if (mediaItems.length === 1) return 0;
+    return -1;
+  };
+
+  // Filter logs strictly to this announcement, this gate's active window [effectiveStart, effectiveEnd],
+  // AND files (primary or backup) that actually belong to this gate
   const gateScopedLogs: { log: LogEntry; localIso: string; fileName: string }[] = [];
   if (annId && Array.isArray(allLogs)) {
     for (const log of allLogs) {
@@ -654,6 +683,7 @@ export function calculateGateSlotAssessment(
       if (effectiveStart && localIso < effectiveStart) continue;
       if (effectiveEnd && localIso > effectiveEnd) continue;
       const logFile = extractFileName(log.mp3Name);
+      if (findMatchingItemIdx(logFile) === -1) continue;
       gateScopedLogs.push({ log, localIso, fileName: logFile });
     }
   }
@@ -771,17 +801,16 @@ export function calculateGateSlotAssessment(
         } else {
           // Past or current slot within effective window: check for matching play log in this hour
           const slotHourPrefix = slotIso.slice(0, 13);
-          const expectedFile = itemFileNames[rotIdx];
 
           let foundLogIdx = -1;
           for (let i = 0; i < gateScopedLogs.length; i++) {
             if (matchedLogIndices.has(i)) continue;
             if (gateScopedLogs[i].localIso.slice(0, 13) === slotHourPrefix) {
-              if (expectedFile && gateScopedLogs[i].fileName === expectedFile) {
+              if (doesLogMatchItemIdx(gateScopedLogs[i].fileName, rotIdx)) {
                 foundLogIdx = i;
                 break;
               }
-              if (foundLogIdx === -1) {
+              if (foundLogIdx === -1 && findMatchingItemIdx(gateScopedLogs[i].fileName) !== -1) {
                 foundLogIdx = i;
               }
             }
@@ -790,20 +819,13 @@ export function calculateGateSlotAssessment(
           if (foundLogIdx !== -1) {
             matchedLogIndices.add(foundLogIdx);
             const matchedEntry = gateScopedLogs[foundLogIdx];
-            gatePlayed++;
-
-            // Attribute play to the rotation slot if it matches expectedFile, or to the matching file item in this gate
-            let targetItemIdx = rotIdx;
-            if (
-              matchedEntry.fileName &&
-              itemFileNames[rotIdx] !== matchedEntry.fileName
-            ) {
-              const fileMatchIdx = itemFileNames.findIndex(fn => fn === matchedEntry.fileName);
-              if (fileMatchIdx !== -1) {
-                targetItemIdx = fileMatchIdx;
-              }
+            const targetItemIdx = doesLogMatchItemIdx(matchedEntry.fileName, rotIdx)
+              ? rotIdx
+              : findMatchingItemIdx(matchedEntry.fileName);
+            if (targetItemIdx !== -1 && itemPlayedLogs[targetItemIdx]) {
+              gatePlayed++;
+              itemPlayedLogs[targetItemIdx].push(matchedEntry.log);
             }
-            itemPlayedLogs[targetItemIdx].push(matchedEntry.log);
           } else {
             gateMissed++;
             itemMissedCounts[rotIdx]++;
@@ -815,17 +837,14 @@ export function calculateGateSlotAssessment(
     }
   }
 
-  // Include any remaining unmatched logs that occurred within the gate's active window (e.g. extra/manual plays or minute shifts)
+  // Include any remaining unmatched logs that occurred within the gate's active window and match a file in this gate
   for (let i = 0; i < gateScopedLogs.length; i++) {
     if (matchedLogIndices.has(i)) continue;
     const entry = gateScopedLogs[i];
-    gatePlayed++;
-    const fileMatchIdx = entry.fileName
-      ? itemFileNames.findIndex(fn => fn === entry.fileName)
-      : -1;
-    const targetIdx = fileMatchIdx !== -1 ? fileMatchIdx : 0;
-    if (itemPlayedLogs[targetIdx]) {
-      itemPlayedLogs[targetIdx].push(entry.log);
+    const fileMatchIdx = findMatchingItemIdx(entry.fileName);
+    if (fileMatchIdx !== -1 && itemPlayedLogs[fileMatchIdx]) {
+      gatePlayed++;
+      itemPlayedLogs[fileMatchIdx].push(entry.log);
     }
   }
 
@@ -908,22 +927,98 @@ export function calculateGatedTrackAudit(
     ) {
       return itemAudits[options.itemIndex];
     }
-    const targetFile = mp3Url ? (mp3Url.split('/').pop()?.split('\\').pop() || '').toLowerCase() : '';
+    const targetFile = mp3Url
+      ? (getFilenameFromUrlOrPath(mp3Url) || mp3Url.split('/').pop()?.split('\\').pop() || '').toLowerCase()
+      : '';
     const items = getGateMediaItems(options.gate);
     const matchIdx = items.findIndex(
-      mi => (mi.mp3Url?.split('/').pop()?.split('\\').pop() || '').toLowerCase() === targetFile
+      mi =>
+        (
+          getFilenameFromUrlOrPath(mi.mp3Url || '') ||
+          mi.mp3Url?.split('/').pop()?.split('\\').pop() ||
+          ''
+        ).toLowerCase() === targetFile
     );
     if (matchIdx !== -1 && itemAudits[matchIdx]) {
       return itemAudits[matchIdx];
     }
   }
 
-  const fileName = mp3Url ? mp3Url.split('/').pop()?.split('\\').pop() || '' : '';
+  // Whole-Announcement Assessment (when called with mp3Url === '' and no specific gate)
+  if (!mp3Url || !mp3Url.trim()) {
+    const annLogs = Array.isArray(allLogs)
+      ? allLogs.filter(log => {
+          if (log.status && log.status !== 'played' && log.status !== 'backup play') return false;
+          return Boolean(announcementId) && String(log.announcementId || '') === String(announcementId);
+        })
+      : [];
+
+    annLogs.sort((a, b) => {
+      const timeA = a.announcementTime || a.scheduledFor || a.timestamp || '';
+      const timeB = b.announcementTime || b.scheduledFor || b.timestamp || '';
+      return timeA.localeCompare(timeB);
+    });
+
+    const firstLog = annLogs[0];
+    const lastLog = annLogs[annLogs.length - 1];
+
+    let totalPlayed = annLogs.length;
+    let totalMissed = 0;
+    let totalFuture = 0;
+    let totalCancelled = 0;
+    let anyInfiniteFuture = false;
+
+    const ann = options?.announcement;
+    const gates = ann?.timeGatedMp3s || [];
+    if (ann && gates.length > 0) {
+      let gatePlayedSum = 0;
+      for (const g of gates) {
+        const { gateScore } = calculateGateSlotAssessment(
+          { ...ann, id: announcementId || ann.id },
+          g,
+          allLogs,
+          options?.referenceNow
+        );
+        gatePlayedSum += gateScore.played;
+        totalMissed += gateScore.missed;
+        totalFuture += gateScore.future;
+        totalCancelled += gateScore.cancelled;
+        if (gateScore.isInfiniteFuture) {
+          anyInfiniteFuture = true;
+        }
+      }
+      totalPlayed = Math.max(annLogs.length, gatePlayedSum);
+    }
+
+    const score = buildAssessmentScore(
+      totalPlayed,
+      totalMissed,
+      totalFuture,
+      totalCancelled,
+      anyInfiniteFuture
+    );
+
+    return {
+      ...score,
+      firstUsedAt: firstLog
+        ? firstLog.announcementTime || firstLog.scheduledFor || firstLog.timestamp || firstLog.executedAt || null
+        : null,
+      lastUsedAt: lastLog
+        ? lastLog.announcementTime || lastLog.scheduledFor || lastLog.timestamp || lastLog.executedAt || null
+        : null,
+      totalPlays: totalPlayed,
+      historyLogs: annLogs,
+    };
+  }
+
+  const fileName = getFilenameFromUrlOrPath(mp3Url) || mp3Url.split('/').pop()?.split('\\').pop() || '';
 
   const matchedLogs = allLogs.filter(log => {
     if (log.status && log.status !== 'played' && log.status !== 'backup play') return false;
     const isIdMatch = log.announcementId === announcementId;
-    const logFileName = log.mp3Name ? log.mp3Name.split('/').pop()?.split('\\').pop() || '' : '';
+    const logFileName = log.mp3Name
+      ? getFilenameFromUrlOrPath(log.mp3Name) || log.mp3Name.split('/').pop()?.split('\\').pop() || ''
+      : '';
     const isFileMatch = fileName && logFileName && logFileName.toLowerCase() === fileName.toLowerCase();
     return isIdMatch && isFileMatch;
   });
