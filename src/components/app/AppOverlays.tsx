@@ -223,6 +223,9 @@ export interface AppOverlaysProps {
   saveScheduleWindowConfig: (
     newConfig: ScheduleWindowConfig,
   ) => Promise<boolean>;
+  autoOpenBackupTarget?: "announcements" | "shows" | "logs" | null;
+  onClearAutoOpenBackupTarget?: () => void;
+  onBackupRestored?: () => Promise<void> | void;
 
   // Admin Contact Popup
   showAdminContactPopup: boolean;
@@ -430,6 +433,9 @@ export const AppOverlays: React.FC<AppOverlaysProps> = ({
   saveUpNextPromoConfig,
   scheduleWindowConfig,
   saveScheduleWindowConfig,
+  autoOpenBackupTarget,
+  onClearAutoOpenBackupTarget,
+  onBackupRestored,
   showAdminContactPopup,
   setShowAdminContactPopup,
   resolvedAdminContact,
@@ -615,8 +621,12 @@ export const AppOverlays: React.FC<AppOverlaysProps> = ({
       />
       <LocalHelpModal
         isOpen={showLocalHelp}
-        onClose={() => setShowLocalHelp(false)}
+        onClose={() => {
+          setShowLocalHelp(false);
+          onClearAutoOpenBackupTarget?.();
+        }}
         isAdmin={isAdmin || isAiStudio}
+        shows={shows}
         stationTimezone={stationTimezone}
         onSaveStationTimezone={saveStationTimezone}
         adminContactInfo={adminContactInfo}
@@ -625,6 +635,9 @@ export const AppOverlays: React.FC<AppOverlaysProps> = ({
         onSaveUpNextPromoConfig={saveUpNextPromoConfig}
         scheduleWindowConfig={scheduleWindowConfig}
         onSaveScheduleWindowConfig={saveScheduleWindowConfig}
+        autoOpenBackupTarget={autoOpenBackupTarget}
+        onClearAutoOpenBackupTarget={onClearAutoOpenBackupTarget}
+        onBackupRestored={onBackupRestored}
       />
       {showAdminContactPopup && (
         <div

@@ -125,16 +125,54 @@ Rather than forcing a destructive one-way schema cutover that breaks `v0.15.4 / 
 
 ---
 
-## 4. Future Roadmap: Legacy Sibling Deprecation & Pure Schema Sunset (`schemaVersion: 2`)
+## 4. Future Roadmap: Backing Out `v0.15.4`-Exclusive Schema Code (`v0.20.8+` Onward -> `schemaVersion: 2`)
 
-When all station workstations have permanently retired `v0.15.4 / v0.15.5` (and all `v0.15.x` builds) in favor of `v0.19.0+`, the legacy sibling fields can be cleanly retired by executing the following checklist:
+Because the original `v0.15.4` test pool is small and will convert quickly once `v0.20.8` releases, subsequent builds (`schemaVersion: 2` / `v0.20.9+` or `v1.0.0+`) can drop all `v0.15.4`-exclusive upgrade and coexistence scaffolding and support **`v0.20.8+` onward** exclusively.
 
-1. **Bump `CURRENT_SCHEMA_VERSION` to `2` (`src/lib/compatibility.ts`)**:
-   * Update `CURRENT_MIN_APP_VERSION` to the new baseline version (e.g. `"0.20.0"` or `"1.0.0"`).
-2. **Retire `LogEntry` Legacy Timestamp Triplets (`src/types.ts`, `src/lib/compatibility.ts`, `src/hooks/useScheduleManager.ts`, `src/components/LiveReadPopout.tsx`)**:
-   * Keep `scheduledFor` (canonical scheduled slot ISO) and `executedAt` (canonical execution ISO) as the sole required timestamp fields on `LogEntry`.
-   * In `migrateLogsPayload` (for `schemaVersion: 1 -> 2`), convert any remaining `announcementTime` / `timestamp` into `scheduledFor` and `logTimeStamp` into `executedAt`, then omit `announcementTime` and `logTimeStamp` on new writes.
-3. **Retire Auto-Heal Bypass for Un-Enveloped Object Files (`server.ts` & `src/lib/driveService.ts`)**:
-   * Once `v0.15.x` is no longer stripping `_meta` on shared folders, `/api/compatibility/inspect` can require `_meta` strictly and route any missing-`_meta` file through the explicit two-phase `/api/compatibility/upgrade` flow.
-4. **Retire `Announcement.mp3Url` Legacy Synthesis (`src/lib/utils.ts` & `src/lib/compatibility.ts`)**:
-   * Keep `timeGatedMp3s` as the sole media array on `Announcement`.
+Use this file-by-file checklist when backing out `v0.15.4`-exclusive schema code.
+
+### A. Version & Schema Cutover (`src/lib/compatibility.ts`)
+1. **Bump Schema Floor**:
+   * Set `CURRENT_SCHEMA_VERSION = 2` and `CURRENT_MIN_APP_VERSION = '0.20.8'` (or `'1.0.0'`).
+   * Keep `DataEnvelope._meta` (`schemaVersion`, `minAppVersion`, `lastModifiedBy`, `highestAppVersion`, `lastModifiedAt`) as the standard envelope for `v0.20.8+`.
+2. **Remove `v0.15.4` Flat Gate Reconciliation & Dual-Writes (`migrateAnnouncementsPayload`)**:
+   * Remove `isLegacy015Envelope` / `isLegacy015Item` detection and the `v0.15.x` flat `mp3Url` -> `mediaItems[reconcileIdx]` reconciliation block.
+   * Stop mirroring `primaryActiveItem` properties (`mp3Url`, `assetType`, `backupMp3Url`, `approximateReadTime`, `duration`, `fileSize`) onto the parent `TimeGatedMp3` gate object — keep `gate.mediaItems[]` as the sole source of truth.
+   * Remove legacy v0 flat `Announcement.mp3Url` -> `timeGatedMp3s[0]` synthesis.
+3. **Remove `data[0]._stationMeta` Item-Level Carrier (`migrateAnnouncementsPayload` & `migrateShowsPayload`)**:
+   * `data[0]._stationMeta` existed exclusively because `v0.15.4` stripped `_meta` and top-level station settings when rewriting `shows.json` and `announcements.json`.
+   * Stop writing and reading `data[0]._stationMeta`; read/write station settings solely on `shows.json` (`_meta` / top-level) and `announcements.json._meta.scheduleWindow`.
+4. **Remove `v0.15.4` Historical Revision & Date Backfills**:
+   * Remove `backfillLegacyAnnouncementRevisions()` (synthesized revision slices for `v0.15.4` in-place minute edits and disabled ended campaigns) and remove its invocation inside `migrateAnnouncementsPayload`.
+   * Remove the legacy `'2026-08-01'` `validFrom` patch inside `resolveSeededValidFrom` (keep `validFrom` preservation for `v0.20.8+` records).
+   * Keep `estimateWpmReadTimeFromText()` (still actively used by `CopyEditorModal` and `#77` WPM `isAutoReadTime` recalculation), but drop the one-time legacy null-read-time `0.15.4` upgrade scan inside `GET /api/compatibility/inspect`.
+5. **Simplify `LogEntry` Legacy Timestamp Triplets (`seedLogEntrySiblings` & `migrateLogsPayload`)**:
+   * Keep `scheduledFor` (canonical scheduled slot ISO) and `executedAt` (canonical execution ISO) as the sole timestamp fields on `LogEntry`.
+   * Keep a clean one-way `schemaVersion: 1 -> 2` converter inside `migrateLogsPayload` (mapping any remaining `v0.20.8` `announcementTime`/`timestamp`/`logTimeStamp` onto `scheduledFor`/`executedAt`), then stop dual-writing `announcementTime`, `timestamp`, and `logTimeStamp` on new log writes.
+
+### B. Client Normalization & Types (`src/lib/scheduleEngine.ts`, `src/types.ts`, `src/lib/temporalReconciliation.ts`)
+6. **`src/lib/scheduleEngine.ts` (`normalizeAnnouncement`)**:
+   * Remove `isLegacy015Item`, legacy top-level `anyItem.mp3Url` synthesis, the `v0.15.x` flat gate reconciliation block, and the flat sibling mirror writes on `TimeGatedMp3`.
+7. **`src/types.ts`**:
+   * Remove deprecated flat sibling fields (`mp3Url`, `assetType`, `backupMp3Url`, `approximateReadTime`, `duration`, `fileSize`) from `TimeGatedMp3` and remove `LegacyRawAnnouncement` / `LegacyRawGate` flat properties where no longer needed.
+   * Keep `gateId`, `rotationIndex`, `rotationTotal`, `inactivated`, `inactivatedAt`, `isAutoReadTime`, `AdminMessage`, and `AnnouncementRevision.timeGatedMp3s` (all `v0.20.8+` canonical fields).
+8. **`src/lib/temporalReconciliation.ts`**:
+   * Remove the `backfillLegacyAnnouncementRevisions()` call on load.
+   * Once `schemaVersion: 2` logs are live, simplify timestamp accessors to read `scheduledFor` and `executedAt` directly (retaining `gateId`-first attribution and legacy fallback only if needed for pre-`0.20.8` log entries already converted in `logs.json`).
+
+### C. Backend Routes, Sidecar & Drive Provider (`src/server/routes/scheduleRoutes.ts`, `src/server/storage/driveProvider.ts`, `src/server/state.ts`)
+9. **Remove Silent `!parsed._meta` Auto-Enveloping & First-Touch Pre-Upgrade Snapshots**:
+   * In `GET /api/compatibility/inspect` (`scheduleRoutes.ts`) and `inspectServerDriveCompatibility` (`driveProvider.ts`), remove the `!parsed._meta` silent auto-envelope bypass and `ensureFirstTouchPreUpgradeBackup` / `ensureDriveFirstTouchPreUpgradeBackup` helpers.
+   * Require `_meta` strictly and route any older `schemaVersion < CURRENT_SCHEMA_VERSION` payload through the explicit transactional `/api/compatibility/upgrade` flow.
+10. **Retire `settings/station_settings.json` Sidecar & `_stationMeta` Mirrors**:
+    * `settings/station_settings.json` was added strictly so `v0.15.4` rewrites of `shows.json` could not erase `stationTimezone`, `adminContactInfo`, `upNextPromo`, `scheduleWindow`, and `adminMessages`.
+    * Once `v0.15.4` is gone, remove `readStationSettingsSidecar`, `writeStationSettingsSidecar`, `resolveShowsMetadataWithSidecarFallback`, `resolveAnnScheduleWindowWithSidecarFallback`, and `data[0]._stationMeta` sync blocks across `scheduleRoutes.ts`, `state.ts`, and `driveProvider.ts` — reading/writing station settings exclusively on `shows.json` (and keeping `announcements.json._meta.scheduleWindow` synced on WPM/font updates).
+    * **Keep** all corrupt-JSON overwrite guards (`POST /api/logs`, `POST /api/trigger-backup`, `appendDriveLog`, `writeDriveShows`, `triggerServerDriveBackup`) and Admin Backup Recovery (`/api/backups/*`) — those are permanent data-safety features, not `v0.15.4` code.
+
+### D. Optional Copy Formatting Note & Automated Test Suite
+11. **Optional: Legacy Plain-Text Markdown Header (`src/components/CopyEditorModal.tsx` & `src/lib/liveReadTextUtils.ts`)**:
+    * The top `<!-- This is formatted as a .md markdown file... -->` comment was added so `v0.15.4` DJs opening formatted `.txt` scripts understood `**bold**` / `*italic*` / `__underline__`. Decide whether to keep it (still useful if opened in Notepad/TextEdit) or drop it for `v0.20.8+`.
+12. **Rebase `scripts/test-schema-upgrade.ts` on `v0.20.8` (`schemaVersion: 1`) -> `schemaVersion: 2`**:
+    * Retire `v0.15.4 / v0.15.5` envelope-strip and flat-gate ping-pong coexistence stages (Stages 1, 3, 4, 8a, `10g`, and the `0.15.4` sub-checks of `10h`).
+    * Retain and expand all `v0.20.8+` canonical tests: multi-item rotation, `ScheduleEngine`, `LIN-1`–`LIN-6` gate lineage, Admin Messages, font defaults, monotonic `highestAppVersion`, and `v0.20.8 -> schemaVersion: 2` upgrade verification.
+

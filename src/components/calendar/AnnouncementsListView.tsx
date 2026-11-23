@@ -478,9 +478,10 @@ export function AnnouncementsListView({
                                   <span className="text-xs font-black uppercase">Details</span>
                                 )}
                               </button>
-                              <span
-                                onClick={e => e.stopPropagation()}
-                                className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 select-none cursor-help"
+                              <button
+                                type="button"
+                                onClick={e => toggleDetailsDrawer(s.id, e)}
+                                className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 select-none cursor-pointer transition-colors"
                                 title={formatSlotAssessmentTooltip(annAudit, {
                                   scopeTitle: `${s.name} Assessment (History)`,
                                   firstUsedFormatted: annFirstUsed,
@@ -488,7 +489,7 @@ export function AnnouncementsListView({
                                 })}
                               >
                                 {!listCardCollapseDetailsText ? `History (${annAudit.totalPlays})` : `${annAudit.totalPlays}`}
-                              </span>
+                              </button>
                               {annAudit.totalPlays > 0 ? (
                                 onInactivateOrReactivate && (
                                   <button
@@ -846,8 +847,20 @@ export function AnnouncementsListView({
                         {expandedDetailsByAnnId[s.id] && (
                           <div
                             onClick={e => e.stopPropagation()}
-                            className="mt-1.5 pt-1.5 border-t border-slate-200/70 text-[11px] font-bold text-slate-600 space-y-1 cursor-default"
+                            className="mt-1.5 pt-1.5 border-t border-slate-200/70 text-[11px] font-bold text-slate-600 space-y-1.5 cursor-default"
                           >
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-700 bg-blue-50/60 border border-blue-200/70 rounded px-2 py-1">
+                              <span className="font-black text-blue-900">History:</span>
+                              <span>Played: {annAudit.played}</span>
+                              <span>Missed: {annAudit.missed}</span>
+                              <span>Future: {annAudit.futureLabel}</span>
+                              {annAudit.cancelled > 0 && (
+                                <span>Cancelled (Inactivated): {annAudit.cancelled}</span>
+                              )}
+                              <span>Total: {annAudit.totalLabel}</span>
+                              <span className="text-slate-500">First Broadcast: {annFirstUsed}</span>
+                              <span className="text-slate-500">Last Broadcast: {annLastUsed}</span>
+                            </div>
                             {sortedGates.length > 0 && (
                               <div className="space-y-0.5">
                                 {sortedGates.map((gate, gIdx) => {
@@ -1377,9 +1390,10 @@ export function AnnouncementsListView({
                                         <span className="text-xs font-black uppercase">Details</span>
                                       )}
                                     </button>
-                                    <span
-                                      onClick={e => e.stopPropagation()}
-                                      className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-300 select-none cursor-help"
+                                    <button
+                                      type="button"
+                                      onClick={e => toggleDetailsDrawer(s.id, e)}
+                                      className="text-[10px] font-sans font-bold tabular-nums px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300 select-none cursor-pointer transition-colors"
                                       title={formatSlotAssessmentTooltip(annAudit, {
                                         scopeTitle: `${s.name} Assessment (History)`,
                                         firstUsedFormatted: annFirstUsed,
@@ -1387,7 +1401,7 @@ export function AnnouncementsListView({
                                       })}
                                     >
                                       {!listCardCollapseDetailsText ? `History (${annAudit.totalPlays})` : `${annAudit.totalPlays}`}
-                                    </span>
+                                    </button>
                                     {!s.enabled && !isExpired && onInactivateOrReactivate && (
                                       <button
                                         type="button"
@@ -1742,8 +1756,20 @@ export function AnnouncementsListView({
                               {expandedDetailsByAnnId[s.id] && (
                                 <div
                                   onClick={e => e.stopPropagation()}
-                                  className="mt-1.5 pt-1.5 border-t border-slate-200/70 text-[11px] font-bold text-slate-600 space-y-1 cursor-default"
+                                  className="mt-1.5 pt-1.5 border-t border-slate-200/70 text-[11px] font-bold text-slate-600 space-y-1.5 cursor-default"
                                 >
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-700 bg-slate-100/80 border border-slate-300/80 rounded px-2 py-1">
+                                    <span className="font-black text-slate-800">History:</span>
+                                    <span>Played: {annAudit.played}</span>
+                                    <span>Missed: {annAudit.missed}</span>
+                                    <span>Future: {annAudit.futureLabel}</span>
+                                    {annAudit.cancelled > 0 && (
+                                      <span>Cancelled (Inactivated): {annAudit.cancelled}</span>
+                                    )}
+                                    <span>Total: {annAudit.totalLabel}</span>
+                                    <span className="text-slate-500">First Broadcast: {annFirstUsed}</span>
+                                    <span className="text-slate-500">Last Broadcast: {annLastUsed}</span>
+                                  </div>
                                   {sortedGates.length > 0 && (
                                     <div className="space-y-0.5">
                                       {sortedGates.map((gate, gIdx) => {

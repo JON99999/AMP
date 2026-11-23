@@ -4,7 +4,7 @@
 > - **Trigger Phrases**: Whenever the user asks *"what's left"*, *"what's next"*, *"next steps"*, *"open items"*, *"roadmap"*, *"easy wins"*, or similar phrasing, **always read `dev/docs/ROADMAP_newstuff.md`, this file, and `dev/docs/ROADMAP_HISTORY.md` first**.
 > - **Inbox Intake (`dev/docs/ROADMAP_newstuff.md`)**: On every roadmap check (or when `ROADMAP_newstuff.md` has pending entries), parse any raw notes in `dev/docs/ROADMAP_newstuff.md`, add them as numbered `#ID` items in this file recording **only** the verbatim `User Note` (hold off on analysis or implementation plans until asked), clear the consumed raw notes from `## Pending Inbox`, and log a 1-line receipt in `## Ingested Batch Log`.
 > - **Roadmap Items Are Reminders, Not Commands**: Selecting a `#ID` opens analysis/discussion on that reminder; always present a numbered checklist separating **Core Scoped Changes** from **Related / Edge-of-Scope Suggestions** using continuous `1–N` numbering across subgroupings (e.g., `- **1.**` through `- **6.**` with nested `a., b., c.` sub-bullets so Markdown parsers never reset numbering to `1–3` under a second header) and wait for confirmation before editing files.
-> - **Immutable Monotonic `#ID` Numbering (Never Renumber)**: Every new item MUST receive the next sequential integer `#ID` (`max(existing #ID across ROADMAP_AND_BACKLOG.md and ROADMAP_HISTORY.md) + 1`, so the next item added is **`#114`**). Never renumber, reuse, or shift existing `#ID`s.
+> - **Immutable Monotonic `#ID` Numbering (Never Renumber)**: Every new item MUST receive the next sequential integer `#ID` (`max(existing #ID across ROADMAP_AND_BACKLOG.md and ROADMAP_HISTORY.md) + 1`, so the next item added is **`#119`**). Never renumber, reuse, or shift existing `#ID`s.
 > - **Historical Preservation (`dev/docs/ROADMAP_HISTORY.md`) & Verbatim Note Permanence**: The user's original verbatim `User Note` must **always** accompany an item across any future changes, revisions, or archiving. When an item is completed, rejected, abandoned, or resolved, move it out of this active backlog into `dev/docs/ROADMAP_HISTORY.md`, preserving its permanent `#ID`, its original verbatim `User Note`, and a brief, non-technical high-level outcome summary.
 > - **Three-Tier Subgrouping (`Pending / Dependent`, `Current / Next`, `Future / Deferred / Low Priority`)**:
 >   1. **Pending / Dependent**: Items whose code or migration logic is implemented and awaiting external validation (such as live two-version desktop workstation testing) or future station-wide version retirement before final cutover.
@@ -30,32 +30,17 @@
   * **Dual-Value Sibling Bridge (`#5`)**: Bidirectional seeding and dual-write of `logs.json` (`scheduledFor`/`executedAt` <-> `announcementTime`/`timestamp`/`logTimeStamp`), `announcements.json` (`validFrom`, `validTo`, `isDeleted`, `revisions`, `timeGatedMp3s`), and `shows.json` (`active` + temporal fields), plus automatic `_meta` healing on shared folders (`dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md`).
   * **Legacy Script WPM Approximate Read-Time Backfill (`#28`)**: `migrateAnnouncementsPayload` (`src/lib/compatibility.ts`), `normalizeAnnouncement` (`src/lib/utils.ts`), and `resolveLocalAnnouncementScriptText` (`server.ts`) automatically compute and backfill the ~150 WPM duration (`0mXXs`, rounded up to the nearest 5s) across active `timeGatedMp3s` and historical `revisions` whenever a legacy script card (`assetType === 'script'` or `.txt`/`.md`) has `null` or missing `approximateReadTime` and readable text is available on disk or inline, while preserving any existing explicit duration (`scripts/test-schema-upgrade.ts` Stage 5).
   * **What `#5b` Is Still Tracking (Pending / Dependent)**:
-    * **Delta Verification (`v0.20.7` Pass — `dev/docs/TESTING_PLAN_v0.20.7.md`)**:
-      * Round 1 Windows (`v0.20.6`, `Tests 1–15`) complete; `v0.20.7` delta test plan (`dev/docs/TESTING_PLAN_v0.20.7.md`) covers Batches 1–4 (`#90`–`#108`, `#112`, `#37`, `#38`) plus `#26` (`Files` / `File Manager` sub-tab and `archived` / `deleted_in_AMP_OK_to_purge` subfolders) across Windows Round 1 and macOS Round 2.
-    * **Future Sunset (`schemaVersion: 2`)**:
-      * Once all station machines have permanently retired `v0.15.4/5`, remove the duplicate legacy sibling fields per `dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md`.
+    * **Delta Verification (`v0.20.8` Pass — `dev/docs/TESTING_PLAN_v0.20.8.md`)**:
+      * Round 1 Windows (`v0.20.6`, `Tests 1–15`) complete; consolidated `v0.20.8` delta test plan (`dev/docs/TESTING_PLAN_v0.20.8.md`) covers all unverified `v0.20.7` items (`#90`–`#108`, `#112`, `#37`, `#38`, `#26`) plus all `v0.20.8` work (`#110`, `#115`, `#78`, `#116`, Computer Logging Persona, Reader->Editor z-index fix, `#43/#113` `LIN-1`–`LIN-6`, missing-file soft warning, upfront calendar picker guards/grace notices, and smart auto-focus/calendar-open) across Windows Round 1 and macOS Round 2.
+    * **Future Sunset (`v0.20.8+` Onward -> `schemaVersion: 2`)**:
+      * Once the small `v0.15.4` user pool converts to `v0.20.8`, follow the concrete 12-item file-by-file **`v0.15.4`-Exclusive Schema Backout Guide** in `dev/docs/COEXISTENCE_AND_SIBLING_BRIDGE.md` (Section 4) to remove all `v0.15.4` coexistence/upgrade code and support `v0.20.8+` onward exclusively.
 
 ---
 
 ## 2. Current / Next
 *(Default subgrouping for all newly added `#ID` items unless specified otherwise)*
 
-### 78. [ ] Global Admin Announcement / Off-Air Acknowledged User Message or Snoozable Pop-Up With Read Logging
-* **User Note**:
-  * *"Future Roadmap item - Make there be an option for the Admin mode user to somehow set a global announcement to other users.  This would be similar to setting the general admin contact information, but instead of being a hidden default, might be something that each of the users might need to read... so possibly it could be added as a card that is like text, but should be acknowledged after reading off-air.  Or possibly one that is a user pop-up that needs to be cleared and the logging shows everyone read it?  That might have a snooze for people on at a different time than the DJ?"*
-  * *"Let's work on 78's roadmap.  Just add this to the concept now.  THe main way it should be set up is 2 paths.  Path 1 is a application level announcement that open when the app opens that gives a version difference warning or other generic app warning that can be pushed by the admin.  This is for app related changes and updates.  Possibly just to users with OLD versions.  So, possibly tied into the version schema method.  Path 2 is messaging either to all shows or specific shows.  It would be presented to the show in the interface for Live as an omnipresent \"i\" for information or \"!\" for alert card that stays in the now section.  On prerecords, it would exist ominpresent when unread as the first card.  The behavior for having read it to themselves is the same as logging.  THe behavior for a prerecord is essentially the same concept.  Once read, take out of the now, and mark as read/done.  In this case, \"read\" is semi-literaly.  We DON'T want to have the user read outloud over the air.  But, \"read\" is like a contractural acknowledgement style of \"read\".  Cancel would mean the object would show again and not be cleared.  Structurally, the messages would be similar to the auto create/schedule of the Show \"Up Next\" cards.  \"schedule\" wise, it would be a hybrid with the Announcements in that what you would do is let the user write a general message to all DJ's.  Or, a message to specific DJ's that they select from a list.  Or, on a show card, write a message to a specific dj.  These messages could either be evergreen based on a date range.  Or, they could be simply \"clear once acknowledged.\"  (Note that I am using DJ and Show interchangeably.)"*
-
-### 110. [ ] Global Setting for Default Live Read Font Size
-* **User Note**:
-  * *"Make a roadmap item to make a global setting the default live read font size."*
-
-### 43 & 113. [ ] Joined Schema & Historical Lineage Roadmap: Archived, Deleted, & Current Gate/Rotation Items (`x/y`) in `logs.json` (`#113`) & Historical Rotating Media Track Placement (`#43`)
-* **User Note (`#113` — Joined at the Hip with `#43`)**:
-  * *"8.c.note - if that is the only way we know which x/y was played, then add.  However, this probably needs to be a schema roadmap to start to address however archived and deleted and current items are handled in logs for historical purposes."*
-* **User Note (`#43` — Joined at the Hip with `#113`)**:
-  * *"On 5, this is logical, but overkill.  Move that to a new roadmap item to consider if actual rotating media track is necessary/feasible/implementable.  Right now, rely on the fact that calendars are regenerated on the fly, and rely on the fact that logs and audits don't check for which media track was played to make this only a hypothetical need.  It seems like tracking of past gate history to recreate rotating media placement is just difficult with huge overhead."*
-* **User Note (`11/17/2026`)**:
-  * *"Merge #43 and #113 (Or at least cross reference them and join them at the hip.)  Move them both to current priority."*
+*(No active items currently queued in Current / Next.)*
 
 ---
 
@@ -106,5 +91,16 @@
 * **User Note**:
   * *"6.d The sequencing of the collapses is still super awkward and happens often way way earlier than is needed. (i.e. there is a huge gap between the text and the buttons.) But, I don't want to work on it now. Make that a low priority gap."*
 
+### 114. [ ] Systematic Worst-Case Row Width & Button Collapse Calculation Across Table Views (Including File Manager)
+* **User Note**:
+  * *"Add a roadmap item to the current roadmap for adjusting widths of buttons and collapses.  File Manager needs it too.  in general, the code should have a method of finding the worst, in a combination of each different type of rows, and writing the logic as if all the worst elements coexist."*
+  * *(11/18/2026 User Note)*: *"Move #114 to low priority."*
 
+### 117. [ ] Show Substitutions (Guest Host / Swap) & Evergreen Pre-Record Scheduling
+* **User Note**:
+  * *"Add a roadmap item for allowing show subtitutions for future shows.  Basic realworld scenario is a guest host/swap.  Additionally, there are times when a person is scheduling an evergreen (i.e. a pre-record scenario where an export has to be used), so some of that might also be rolled in too."*
+  * *(11/19/2026 User Note)*: *"Make #117 a low priority item."*
 
+### 118. [ ] Simple Station Login / Check-In Log for Workstation & Version Map Analysis
+* **User Note**:
+  * *"Except 9.  Add that as a low priority possible future improvement.  A simple login log that captures all that might be better.  Analysis of that can always reveal that map."*

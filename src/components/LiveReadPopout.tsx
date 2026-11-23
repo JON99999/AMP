@@ -36,6 +36,12 @@ import {
 import { LogEntry } from '../types';
 import { getPlayableUrl, getSavedSettings, getStorageApiHeaders, cacheMP3, getAccessToken } from '../lib/driveService';
 import { renderFormattedTxtContent, stripHtmlComments } from '../lib/liveReadFormatting';
+import {
+  getDefaultLiveReadFontSize,
+  getDefaultLiveReadFontFamily,
+  getLiveReadFontFamilyCss,
+  LiveReadFontFamily
+} from '../lib/compatibility';
 
 interface LiveReadPopoutProps {
   initialFileName?: string;
@@ -47,6 +53,9 @@ interface LiveReadPopoutProps {
   initialShowName?: string;
   initialHostName?: string;
   initialShowDateTime?: string;
+  initialGateId?: string;
+  initialRotationIndex?: number;
+  initialRotationTotal?: number;
   backupMp3Url?: string;
   playMode?: 'Live' | 'Prerecord' | 'Playlist' | 'Export';
   onClose?: () => void;
@@ -59,6 +68,7 @@ interface LiveReadPopoutProps {
   isTestPopup?: boolean;
   initialContent?: string;
   isReadOnly?: boolean;
+  sourceBucket?: 'active' | 'archived' | 'deleted';
 }
 
 const isMac = typeof window !== 'undefined' && (
@@ -105,6 +115,9 @@ export default function LiveReadPopout({
   initialShowName = '',
   initialHostName = '',
   initialShowDateTime = '',
+  initialGateId = '',
+  initialRotationIndex,
+  initialRotationTotal,
   backupMp3Url: initialBackupMp3Url = '',
   playMode: initialPlayMode = 'Live',
   onClose,
@@ -116,7 +129,8 @@ export default function LiveReadPopout({
   isPreview = false,
   isTestPopup: initialIsTestPopup = false,
   initialContent,
-  isReadOnly = false
+  isReadOnly = false,
+  sourceBucket
 }: LiveReadPopoutProps) {
   // Configured file & schedule states
   const [fileName, setFileName] = useState(initialFileName);
@@ -128,12 +142,15 @@ export default function LiveReadPopout({
   const [showName, setShowName] = useState(initialShowName);
   const [hostName, setHostName] = useState(initialHostName);
   const [showDateTime, setShowDateTime] = useState(initialShowDateTime);
+  const [gateId, setGateId] = useState(initialGateId);
+  const [rotationIndex, setRotationIndex] = useState<number | undefined>(initialRotationIndex);
+  const [rotationTotal, setRotationTotal] = useState<number | undefined>(initialRotationTotal);
   const [backupMp3Url, setBackupMp3Url] = useState(initialBackupMp3Url);
   const [playMode, setPlayMode] = useState<'Live' | 'Prerecord' | 'Playlist' | 'Export'>(initialPlayMode);
   const [isPreviewMode, setIsPreviewMode] = useState(isPreview);
   const [isTestPopupMode, setIsTestPopupMode] = useState(initialIsTestPopup);
 
-  // Sync theme with main app settings
+  // Sync theme and station Live Read font defaults with main app settings
   useEffect(() => {
     try {
       const savedTheme = (localStorage.getItem('amp_theme') as ThemeId) || 'light';
@@ -143,6 +160,18 @@ export default function LiveReadPopout({
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'amp_theme' && e.newValue) {
         applyTheme(e.newValue as ThemeId);
+      } else if (e.key === 'amp_schedule_window_config' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (parsed && typeof parsed === 'object') {
+            if (typeof parsed.defaultLiveReadFontSize === 'number' && !isNaN(parsed.defaultLiveReadFontSize)) {
+              setZoomLevel(Math.max(14, Math.min(40, Math.round(parsed.defaultLiveReadFontSize))));
+            }
+            if (typeof parsed.defaultLiveReadFontFamily === 'string') {
+              setFontFamily(parsed.defaultLiveReadFontFamily as LiveReadFontFamily);
+            }
+          }
+        } catch (_) {}
       }
     };
     window.addEventListener('storage', handleStorage);
@@ -165,7 +194,9 @@ export default function LiveReadPopout({
     if (initialFileName) {
       setFileName(initialFileName);
     }
-  }, [initialFileName]);
+    setZoomLevel(getDefaultLiveReadFontSize());
+    setFontFamily(getDefaultLiveReadFontFamily());
+  }, [initialFileName, initialContent]);
 
   useEffect(() => {
     if (initialShowId !== undefined) setShowId(initialShowId);
@@ -282,6 +313,9 @@ export default function LiveReadPopout({
       playMode: playMode || 'Live',
       logTimeStamp: commitTimestamp,
       assetType: 'audio',
+      ...(gateId ? { gateId } : {}),
+      ...(typeof rotationIndex === 'number' && rotationIndex > 0 ? { rotationIndex } : {}),
+      ...(typeof rotationTotal === 'number' && rotationTotal > 0 ? { rotationTotal } : {}),
       ...(showId ? { showId } : {}),
       ...(showName ? { showName } : {}),
       ...(hostName ? { hostName } : {}),
@@ -330,7 +364,8 @@ export default function LiveReadPopout({
   const [error, setError] = useState<string | null>(null);
 
   // UI adjustment states
-  const [zoomLevel, setZoomLevel] = useState(20); // Font size in px for text
+  const [zoomLevel, setZoomLevel] = useState<number>(() => getDefaultLiveReadFontSize()); // Font size in px for text
+  const [fontFamily, setFontFamily] = useState<LiveReadFontFamily>(() => getDefaultLiveReadFontFamily());
   const [imageZoom, setImageZoom] = useState(100); // Scale percentage for images
   const [imageNaturalWidth, setImageNaturalWidth] = useState<number | null>(null);
   const [imageFitZoom, setImageFitZoom] = useState<number | null>(null);
@@ -392,6 +427,9 @@ export default function LiveReadPopout({
             if (ipcData.showName) setShowName(ipcData.showName);
             if (ipcData.hostName) setHostName(ipcData.hostName);
             if (ipcData.showDateTime) setShowDateTime(ipcData.showDateTime);
+            if (typeof ipcData.gateId === 'string' && ipcData.gateId) setGateId(ipcData.gateId);
+            if (typeof ipcData.rotationIndex === 'number' && ipcData.rotationIndex > 0) setRotationIndex(ipcData.rotationIndex);
+            if (typeof ipcData.rotationTotal === 'number' && ipcData.rotationTotal > 0) setRotationTotal(ipcData.rotationTotal);
             if (ipcData.playMode) {
               setPlayMode(ipcData.playMode);
             }
@@ -438,11 +476,17 @@ export default function LiveReadPopout({
       const qShowName = params.get('showName') || '';
       const qHostName = params.get('hostName') || '';
       const qShowDateTime = params.get('showDateTime') || '';
+      const qGateId = params.get('gateId') || '';
+      const qRotIdx = Number(params.get('rotationIndex') || '');
+      const qRotTotal = Number(params.get('rotationTotal') || '');
 
       if (qShowId) setShowId(qShowId);
       if (qShowName) setShowName(qShowName);
       if (qHostName) setHostName(qHostName);
       if (qShowDateTime) setShowDateTime(qShowDateTime);
+      if (qGateId) setGateId(qGateId);
+      if (Number.isFinite(qRotIdx) && qRotIdx > 0) setRotationIndex(qRotIdx);
+      if (Number.isFinite(qRotTotal) && qRotTotal > 0) setRotationTotal(qRotTotal);
 
       if (pMode === 'Live' || pMode === 'Prerecord' || pMode === 'Playlist' || pMode === 'Export') {
         setPlayMode(pMode);
@@ -487,7 +531,8 @@ export default function LiveReadPopout({
         return;
       }
       const headers = await getStorageApiHeaders();
-      const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(name)}`, { headers });
+      const bucketQuery = sourceBucket && sourceBucket !== 'active' ? `&bucket=${encodeURIComponent(sourceBucket)}` : '';
+      const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(name)}${bucketQuery}`, { headers });
       if (!res.ok) {
         const extLower = name.includes('.') ? `.${name.split('.').pop()?.toLowerCase()}` : '.txt';
         if (extLower !== '.txt' && extLower !== '.md') {
@@ -612,6 +657,9 @@ export default function LiveReadPopout({
       playMode: playMode || 'Live',
       logTimeStamp: finalTimestamp,
       assetType: 'script',
+      ...(gateId ? { gateId } : {}),
+      ...(typeof rotationIndex === 'number' && rotationIndex > 0 ? { rotationIndex } : {}),
+      ...(typeof rotationTotal === 'number' && rotationTotal > 0 ? { rotationTotal } : {}),
       ...(showId ? { showId } : {}),
       ...(showName ? { showName } : {}),
       ...(hostName ? { hostName } : {}),
@@ -843,8 +891,22 @@ export default function LiveReadPopout({
                 <ZoomOut className="w-4 h-4" />
               </button>
               <div 
-                className="px-2 text-xs font-mono font-black text-slate-400 border-x border-slate-800 select-none min-w-[3.5rem] text-center"
-                title="Current Zoom Level"
+                onClick={() => {
+                  if (isText || isMarkdown) {
+                    setZoomLevel(getDefaultLiveReadFontSize());
+                  }
+                }}
+                className={cn(
+                  "px-2 text-xs font-mono font-black text-slate-400 border-x border-slate-800 select-none min-w-[3.5rem] text-center",
+                  (isText || isMarkdown) && zoomLevel !== getDefaultLiveReadFontSize()
+                    ? "cursor-pointer hover:text-white hover:bg-slate-800 transition-colors"
+                    : ""
+                )}
+                title={
+                  (isText || isMarkdown) && zoomLevel !== getDefaultLiveReadFontSize()
+                    ? `Current Zoom Level (${zoomLevel}px) — Click to reset to station default (${getDefaultLiveReadFontSize()}px)`
+                    : "Current Zoom Level"
+                }
               >
                 {(isText || isMarkdown) ? `${zoomLevel}px` : isImage ? `${imageZoom}%` : `${pdfZoom}%`}
               </div>
@@ -899,7 +961,7 @@ export default function LiveReadPopout({
             {isMarkdown && (
               <div 
                 className="flex-1 w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 overflow-y-auto font-sans leading-relaxed select-text cursor-text text-slate-800 dark:text-slate-100 shadow-inner"
-                style={{ fontSize: `${zoomLevel}px`, lineHeight: 1.6 }}
+                style={{ fontSize: `${zoomLevel}px`, fontFamily: getLiveReadFontFamilyCss(fontFamily), lineHeight: 1.6 }}
               >
                 {renderMarkdownContent(fileContent)}
               </div>
@@ -909,7 +971,7 @@ export default function LiveReadPopout({
             {isText && (
               <div 
                 className="flex-1 w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 overflow-y-auto font-sans leading-relaxed select-text cursor-text text-slate-800 dark:text-slate-100 shadow-inner whitespace-pre-wrap"
-                style={{ fontSize: `${zoomLevel}px`, lineHeight: 1.6 }}
+                style={{ fontSize: `${zoomLevel}px`, fontFamily: getLiveReadFontFamilyCss(fontFamily), lineHeight: 1.6 }}
               >
                 {renderFormattedTxtContent(fileContent)}
               </div>

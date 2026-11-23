@@ -1,7 +1,7 @@
 import React from 'react';
 import { format, startOfMinute } from 'date-fns';
 import { Clock, RadioTower } from 'lucide-react';
-import { Announcement, LogEntry, Show } from '../../types';
+import { AdminMessage, Announcement, LogEntry, Show } from '../../types';
 import {
   cn,
   getMP3Status,
@@ -13,8 +13,10 @@ import {
   getGatedAssetType,
 } from '../../lib/utils';
 import { isLogForStationSlot } from '../../lib/compatibility';
+import { getAdminMessagesForShowOccurrence } from '../../lib/adminMessages';
 import { InFlowLiveSpacer, LiveSpacerInfo } from './PlayerShowSpacer';
 import { LiveToBeCard, LiveCardEntry } from './PlayerAnnouncementCard';
+import { PlayerAdminMessageCard } from './PlayerAdminMessageCard';
 
 interface PlayerLiveTimelineViewProps {
   timeline: Date[];
@@ -36,6 +38,15 @@ interface PlayerLiveTimelineViewProps {
   scrollToNow: () => void;
   onPlay: (s: Announcement, slot: Date) => void;
   onOpenHelpPopup: (card: { name: string; timeLabel: string; errorLabel: string }) => void;
+  adminMessages?: AdminMessage[];
+  onOpenAdminMessage?: (
+    message: AdminMessage,
+    show: Show | null,
+    acknowledged: boolean,
+    acknowledgedAt?: string,
+    airDate?: Date,
+    confirmBeforeAck?: boolean
+  ) => void;
 }
 
 export function PlayerLiveTimelineView({
@@ -58,6 +69,8 @@ export function PlayerLiveTimelineView({
   scrollToNow,
   onPlay,
   onOpenHelpPopup,
+  adminMessages = [],
+  onOpenAdminMessage,
 }: PlayerLiveTimelineViewProps) {
   const sortedShows = getSortedShows(shows);
   const daysOrder = [
@@ -102,6 +115,7 @@ export function PlayerLiveTimelineView({
         slot,
         shadeBg: shade.bg,
         shadeBorder: shade.border,
+        show: sh,
       });
     }
 
@@ -121,6 +135,7 @@ export function PlayerLiveTimelineView({
           slot,
           shadeBg: shade.bg,
           shadeBorder: shade.border,
+          show: sh,
         });
       }
     }
@@ -175,6 +190,7 @@ export function PlayerLiveTimelineView({
         slot: firstSlot,
         shadeBg: shade.bg,
         shadeBorder: shade.border,
+        show: firstActive,
       });
     }
   }
@@ -332,6 +348,80 @@ export function PlayerLiveTimelineView({
         border: 'var(--show-shade-none-border, #cbd5e1)',
       };
 
+  const nowReferenceDate = nowClock || now;
+  const activeShowMessages = getAdminMessagesForShowOccurrence(
+    adminMessages,
+    effectiveShow,
+    nowReferenceDate,
+    logs
+  );
+  const unreadNowMessages = activeShowMessages.filter((m) => !m.acknowledged);
+  const acknowledgedPastMessages = activeShowMessages.filter((m) => m.acknowledged);
+
+  const hasActiveShowPastSpacer = Boolean(
+    effectiveShow &&
+      pastSpacers.some(
+        (sp) => !sp.id.startsWith('spacer-cont-') && sp.show?.id === effectiveShow.id
+      )
+  );
+  const unattachedActiveAcknowledgedMessages = hasActiveShowPastSpacer
+    ? []
+    : acknowledgedPastMessages;
+
+  const renderSpacerAttachedMessages = (
+    spacer: LiveSpacerInfo,
+    zone: 'past' | 'now' | 'future'
+  ) => {
+    if (!spacer.show) return null;
+    // Skip continuation midnight banners and avoid duplicating the active show's pinned NOW cards
+    if (spacer.id.startsWith('spacer-cont-')) return null;
+    const isActiveShowSpacer = Boolean(
+      effectiveShow && spacer.show.id === effectiveShow.id
+    );
+    if (isActiveShowSpacer && zone === 'now') {
+      return null;
+    }
+
+    const occurrenceDate =
+      isActiveShowSpacer && zone === 'past'
+        ? nowReferenceDate
+        : spacer.id.startsWith('spacer-init-')
+          ? getActualShowStart(spacer.show, spacer.slot)
+          : spacer.slot;
+
+    const allSpacerMsgs = getAdminMessagesForShowOccurrence(
+      adminMessages,
+      spacer.show,
+      occurrenceDate,
+      logs
+    );
+
+    const msgs =
+      zone === 'past'
+        ? isActiveShowSpacer
+          ? allSpacerMsgs.filter((m) => m.acknowledged)
+          : allSpacerMsgs
+        : allSpacerMsgs.filter((m) => !m.acknowledged);
+
+    if (msgs.length === 0) return null;
+    const isUpcomingShowCard = zone === 'future' || (zone === 'now' && !isActiveShowSpacer);
+
+    return msgs.map((item) => (
+      <PlayerAdminMessageCard
+        key={`spacer-msg-${zone}-${spacer.id}-${item.message.id}`}
+        message={item.message}
+        show={spacer.show || null}
+        acknowledged={item.acknowledged}
+        acknowledgedAt={item.ackRecord?.acknowledgedAt}
+        zone={zone}
+        shadeBg={spacer.shadeBg}
+        onOpen={(msg, sh, ack, ackAt) =>
+          onOpenAdminMessage?.(msg, sh, ack, ackAt, occurrenceDate, isUpcomingShowCard)
+        }
+      />
+    ));
+  };
+
   return (
     <div className="py-2 px-0.5 space-y-2">
       {/* PAST Section Header Block */}
@@ -348,35 +438,53 @@ export function PlayerLiveTimelineView({
 
       {/* Past Cards & Past In-Flow Spacers */}
       <div className="w-[200px] mx-auto flex flex-col">
-        {pastEntries.length === 0 ? (
+        {pastEntries.length === 0 && unattachedActiveAcknowledgedMessages.length === 0 ? (
           <div className="text-center py-2 text-[11px] text-slate-400 font-medium italic">
             No past items in window
           </div>
         ) : (
-          pastEntries.map((entry) =>
-            entry.type === 'spacer' ? (
-              <InFlowLiveSpacer
-                key={entry.spacer.id}
-                spacer={entry.spacer}
-                isExpanded={false}
-              />
-            ) : (
-              <LiveToBeCard
-                key={entry.card.key}
-                cardEntry={entry.card}
+          <>
+            {pastEntries.map((entry) =>
+              entry.type === 'spacer' ? (
+                <React.Fragment key={entry.spacer.id}>
+                  <InFlowLiveSpacer
+                    spacer={entry.spacer}
+                    isExpanded={false}
+                  />
+                  {renderSpacerAttachedMessages(entry.spacer, 'past')}
+                </React.Fragment>
+              ) : (
+                <LiveToBeCard
+                  key={entry.card.key}
+                  cardEntry={entry.card}
+                  zone="past"
+                  shows={shows}
+                  sortedShows={sortedShows}
+                  nowExactMs={nowExactMs}
+                  windowBeforeMinutes={windowBeforeMinutes}
+                  windowAfterMinutes={windowAfterMinutes}
+                  playingStates={playingStates}
+                  resolvedAdminContact={resolvedAdminContact}
+                  onPlay={onPlay}
+                  onOpenHelpPopup={onOpenHelpPopup}
+                />
+              )
+            )}
+            {unattachedActiveAcknowledgedMessages.map((item) => (
+              <PlayerAdminMessageCard
+                key={`past-msg-${item.message.id}`}
+                message={item.message}
+                show={effectiveShow}
+                acknowledged={true}
+                acknowledgedAt={item.ackRecord?.acknowledgedAt}
                 zone="past"
-                shows={shows}
-                sortedShows={sortedShows}
-                nowExactMs={nowExactMs}
-                windowBeforeMinutes={windowBeforeMinutes}
-                windowAfterMinutes={windowAfterMinutes}
-                playingStates={playingStates}
-                resolvedAdminContact={resolvedAdminContact}
-                onPlay={onPlay}
-                onOpenHelpPopup={onOpenHelpPopup}
+                shadeBg={nowActiveShade.bg}
+                onOpen={(msg, sh, ack, ackAt) =>
+                  onOpenAdminMessage?.(msg, sh, ack, ackAt, nowReferenceDate, false)
+                }
               />
-            )
-          )
+            ))}
+          </>
         )}
       </div>
 
@@ -412,10 +520,26 @@ export function PlayerLiveTimelineView({
         </div>
 
         <div className="amp-now-body flex flex-col">
+          {unreadNowMessages.map((item) => (
+            <PlayerAdminMessageCard
+              key={`now-msg-${item.message.id}`}
+              message={item.message}
+              show={effectiveShow}
+              acknowledged={false}
+              zone="now"
+              shadeBg={nowActiveShade.bg}
+              onOpen={(msg, sh, ack, ackAt) =>
+                onOpenAdminMessage?.(msg, sh, ack, ackAt, nowReferenceDate)
+              }
+            />
+          ))}
           {nowCards.length === 0 ? (
             <>
               {nowSpacers.map((spacer) => (
-                <InFlowLiveSpacer key={spacer.id} spacer={spacer} isExpanded={true} />
+                <React.Fragment key={spacer.id}>
+                  <InFlowLiveSpacer spacer={spacer} isExpanded={true} />
+                  {renderSpacerAttachedMessages(spacer, 'now')}
+                </React.Fragment>
               ))}
               <div
                 className="py-1.5 pr-1 pl-1.5 relative"
@@ -433,11 +557,13 @@ export function PlayerLiveTimelineView({
           ) : (
             nowEntries.map((entry) =>
               entry.type === 'spacer' ? (
-                <InFlowLiveSpacer
-                  key={entry.spacer.id}
-                  spacer={entry.spacer}
-                  isExpanded={true}
-                />
+                <React.Fragment key={entry.spacer.id}>
+                  <InFlowLiveSpacer
+                    spacer={entry.spacer}
+                    isExpanded={true}
+                  />
+                  {renderSpacerAttachedMessages(entry.spacer, 'now')}
+                </React.Fragment>
               ) : (
                 <LiveToBeCard
                   key={entry.card.key}
@@ -480,11 +606,13 @@ export function PlayerLiveTimelineView({
         ) : (
           futureEntries.map((entry) =>
             entry.type === 'spacer' ? (
-              <InFlowLiveSpacer
-                key={entry.spacer.id}
-                spacer={entry.spacer}
-                isExpanded={false}
-              />
+              <React.Fragment key={entry.spacer.id}>
+                <InFlowLiveSpacer
+                  spacer={entry.spacer}
+                  isExpanded={false}
+                />
+                {renderSpacerAttachedMessages(entry.spacer, 'future')}
+              </React.Fragment>
             ) : (
               <LiveToBeCard
                 key={entry.card.key}

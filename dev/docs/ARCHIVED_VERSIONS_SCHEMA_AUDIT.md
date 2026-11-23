@@ -6,12 +6,24 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.7
+### Current Release: v0.20.8
+- **App Version**: `0.20.8`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.7**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Optional `adminMessages?: AdminMessage[]` (`shows.json` / `_meta.adminMessages` / `data[0]._stationMeta.adminMessages` / `settings/station_settings.json`, `#116`)**: Added optional station-wide and show-targeted off-air Admin Messages with acknowledgement tracking (`acknowledgedByShows`), dual-mirrored onto `data[0]._stationMeta` (in both `shows.json` and `announcements.json`) and `settings/station_settings.json` for `v0.15.4/0.15.5` envelope-strip resilience.
+  - **Optional `_meta.highestAppVersion?: string` (`#116`)**: Added monotonic highest-seen AMP version marker on `announcements.json`, `shows.json`, `logs.json`, and `data[0]._stationMeta` so older clients can trigger built-in update notices (`old_version` / `old_version_schema`) without lowering the recorded high-water mark.
+  - **Optional `LogEntry` Lineage & Message Acknowledgement Fields (`#43`, `#113`, `#116`)**: Added optional `gateId?: string`, `rotationIndex?: number`, `rotationTotal?: number`, `status: 'acknowledged'`, and `assetType: 'message'` on `LogEntry` (preserved via `seedLogEntrySiblings` alongside `v0.15.4/0.15.5` siblings; message acknowledgements are excluded from played/missed/extra broadcast reconciliation).
+  - **Gate Revision Snapshots & Per-Item Inactivation (`#43`, `#113`)**: Preserved optional `AnnouncementRevision.timeGatedMp3s` snapshots and per-item `TimeGatedMediaItem.inactivated`/`inactivatedAt` flags across both `normalizeAnnouncement` and `migrateAnnouncementsPayload` while keeping `v0.15.4/0.15.5` flat gate siblings aligned to the first active media item.
+  - **Optional `_meta.scheduleWindow.defaultLiveReadFontSize` & `_meta.scheduleWindow.defaultLiveReadFontFamily` Fields (`#110`)**: Added optional `defaultLiveReadFontSize?: number` (default `20`, clamped `14–40` px) and `defaultLiveReadFontFamily?: 'sans' | 'verdana' | 'arial' | 'serif' | 'mono'` (default `'sans'` — `Inter / System Sans`) inside `ScheduleWindowConfig` (`_meta.scheduleWindow`, `_stationMeta.scheduleWindow`, and `settings/station_settings.json`), backward- and forward-compatible with all Schema v1 stores.
+  - **File Manager Undo & Row Spacing (`#26`), Folder Verification File Counts & Per-Row Open (`#101`), AI Studio Quick Reconnect Modal (`#115`), Gate Calendar Upfront Guards & Focus Flow (`#43`/`#113`), and Server Loopback / Path-Boundary Hardening**: Application, UI, and runtime safety improvements with full Schema v1 compatibility.
+
+### v0.20.7
 - **App Version**: `0.20.7`
 - **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
 - **Changes vs. v0.20.6**:
   - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
-  - **Application, Schedule Editor, Audit, Media Picker, & Folder Verification Cycle (`Batches 1–4`, `#90`–`#108`, `#112`, `#37.1`–`#37.7`, `#38.8`–`#38.12`)**: 6-second branded splash hold (`#90`), global Light/Dark intermediate slate CSS overrides (`#93`, `#103`), inline gate/interstitial placement and 2-month visual gate calendar picker (`#94`–`#98`, `#107`, `#108`), Admin-only `(x/y)` rotation badges (`#112`), active-at-slot `Issues Audit` filtering and phrase grouping (`#106`), `CopyEditorModal` duration coercion/overwrite/unsaved prompts and `<stem> (x)` copy naming (`#91`, `#102`, `#104`), `Select Announcement` icon/name/date/action column alignment (`#105`), Shows `Short Name` `Auto` checkbox (`#99`), and `Check Folders` / `Merge Stranded Folder` 2-column listbox redesign with Windows Cloud Drive fallback (`#100`, `#101`). Full Schema v1 compatibility maintained across all stores.
+  - **Application, Schedule Editor, Audit, Media Picker, & Folder Verification Cycle (`Batches 1–4`, `#90`–`#108`, `#112`, `#37.1`–`#37.7`, `#38.8`–`#38.12`, `#26`)**: 6-second branded splash hold (`#90`), global Light/Dark intermediate slate CSS overrides (`#93`, `#103`), inline gate/interstitial placement and 2-month visual gate calendar picker (`#94`–`#98`, `#107`, `#108`), Admin-only `(x/y)` rotation badges (`#112`), active-at-slot `Issues Audit` filtering and phrase grouping (`#106`), `CopyEditorModal` duration coercion/overwrite/unsaved prompts and `<stem> (x)` copy naming (`#91`, `#102`, `#104`), `Select Announcement` icon/name/date/action column alignment (`#105`), Shows `Short Name` `Auto` checkbox (`#99`), `Check Folders` / `Merge Stranded Folder` 2-column listbox redesign with Windows Cloud Drive fallback (`#100`, `#101`), and `Calendar -> Files` (`File Manager`) sub-tab (`#26`). Full Schema v1 compatibility maintained across all stores.
 
 ### v0.20.6
 - **App Version**: `0.20.6`

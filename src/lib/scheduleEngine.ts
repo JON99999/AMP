@@ -431,18 +431,21 @@ export function normalizeAnnouncement(item: Announcement): Announcement {
       isLegacy015Item &&
       Array.isArray(m.mediaItems) &&
       m.mediaItems.length > 0 &&
-      typeof m.mp3Url === 'string' &&
-      m.mp3Url !== m.mediaItems[0]?.mp3Url
+      typeof m.mp3Url === 'string'
     ) {
-      rawItems[0] = {
-        ...rawItems[0],
-        mp3Url: m.mp3Url,
-        ...(m.assetType !== undefined ? { assetType: m.assetType } : {}),
-        ...(m.backupMp3Url !== undefined ? { backupMp3Url: m.backupMp3Url } : {}),
-        ...(m.approximateReadTime !== undefined ? { approximateReadTime: m.approximateReadTime } : {}),
-        ...(m.duration !== undefined ? { duration: m.duration } : {}),
-        ...(m.fileSize !== undefined ? { fileSize: m.fileSize } : {}),
-      };
+      const primaryRawIdx = rawItems.findIndex(mi => !mi?.inactivated);
+      const reconcileIdx = primaryRawIdx >= 0 ? primaryRawIdx : 0;
+      if (m.mp3Url !== rawItems[reconcileIdx]?.mp3Url) {
+        rawItems[reconcileIdx] = {
+          ...rawItems[reconcileIdx],
+          mp3Url: m.mp3Url,
+          ...(m.assetType !== undefined ? { assetType: m.assetType } : {}),
+          ...(m.backupMp3Url !== undefined ? { backupMp3Url: m.backupMp3Url } : {}),
+          ...(m.approximateReadTime !== undefined ? { approximateReadTime: m.approximateReadTime } : {}),
+          ...(m.duration !== undefined ? { duration: m.duration } : {}),
+          ...(m.fileSize !== undefined ? { fileSize: m.fileSize } : {}),
+        };
+      }
     }
 
     const normalizedMediaItems: TimeGatedMediaItem[] = rawItems.map(mItem => {
@@ -757,13 +760,12 @@ export function isGateExpiredOrInactivated(
 /**
  * Resolves the active (or next upcoming preview) TimeGatedMp3 for an announcement at a slot.
  * Step 1: Checks for a gate window strictly covering `slotTime`.
- * Step 2: When `allowFutureFallback` is true (default), falls back to the earliest future gate window
- * so announcement cards display upcoming media info before the first gate begins.
+ * Step 1: Strictly returns the active gate whose [startDate, effectiveEndDate] covers `slotTime`.
+ * Returns `null` for any gap between gates or before the first gate begins (gaps are surfaced by audit flags).
  */
 export function getActiveMp3ForSlot(
   announcement: Announcement | undefined | null,
-  slotTime?: Date | string | number,
-  options?: { allowFutureFallback?: boolean }
+  slotTime?: Date | string | number
 ): ResolvedTimeGatedMp3 | null {
   if (!announcement) return null;
   if (
@@ -806,7 +808,7 @@ export function getActiveMp3ForSlot(
 
   const nowMs = Date.now();
 
-  // Step 1: Check for currently active window (respecting inactivatedAt cutoff on inactivated gates)
+  // Strictly match currently active window (respecting inactivatedAt cutoff on inactivated gates)
   for (const item of sorted) {
     if (item.inactivated) {
       if (targetMs >= nowMs) continue;
@@ -825,18 +827,7 @@ export function getActiveMp3ForSlot(
     }
   }
 
-  // Step 2: Check for earliest forward-looking (future) window (unless disabled or inactivated)
-  if (options?.allowFutureFallback !== false) {
-    for (const item of sorted) {
-      if (item.inactivated) continue;
-      const startMs = item.startDate ? new Date(formatToDatetimeLocal(item.startDate)).getTime() : 0;
-      if (!isNaN(startMs) && startMs > targetMs) {
-        return buildResolvedGateMp3(announcement, item, startMs);
-      }
-    }
-  }
-
-  // Step 3: All entries are in the past and no future entries exist
+  // No active gate covers slotTime (leading gap, mid-schedule gap, or all gates expired)
   return null;
 }
 
@@ -1068,15 +1059,26 @@ export function findFirstGapOrEnd(
   return { startDate: fallback };
 }
 
+export interface PlayedGateBounds {
+  playCount: number;
+  firstPlayedLocalIso: string | null;
+  lastPlayedLocalIso: string | null;
+}
+
 export function validateTimeGatedMp3s(
   mp3s: TimeGatedMp3[],
   nowIso?: string,
   parentProfileEndDate?: string,
-  parentProfileStartDate?: string
+  parentProfileStartDate?: string,
+  playedGateBounds?: Record<string, PlayedGateBounds>,
+  preExistingExpiredIds?: Set<string>
 ) {
   const sorted = sortMp3sByStartDate(mp3s);
   const errors: { [id: string]: string[] } = {};
   const warnings: { [id: string]: string[] } = {};
+  const parentBlockingErrors: string[] = [];
+  const blockingErrorsSet = new Set<string>();
+  const softWarningsSet = new Set<string>();
   const gapStartIds = new Set<string>();
   const gapEndIds = new Set<string>();
   const overlapStartIds = new Set<string>();
@@ -1094,32 +1096,88 @@ export function validateTimeGatedMp3s(
     return sortedIdx >= 0 ? sortedIdx + 1 : 1;
   };
 
+  const formatGateMsg = (gateNum: number, msg: string): string => {
+    if (msg.startsWith('Gate #') || msg.startsWith('Announcement ')) {
+      return msg;
+    }
+    return `Gate #${gateNum}: ${msg}`;
+  };
+
+  const pushBlockingError = (gateId: string | null, gateNum: number | null, msg: string, addToGateErrors = true) => {
+    if (gateId && addToGateErrors) {
+      errors[gateId].push(msg);
+    }
+    blockingErrorsSet.add(gateNum !== null ? formatGateMsg(gateNum, msg) : msg);
+  };
+
+  const pushSoftWarning = (gateId: string, gateNum: number, msg: string) => {
+    warnings[gateId].push(msg);
+    softWarningsSet.add(formatGateMsg(gateNum, msg));
+  };
+
   sorted.forEach(item => {
     errors[item.id] = [];
     warnings[item.id] = [];
   });
 
+  if (sorted.length === 0) {
+    blockingErrorsSet.add('At least one Announcement Gate is required.');
+  }
+
   sorted.forEach(item => {
     const isHistoricalExpired = isGateExpiredOrInactivated(item, currentNow);
-    if (isHistoricalExpired) return;
+    const isPreExistingHistorical =
+      Boolean(item.inactivated) ||
+      (Boolean(preExistingExpiredIds?.has(item.id)) && isHistoricalExpired);
+    if (isPreExistingHistorical) return;
+
     const gateNum = getGateNum(item.id);
-    if (!item.startDate || item.startDate.trim() === '') {
-      warnings[item.id].push('Start date & time is missing.');
-      missingStartIds.add(item.id);
-    } else if (item.endDate && item.endDate.trim() !== '') {
-      const sLocal = formatToDatetimeLocal(item.startDate);
-      const eLocal = formatToDatetimeLocal(item.endDate);
-      if (sLocal && eLocal && sLocal > eLocal) {
-        errors[item.id].push(`Gate #${gateNum}'s START is after the END.`);
+    const sLocal = item.startDate && item.startDate.trim() ? formatToDatetimeLocal(item.startDate) : '';
+    const eLocal = item.endDate && item.endDate.trim() ? formatToDatetimeLocal(item.endDate) : '';
+
+    // Always check Start > End and played-gate historical date bounds BEFORE the expired-gate skip (#43/#113).
+    // Otherwise moving a played gate's End date before its last past play would mark it expired (< now) and bypass validation.
+    if (sLocal && eLocal && sLocal > eLocal) {
+      pushBlockingError(item.id, gateNum, `Gate #${gateNum}'s START is after the END.`);
+      overlapStartIds.add(item.id);
+      overlapEndIds.add(item.id);
+    }
+
+    const bounds = playedGateBounds?.[item.id];
+    if (bounds && bounds.playCount > 0) {
+      if (sLocal && bounds.firstPlayedLocalIso && sLocal > bounds.firstPlayedLocalIso) {
+        pushBlockingError(
+          item.id,
+          gateNum,
+          `Gate #${gateNum}'s START cannot be moved after its first logged play (${formatDatetime12(bounds.firstPlayedLocalIso)}).`
+        );
         overlapStartIds.add(item.id);
+      }
+      if (eLocal && bounds.lastPlayedLocalIso && eLocal < bounds.lastPlayedLocalIso) {
+        pushBlockingError(
+          item.id,
+          gateNum,
+          `Gate #${gateNum}'s END cannot be moved before its last logged play (${formatDatetime12(bounds.lastPlayedLocalIso)}).`
+        );
         overlapEndIds.add(item.id);
       }
     }
+
+    // If preExistingExpiredIds was not provided, skip remaining active-only checks for gates that are already expired
+    if (isHistoricalExpired && !preExistingExpiredIds) return;
+
+    if (!item.startDate || item.startDate.trim() === '') {
+      warnings[item.id].push('Start date & time is missing.');
+      missingStartIds.add(item.id);
+      blockingErrorsSet.add(formatGateMsg(gateNum, 'Start date & time is missing.'));
+    }
+
     const mediaItems = getGateMediaItems(item);
     const activeMediaItems = mediaItems.filter(mi => !mi.inactivated);
     if (activeMediaItems.length === 0) {
       warnings[item.id].push('File attachment selection is missing.');
       missingFileIds.add(item.id);
+      softWarningsSet.add(formatGateMsg(gateNum, 'File attachment selection is missing.'));
     } else {
       let gateMissingFile = false;
       activeMediaItems.forEach(mi => {
@@ -1130,6 +1188,7 @@ export function validateTimeGatedMp3s(
       if (gateMissingFile) {
         warnings[item.id].push('File attachment selection is missing.');
         missingFileIds.add(item.id);
+        softWarningsSet.add(formatGateMsg(gateNum, 'File attachment selection is missing.'));
       }
     }
   });
@@ -1151,14 +1210,18 @@ export function validateTimeGatedMp3s(
       const pairKey = [prevGate.id, nextGate.id].sort().join('::');
       if (!recordedOverlaps.has(pairKey)) {
         recordedOverlaps.add(pairKey);
-        warnings[nextGate.id].push(`Gate #${nextNum} starts before Gate #${prevNum} starts.`);
+        const msg = `Gate #${nextNum} starts before Gate #${prevNum} starts.`;
+        warnings[nextGate.id].push(msg);
+        blockingErrorsSet.add(msg);
       }
       overlapStartIds.add(nextGate.id);
     } else if (prevEnd && nextStart && nextStart < prevEnd) {
       const pairKey = [prevGate.id, nextGate.id].sort().join('::');
       if (!recordedOverlaps.has(pairKey)) {
         recordedOverlaps.add(pairKey);
-        warnings[nextGate.id].push(`Gate #${nextNum} overlaps with Gate #${prevNum}.`);
+        const msg = `Gate #${nextNum} overlaps with Gate #${prevNum}.`;
+        warnings[nextGate.id].push(msg);
+        blockingErrorsSet.add(msg);
       }
       overlapEndIds.add(prevGate.id);
       overlapStartIds.add(nextGate.id);
@@ -1216,8 +1279,10 @@ export function validateTimeGatedMp3s(
         const pairKey = [a.id, b.id].sort().join('::');
         if (!recordedOverlaps.has(pairKey)) {
           recordedOverlaps.add(pairKey);
-          warnings[a.id].push(`Gate #${aNum} overlaps with Gate #${bNum}.`);
+          const msgA = `Gate #${aNum} overlaps with Gate #${bNum}.`;
+          warnings[a.id].push(msgA);
           warnings[b.id].push(`Gate #${bNum} overlaps with Gate #${aNum}.`);
+          blockingErrorsSet.add(msgA);
         }
 
         if (aStart === bStart) {
@@ -1241,6 +1306,33 @@ export function validateTimeGatedMp3s(
     }
   }
 
+  // Enforce Parent Announcement Start/End envelope against overall played bounds (#43/#113)
+  const parentStart = parentProfileStartDate ? formatToDatetimeLocal(parentProfileStartDate) : '';
+  const parentEnd = parentProfileEndDate ? formatToDatetimeLocal(parentProfileEndDate) : null;
+  if (playedGateBounds) {
+    let overallFirstPlayed = '';
+    let overallLastPlayed = '';
+    for (const b of Object.values(playedGateBounds)) {
+      if (!b || b.playCount <= 0) continue;
+      if (b.firstPlayedLocalIso && (!overallFirstPlayed || b.firstPlayedLocalIso < overallFirstPlayed)) {
+        overallFirstPlayed = b.firstPlayedLocalIso;
+      }
+      if (b.lastPlayedLocalIso && (!overallLastPlayed || b.lastPlayedLocalIso > overallLastPlayed)) {
+        overallLastPlayed = b.lastPlayedLocalIso;
+      }
+    }
+    if (parentStart && overallFirstPlayed && parentStart > overallFirstPlayed) {
+      const msg = `Announcement START cannot be moved after its first logged play (${formatDatetime12(overallFirstPlayed)}).`;
+      parentBlockingErrors.push(msg);
+      blockingErrorsSet.add(msg);
+    }
+    if (parentEnd && overallLastPlayed && parentEnd < overallLastPlayed) {
+      const msg = `Announcement END cannot be moved before its last logged play (${formatDatetime12(overallLastPlayed)}).`;
+      parentBlockingErrors.push(msg);
+      blockingErrorsSet.add(msg);
+    }
+  }
+
   // 1. Check for leading gap or leading overreach against parentProfileStartDate (accounting for prior past/inactivated gates)
   const activeSorted = sorted.filter(
     item => !isGateExpiredOrInactivated(item, currentNow)
@@ -1256,7 +1348,6 @@ export function validateTimeGatedMp3s(
     }
   }
 
-  const parentStart = parentProfileStartDate ? formatToDatetimeLocal(parentProfileStartDate) : '';
   const isParentStartDateOnly = Boolean(parentProfileStartDate && !parentProfileStartDate.includes('T'));
   if (activeSorted.length > 0 && activeSorted[0].startDate && parentStart) {
     const firstGate = activeSorted[0];
@@ -1271,14 +1362,14 @@ export function validateTimeGatedMp3s(
       getDatePart(parentStart) === getDatePart(firstStart);
     if (firstStart && !isSameDayAsDateOnlyParentStart) {
       if (firstStart < parentStart) {
-        warnings[firstGate.id].push(`Gate #${firstNum} starts before Announcement starts.`);
+        pushSoftWarning(firstGate.id, firstNum, `Gate #${firstNum} starts before Announcement starts.`);
         overreachStartIds.add(firstGate.id);
       } else if (
         firstStart > effectivePriorBoundary &&
         firstStart > currentNow &&
         !isContiguousMidnightTransition(effectivePriorBoundary, firstStart)
       ) {
-        warnings[firstGate.id].push(`Gap before Gate #${firstNum}.`);
+        pushSoftWarning(firstGate.id, firstNum, `Gap before Gate #${firstNum}.`);
         gapStartIds.add(firstGate.id);
       }
     }
@@ -1300,14 +1391,13 @@ export function validateTimeGatedMp3s(
       bStart > currentNow &&
       !isContiguousMidnightTransition(aEnd, bStart)
     ) {
-      warnings[b.id].push(`Gap between Gate #${aNum} and Gate #${bNum}.`);
+      pushSoftWarning(b.id, bNum, `Gap between Gate #${aNum} and Gate #${bNum}.`);
       gapEndIds.add(a.id);
       gapStartIds.add(b.id);
     }
   }
 
   // 3. Check for trailing post-expiration gap or trailing overreach against parentProfileEndDate (#108)
-  const parentEnd = parentProfileEndDate ? formatToDatetimeLocal(parentProfileEndDate) : null;
   if (activeSorted.length > 0) {
     const lastItem = activeSorted[activeSorted.length - 1];
     const lastNum = getGateNum(lastItem.id);
@@ -1319,18 +1409,20 @@ export function validateTimeGatedMp3s(
     if (lastEnd) {
       if (parentEnd && lastEnd > parentEnd) {
         overreachEndIds.add(lastItem.id);
-        warnings[lastItem.id].push(`Gate #${lastNum} ends after Announcement ends.`);
+        pushSoftWarning(lastItem.id, lastNum, `Gate #${lastNum} ends after Announcement ends.`);
       } else if (
         lastEnd > currentNow &&
         (!parentEnd || (parentEnd > lastEnd && !isContiguousMidnightTransition(lastEnd, parentEnd)))
       ) {
         gapEndIds.add(lastItem.id);
-        warnings[lastItem.id].push(`Gap after Gate #${lastNum}.`);
+        pushSoftWarning(lastItem.id, lastNum, `Gap after Gate #${lastNum}.`);
       }
     } else if (parentEnd) {
       overreachEndIds.add(lastItem.id);
-      warnings[lastItem.id].push(
-        `Announcement ends ${formatShortDateMDY(parentEnd)}. Set Gate end to that?`
+      pushSoftWarning(
+        lastItem.id,
+        lastNum,
+        `Announcement ends ${formatShortDateMDY(parentEnd)}. Set Gate #${lastNum} end to that?`
       );
     }
 
@@ -1341,26 +1433,38 @@ export function validateTimeGatedMp3s(
       const gEnd = g.endDate && g.endDate.trim() ? formatToDatetimeLocal(g.endDate) : null;
       if (parentEnd && gEnd && gEnd > parentEnd) {
         overreachEndIds.add(g.id);
-        warnings[g.id].push(`Gate #${gNum} ends after Announcement ends.`);
+        pushSoftWarning(g.id, gNum, `Gate #${gNum} ends after Announcement ends.`);
       }
     }
   }
 
-  const hasErrors =
+  const blockingErrors = Array.from(blockingErrorsSet);
+  const softWarnings = Array.from(softWarningsSet);
+  const hasBlockingErrors =
+    blockingErrors.length > 0 ||
     sorted.length === 0 ||
     missingStartIds.size > 0 ||
-    missingFileIds.size > 0 ||
     overlapStartIds.size > 0 ||
     overlapEndIds.size > 0 ||
+    parentBlockingErrors.length > 0 ||
+    Object.values(errors).some(arr => arr.length > 0);
+
+  const hasSoftWarnings =
+    softWarnings.length > 0 ||
+    missingFileIds.size > 0 ||
     overreachStartIds.size > 0 ||
     overreachEndIds.size > 0 ||
     gapStartIds.size > 0 ||
-    gapEndIds.size > 0 ||
-    Object.values(errors).some(arr => arr.length > 0);
+    gapEndIds.size > 0;
+
+  const hasErrors = hasBlockingErrors || hasSoftWarnings;
 
   return {
     errors,
     warnings,
+    parentBlockingErrors,
+    blockingErrors,
+    softWarnings,
     gapStartIds,
     gapEndIds,
     overlapStartIds,
@@ -1369,6 +1473,8 @@ export function validateTimeGatedMp3s(
     overreachEndIds,
     missingStartIds,
     missingFileIds,
+    hasBlockingErrors,
+    hasSoftWarnings,
     hasErrors,
     sorted,
   };

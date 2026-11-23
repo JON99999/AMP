@@ -42,7 +42,7 @@ jobs:
 
           # Stage current workspace files into a temporary directory (excluding .git and dev/archives)
           mkdir -p /tmp/current_snapshot
-          rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='release' --exclude='dev/archives' ./ /tmp/current_snapshot/
+          rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='release' --exclude='dev/archives' --exclude='amp_settings.json' ./ /tmp/current_snapshot/
 
           # Checkout the dedicated 'archives' branch in a separate worktree from already-fetched origin/archives
           git worktree add -B archives /tmp/archives_wt origin/archives
@@ -69,7 +69,7 @@ jobs:
       - name: Remove Internal Files
         run: |
           rm -rf dev/
-          rm -f AGENTS.md AGENTS_PHILOSOPHY.md
+          rm -f AGENTS.md AGENTS_PHILOSOPHY.md amp_settings.json
           rm -f .github/workflows/sync-public.yml
 
       - name: Push Sanitized Tree & Auto-Tag Release

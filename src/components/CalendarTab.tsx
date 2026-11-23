@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Plus, Trash2, Save, FileText, Calendar, Clock, CheckCircle, AlertCircle, AlertTriangle, ShieldAlert, Copy, Check, XCircle, X, FolderOpen, Music, Search, Play, Square, ChevronUp, ChevronDown, RefreshCw, Eye, User, BookOpen, ArrowRight, Edit3, ListChecks, CheckSquare, HelpCircle } from 'lucide-react';
-import { Announcement, AnnouncementRevision, AnnouncementType, AnnouncementMetadata, MediaAssetFile, Show, ShowRevision, TimeGatedMediaItem, TimeGatedMp3, ScheduleIssue, LogEntry, UpNextPromoConfig } from '../types';
+import { Plus, Trash2, Save, FileText, Calendar, Clock, CheckCircle, AlertCircle, AlertTriangle, ShieldAlert, Copy, Check, XCircle, X, FolderOpen, Music, Search, Play, Square, ChevronUp, ChevronDown, RefreshCw, Eye, User, BookOpen, ArrowRight, ArrowDown, Edit3, ListChecks, CheckSquare, HelpCircle } from 'lucide-react';
+import { Announcement, AnnouncementRevision, AnnouncementType, AnnouncementMetadata, MediaAssetFile, Show, ShowRevision, TimeGatedMediaItem, TimeGatedMp3, ScheduleIssue, LogEntry, UpNextPromoConfig, AdminMessage } from '../types';
 import { cn, getMP3Status, formatDuration, getFilenameFromUrlOrPath, isTimeInShow, getSortedShows, getShowShade, readMp3ID3Metadata, parseID3Bytes, normalizeAnnouncement, normalizeAnnouncements, formatToDatetimeLocal, getCurrentDatetimeLocal, getDatePart, getTimePart, sortMp3sByStartDate, findFirstGapOrEnd, validateTimeGatedMp3s, getActiveMp3ForSlot, getGatedAssetType, isGateExpiredOrInactivated, isContiguousMidnightTransition, computeBackfilledEndTime, getNextGapAutoFillStart, formatTime12, formatDatetime12, formatHour12, formatHourShort12, isAudioFile, isScriptFile, classifyMediaAsset, AUDIO_EXTENSIONS, SCRIPT_EXTENSIONS, buildUpNextPromoAnnouncements, getGateMediaItems, formatRotatedAnnouncementName, formatRotatedFileName, DAYS_ORDER, isAnnouncementWithinDateBounds, isAnnouncementRuleMatch, isUpNextPromoUrl, formatUpNextPromoFilename } from '../lib/utils';
 import { evaluateScheduleDiagnostics } from '../lib/scheduleDiagnostics';
 import { getPlayableUrl, DRIVE_FOLDERS, getSavedSettings, getStorageApiHeaders, cacheMP3, getAccessToken } from '../lib/driveService';
 import { availableFilesCache, driveFileNameCache, mp3DurationCache, upsertMediaCatalogFile, syncMediaCatalogFiles } from '../lib/audioCache';
-import { reconcileScheduleAndLogs, calculateGatedTrackAudit, resolveAnnouncementsForDate, resolveShowsForDate, GatedTrackAuditMetrics, toCanonicalDateString, doesLogMatchLocalSlot } from '../lib/temporalReconciliation';
-import { STATION_TIMEZONE_OPTIONS, getStationTimezone, setStationTimezone, getStationTimezoneOption, isLogPrerecordOrExport, toStationDateParts, getStationNow, getAdminContactInfo, setAdminContactInfo } from '../lib/compatibility';
+import { reconcileScheduleAndLogs, calculateGatedTrackAudit, resolveAnnouncementsForDate, resolveShowsForDate, GatedTrackAuditMetrics, toCanonicalDateString, doesLogMatchLocalSlot, computePlayedGateBoundsMap } from '../lib/temporalReconciliation';
+import { STATION_TIMEZONE_OPTIONS, getStationTimezone, setStationTimezone, getStationTimezoneOption, isLogPrerecordOrExport, toStationDateParts, getStationNow, getAdminContactInfo, setAdminContactInfo, CompatibilityReport } from '../lib/compatibility';
 import LiveReadPopout from './LiveReadPopout';
 import ScheduleAuditModal from './ScheduleAuditModal';
 import { MilitaryTimeInput } from './MilitaryTimeInput';
@@ -47,6 +47,11 @@ import { WeeklyCalendarGrid } from './calendar/WeeklyCalendarGrid';
 import { AnnouncementsListView } from './calendar/AnnouncementsListView';
 import { AnnouncementEditorView } from './calendar/AnnouncementEditorView';
 import { FileManagerView, FileManagerBucket } from './calendar/FileManagerView';
+import { AdminMessagesManagerView } from './calendar/AdminMessagesManagerView';
+import { ShowMessagesShortlistModal } from './calendar/ShowMessagesShortlistModal';
+import AdminMessageEditorModal from './AdminMessageEditorModal';
+import AdminMessageReaderModal from './AdminMessageReaderModal';
+import { doesAdminMessageApplyToShowAnytime, isAdminMessageArchived, isAdminMessageExpired, isSystemBuiltInMessage, SYSTEM_MSG_REQUIRED_UPGRADE_ID } from '../lib/adminMessages';
 
 export type { SchedulePresetOption, AnnouncementPlacementModalState, AnnouncementConflict, ShowConflict, AnnouncementGap, ShowGap };
 export { computeSchedulePlacementOptions, addSoftHyphensForFirstLine, getAnnouncementConflicts, getShowConflicts, formatGridRulesSummary, getAnnouncementGaps, getShowGaps, formatMetadataDate, getAnnouncementSummary };
@@ -69,8 +74,11 @@ interface CalendarTabProps {
   onSaveAdminContactInfo?: (newContact: string) => Promise<boolean | void> | void;
   upNextPromoConfig?: UpNextPromoConfig;
   logs?: LogEntry[];
-  currentViewMode?: 'list' | 'calendar' | 'shows' | 'files';
-  onViewModeChange?: (mode: 'list' | 'calendar' | 'shows' | 'files') => void;
+  adminMessages?: AdminMessage[];
+  onSaveAdminMessages?: (messages: AdminMessage[]) => Promise<boolean | void> | void;
+  compatibilityReport?: CompatibilityReport | null;
+  currentViewMode?: 'list' | 'calendar' | 'shows' | 'files' | 'messages';
+  onViewModeChange?: (mode: 'list' | 'calendar' | 'shows' | 'files' | 'messages') => void;
   showPixelRuler?: boolean;
   showLocationsModal?: boolean;
   onOpenLocationsModal?: () => void;
@@ -80,7 +88,7 @@ interface CalendarTabProps {
   onOpenShowsFolder?: (resolvedLocalPath?: string, resolvedDriveId?: string) => void;
 }
 
-function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _liveNow, driveMP3s: propDriveMP3s = [], isDriveActive = false, onRefresh, shows = [], onSaveShows, stationTimezone, onSaveStationTimezone, adminContactInfo, hasSavedAdminContact = false, onSaveAdminContactInfo, upNextPromoConfig, logs = [], currentViewMode, onViewModeChange, showPixelRuler = false, showLocationsModal = false, onOpenLocationsModal, onOpenLocalStationFolder, onOpenAnnouncementsFolder, onOpenEvergreensFolder, onOpenShowsFolder }: CalendarTabProps) {
+function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _liveNow, driveMP3s: propDriveMP3s = [], isDriveActive = false, onRefresh, shows = [], onSaveShows, stationTimezone, onSaveStationTimezone, adminContactInfo, hasSavedAdminContact = false, onSaveAdminContactInfo, upNextPromoConfig, logs = [], adminMessages = [], onSaveAdminMessages, compatibilityReport = null, currentViewMode, onViewModeChange, showPixelRuler = false, showLocationsModal = false, onOpenLocationsModal, onOpenLocalStationFolder, onOpenAnnouncementsFolder, onOpenEvergreensFolder, onOpenShowsFolder }: CalendarTabProps) {
   const [localSavedMediaFiles, setLocalSavedMediaFiles] = useState<MediaAssetFile[]>([]);
   const driveMP3s = useMemo<MediaAssetFile[]>(() => {
     const base = propDriveMP3s || [];
@@ -174,7 +182,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     if (formData.type === AnnouncementType.ONE_TIME && (!formData.date || !formData.time)) return false;
     return true;
   })();
-  const [saveValidationWarnings, setSaveValidationWarnings] = useState<string[] | null>(null);
+  const [saveValidationState, setSaveValidationState] = useState<{
+    blockingErrors: string[];
+    softWarnings: string[];
+  } | null>(null);
   const [saveValidationOverrideEndDate, setSaveValidationOverrideEndDate] = useState<string | undefined>(undefined);
   const isNew = editingId ? !announcements.some(s => s.id === editingId) : false;
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -182,6 +193,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const [announcementFilterQuery, setAnnouncementFilterQuery] = useState('');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewScriptFile, setPreviewScriptFile] = useState<string | null>(null);
+  const [previewScriptBucket, setPreviewScriptBucket] = useState<'active' | 'archived' | 'deleted' | undefined>(undefined);
   const [previewScriptBackupUrl, setPreviewScriptBackupUrl] = useState<string | undefined>(undefined);
   const [previewScriptFromPicker, setPreviewScriptFromPicker] = useState<boolean>(false);
   const [previewScriptOrigin, setPreviewScriptOrigin] = useState<{
@@ -203,6 +215,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     isOpen: boolean;
     initialFileName?: string;
     sourceFileToCopy?: string;
+    sourceBucket?: 'active' | 'archived' | 'deleted';
     initialReadTime?: string;
     initialIsAutoReadTime?: boolean;
     initialBackupMp3Url?: string;
@@ -240,7 +253,11 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   };
 
   const handleReuseGate = (gate: TimeGatedMp3): string | undefined => {
-    const items = getGateMediaItems(gate).map(mi => {
+    const rawItems = getGateMediaItems(gate);
+    // Copy only active (non-inactivated) media rows on Reuse (#43/#113); fall back to all items only if all were inactivated
+    const activeOnly = rawItems.filter(mi => !mi.inactivated);
+    const sourceItems = activeOnly.length > 0 ? activeOnly : rawItems;
+    const items = sourceItems.map(mi => {
       const nextMi = { ...mi };
       delete nextMi.inactivated;
       delete nextMi.inactivatedAt;
@@ -538,22 +555,41 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       return;
     }
 
+    const existingForPlacement = announcements.find(s => s.id === editingId);
+    const placementPlayedBounds = computePlayedGateBoundsMap(
+      { ...formData, id: editingId || formData.id },
+      current,
+      logs,
+      existingForPlacement?.timeGatedMp3s
+    );
+
     let updatedCurrent = [...current];
     if (placementModal.activeGates && placementModal.activeGates.length > 0) {
       const editedGates = placementModal.activeGates;
       updatedCurrent = updatedCurrent.map(m => {
         const edited = editedGates.find(g => g.id === m.id);
         if (!edited) return m;
-        const editedStart = edited.startDate
-          ? `${edited.startDate}T${edited.startTime || '00:00'}`
-          : m.startDate;
-        const editedEnd = edited.endDate
+        const gateBounds = placementPlayedBounds[m.id];
+        const hasPlays = Boolean(gateBounds && gateBounds.playCount > 0);
+        const editedStart =
+          hasPlays
+            ? m.startDate
+            : edited.startDate
+              ? `${edited.startDate}T${edited.startTime || '00:00'}`
+              : m.startDate;
+        const candidateEnd = edited.endDate
           ? `${edited.endDate}T${edited.endTime || '23:59'}`
           : undefined;
+        const violatesLastPlay = Boolean(
+          hasPlays &&
+            candidateEnd &&
+            gateBounds?.lastPlayedLocalIso &&
+            formatToDatetimeLocal(candidateEnd) < gateBounds.lastPlayedLocalIso
+        );
         return {
           ...m,
           startDate: editedStart,
-          endDate: editedEnd,
+          endDate: violatesLastPlay ? m.endDate : candidateEnd,
         };
       });
     }
@@ -563,17 +599,37 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         placementModal.previousGateEndDate
           ? `${placementModal.previousGateEndDate}T${placementModal.previousGateEndTime || '23:59'}`
           : computeBackfilledEndTime(startIso);
-      updatedCurrent = updatedCurrent.map(m =>
-        m.id === placementModal.transitionMp3Id ? { ...m, endDate: explicitPrevEnd } : m
+      const transBounds = placementPlayedBounds[placementModal.transitionMp3Id];
+      const violatesLastPlay = Boolean(
+        transBounds &&
+          transBounds.playCount > 0 &&
+          transBounds.lastPlayedLocalIso &&
+          explicitPrevEnd &&
+          formatToDatetimeLocal(explicitPrevEnd) < transBounds.lastPlayedLocalIso
       );
+      if (!violatesLastPlay) {
+        updatedCurrent = updatedCurrent.map(m =>
+          m.id === placementModal.transitionMp3Id ? { ...m, endDate: explicitPrevEnd } : m
+        );
+      }
     } else {
       const sortedCurrent = sortMp3sByStartDate(updatedCurrent);
       const last = sortedCurrent[sortedCurrent.length - 1];
       if (last && (!last.endDate || !last.endDate.trim()) && startIso > (last.startDate || '')) {
         const backfillEnd = computeBackfilledEndTime(startIso);
-        updatedCurrent = updatedCurrent.map(m =>
-          m.id === last.id ? { ...m, endDate: backfillEnd } : m
+        const lastBounds = placementPlayedBounds[last.id];
+        const violatesLastPlay = Boolean(
+          lastBounds &&
+            lastBounds.playCount > 0 &&
+            lastBounds.lastPlayedLocalIso &&
+            backfillEnd &&
+            formatToDatetimeLocal(backfillEnd) < lastBounds.lastPlayedLocalIso
         );
+        if (!violatesLastPlay) {
+          updatedCurrent = updatedCurrent.map(m =>
+            m.id === last.id ? { ...m, endDate: backfillEnd } : m
+          );
+        }
       }
     }
 
@@ -685,14 +741,16 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   }, [activeViewMode, calendarTimeframe, calendarLayoutMode, measureContainers]);
 
   const isCalendarView = activeViewMode === 'calendar';
-  const hideCalendarIcon = headerContainerWidth < 780;
-  const hideAnnouncementsIcons = headerContainerWidth < 780;
-  const hideShowsIcon = headerContainerWidth < 780;
-  const addTextShort = headerContainerWidth < (isCalendarView ? 1040 : 900) && headerContainerWidth >= (isCalendarView ? 880 : 760);
-  const addTextIconOnly = headerContainerWidth < (isCalendarView ? 880 : 760);
-  const halfFilter = headerContainerWidth < (isCalendarView ? 980 : 840);
-  const modeIconsOnly = headerContainerWidth < 520;
-  const isHeaderStacked = headerContainerWidth < (isCalendarView ? 640 : 540);
+  const addTextShort = headerContainerWidth < (isCalendarView ? 1220 : 1060) && headerContainerWidth >= (isCalendarView ? 940 : 800);
+  const compactNavBar = headerContainerWidth < (isCalendarView ? 1120 : 960);
+  const hideCalendarIcon = headerContainerWidth < (isCalendarView ? 1040 : 880);
+  const hideAnnouncementsIcons = headerContainerWidth < (isCalendarView ? 1040 : 880);
+  const hideShowsIcon = headerContainerWidth < (isCalendarView ? 1040 : 880);
+  const halfFilter = headerContainerWidth < (isCalendarView ? 1040 : 880);
+  const abbreviateAnnouncements = headerContainerWidth < (isCalendarView ? 940 : 800);
+  const addTextIconOnly = headerContainerWidth < (isCalendarView ? 940 : 800);
+  const isHeaderStacked = headerContainerWidth < (isCalendarView ? 700 : 600);
+  const modeIconsOnly = headerContainerWidth < 460;
   const isUltraNarrowHeader = headerContainerWidth < 360;
   const showsFolderCheckShort = headerContainerWidth < 420 && headerContainerWidth >= 320;
   const showsFolderCheckMinimal = headerContainerWidth < 320;
@@ -703,6 +761,12 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const listCardCollapseViewEditText = headerContainerWidth < 420;
   const listCardHideSummaryTag = headerContainerWidth < 480;
   const listCardHideTypeTag = headerContainerWidth < 420;
+
+  // Msgs cards include a 64px left type-icon gutter plus both Archive/Restore and Delete controls
+  const msgCardCollapsePreviewText = headerContainerWidth < 660;
+  const msgCardCollapseCopyText = headerContainerWidth < 610;
+  const msgCardCollapseDetailsText = headerContainerWidth < 560;
+  const msgCardCollapseViewEditText = headerContainerWidth < 430;
 
   const activeTriggerWidth = isCalendarView ? controlsContainerWidth : headerContainerWidth;
 
@@ -741,6 +805,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     playlistsPath?: string;
     evergreensFolderId?: string;
     playlistsFolderId?: string;
+    subfolderStats?: Record<string, { fileCount: number; localPath?: string; driveFolderId?: string }>;
   } | null>(null);
   const [isReadoutCollapsed, setIsReadoutCollapsed] = useState<boolean>(false);
   const [selectedStrandedKey, setSelectedStrandedKey] = useState<string>('');
@@ -894,6 +959,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         playlistsPath?: string;
         evergreensFolderId?: string;
         playlistsFolderId?: string;
+        subfolderStats?: Record<string, { fileCount: number; localPath?: string; driveFolderId?: string }>;
       }
     ) => {
       setFolderCheckModal(prev => {
@@ -907,6 +973,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           ...(updates?.playlistsPath !== undefined ? { playlistsPath: updates.playlistsPath } : {}),
           ...(updates?.evergreensFolderId !== undefined ? { evergreensFolderId: updates.evergreensFolderId } : {}),
           ...(updates?.playlistsFolderId !== undefined ? { playlistsFolderId: updates.playlistsFolderId } : {}),
+          ...(updates?.subfolderStats !== undefined ? { subfolderStats: updates.subfolderStats } : {}),
           lines: [...prev.lines, ...newLines]
         };
       });
@@ -1040,6 +1107,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         playlistsPath: typeof data.playlistsPath === 'string' ? data.playlistsPath : undefined,
         evergreensFolderId: typeof data.evergreensFolderId === 'string' ? data.evergreensFolderId : undefined,
         playlistsFolderId: typeof data.playlistsFolderId === 'string' ? data.playlistsFolderId : undefined,
+        subfolderStats:
+          data.subfolderStats && typeof data.subfolderStats === 'object'
+            ? data.subfolderStats
+            : {},
       });
     } catch (err: any) {
       appendLines(
@@ -1117,9 +1188,26 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         } else {
           setSelectedStrandedKey('');
         }
+        const nextStats = { ...(prev.subfolderStats || {}) };
+        const sourceKey = `${folderCategory}/${sourceFolderName}`;
+        const destKey = `${targetFolderCategory}/${targetShowShortName}`;
+        if (removedSourceFolder) {
+          delete nextStats[sourceKey];
+        } else if (nextStats[sourceKey]) {
+          nextStats[sourceKey] = {
+            ...nextStats[sourceKey],
+            fileCount: Math.max(0, (nextStats[sourceKey].fileCount || 0) - movedCount),
+          };
+        }
+        const prevDest = nextStats[destKey];
+        nextStats[destKey] = {
+          ...(prevDest || {}),
+          fileCount: (prevDest?.fileCount || 0) + movedCount,
+        };
         return {
           ...prev,
           extraFolders: remainingExtras,
+          subfolderStats: nextStats,
           lines: [...prev.lines, summaryLine]
         };
       });
@@ -1600,9 +1688,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   };
 
   // Calendar View states
-  const [viewMode, setViewModeState] = useState<'list' | 'calendar' | 'shows' | 'files'>(currentViewMode || 'calendar');
+  const [viewMode, setViewModeState] = useState<'list' | 'calendar' | 'shows' | 'files' | 'messages'>(currentViewMode || 'calendar');
 
-  const setViewMode = (mode: 'list' | 'calendar' | 'shows' | 'files') => {
+  const setViewMode = (mode: 'list' | 'calendar' | 'shows' | 'files' | 'messages') => {
     setViewModeState(mode);
     if (onViewModeChange) onViewModeChange(mode);
   };
@@ -1612,6 +1700,152 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       setViewModeState(currentViewMode);
     }
   }, [currentViewMode]);
+
+  // Admin-to-Show Messages state (#78)
+  const [messageFilterQuery, setMessageFilterQuery] = useState<string>('');
+  const [isMessageEditorOpen, setIsMessageEditorOpen] = useState<boolean>(false);
+  const [editingAdminMessage, setEditingAdminMessage] = useState<AdminMessage | null>(null);
+  const [reuseSourceAdminMessage, setReuseSourceAdminMessage] = useState<AdminMessage | null>(null);
+  const [messageInitialShowId, setMessageInitialShowId] = useState<string | undefined>(undefined);
+  const [previewingAdminMessage, setPreviewingAdminMessage] = useState<AdminMessage | null>(null);
+  const [previewingAdminMessageShow, setPreviewingAdminMessageShow] = useState<Show | null>(null);
+  const [viewingMessagesForShow, setViewingMessagesForShow] = useState<Show | null>(null);
+  const [isSavingAdminMessage, setIsSavingAdminMessage] = useState<boolean>(false);
+
+  const activeMessagesCount = useMemo(() => {
+    const refDate = getStationNow();
+    return (adminMessages || []).filter(
+      (m) => !isSystemBuiltInMessage(m) && !isAdminMessageArchived(m, refDate)
+    ).length;
+  }, [adminMessages]);
+
+  const activeMessagesCountByShowId = useMemo(() => {
+    const counts: Record<string, number> = {};
+    const refDate = getStationNow();
+    for (const sh of shows) {
+      let c = 0;
+      for (const msg of adminMessages || []) {
+        if (
+          !isAdminMessageArchived(msg, refDate) &&
+          doesAdminMessageApplyToShowAnytime(msg, sh)
+        ) {
+          c += 1;
+        }
+      }
+      if (c > 0) counts[sh.id] = c;
+    }
+    return counts;
+  }, [adminMessages, shows]);
+
+  const createNewMessage = (initialShowId?: string) => {
+    setEditingAdminMessage(null);
+    setReuseSourceAdminMessage(null);
+    setMessageInitialShowId(initialShowId);
+    setIsMessageEditorOpen(true);
+  };
+
+  const handleReuseAdminMessage = (msg: AdminMessage) => {
+    setEditingAdminMessage(null);
+    setReuseSourceAdminMessage(msg);
+    setMessageInitialShowId(undefined);
+    setIsMessageEditorOpen(true);
+  };
+
+  const handleSaveAdminMessage = async (savedMsg: AdminMessage) => {
+    if (!onSaveAdminMessages) return false;
+    setIsSavingAdminMessage(true);
+    try {
+      const exists = (adminMessages || []).some((m) => m.id === savedMsg.id);
+      const updatedList = exists
+        ? (adminMessages || []).map((m) => (m.id === savedMsg.id ? savedMsg : m))
+        : [savedMsg, ...(adminMessages || [])];
+      const ok = await onSaveAdminMessages(updatedList);
+      if (ok !== false) {
+        setIsMessageEditorOpen(false);
+        setEditingAdminMessage(null);
+        setReuseSourceAdminMessage(null);
+        setMessageInitialShowId(undefined);
+      }
+      return ok;
+    } finally {
+      setIsSavingAdminMessage(false);
+    }
+  };
+
+  const handleArchiveAdminMessage = async (msg: AdminMessage) => {
+    if (!onSaveAdminMessages) return;
+    const nowIso = new Date().toISOString();
+    const updatedList = (adminMessages || []).map((m) =>
+      m.id === msg.id
+        ? { ...m, enabled: false, archived: true, archivedAt: nowIso, updatedAt: nowIso }
+        : m
+    );
+    await onSaveAdminMessages(updatedList);
+  };
+
+  const handleRestoreAdminMessage = async (msg: AdminMessage) => {
+    if (!onSaveAdminMessages) return;
+    if (isAdminMessageExpired(msg, getStationNow())) {
+      setReuseSourceAdminMessage(null);
+      setMessageInitialShowId(undefined);
+      setEditingAdminMessage({ ...msg, enabled: true, archived: false, archivedAt: undefined });
+      setIsMessageEditorOpen(true);
+      return;
+    }
+    const nowIso = new Date().toISOString();
+    const updatedList = (adminMessages || []).map((m) =>
+      m.id === msg.id
+        ? { ...m, enabled: true, archived: false, archivedAt: undefined, updatedAt: nowIso }
+        : m
+    );
+    await onSaveAdminMessages(updatedList);
+  };
+
+  const handleToggleBuiltInSystemMessage = async (systemMsgId: string, nextEnabled: boolean) => {
+    if (!onSaveAdminMessages) return;
+    const nowIso = new Date().toISOString();
+    const isRequiredUpgrade = systemMsgId === SYSTEM_MSG_REQUIRED_UPGRADE_ID;
+    const existing = (adminMessages || []).find((m) => m.id === systemMsgId);
+    const updatedEntry: AdminMessage = existing
+      ? {
+          ...existing,
+          enabled: nextEnabled,
+          isSystemBuiltIn: true,
+          updatedAt: nowIso,
+        }
+      : {
+          id: systemMsgId,
+          title: isRequiredUpgrade ? 'Required AMP Upgrade Notice' : 'AMP Update Available',
+          body: '',
+          severity: isRequiredUpgrade ? 'alert' : 'info',
+          enabled: nextEnabled,
+          isSystemBuiltIn: true,
+          targetScope: 'app_startup',
+          clearMode: isRequiredUpgrade ? 'date_range' : 'once_acknowledged',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+    const updatedList = existing
+      ? (adminMessages || []).map((m) => (m.id === systemMsgId ? updatedEntry : m))
+      : [updatedEntry, ...(adminMessages || [])];
+    await onSaveAdminMessages(updatedList);
+  };
+
+  const handleDeleteAdminMessage = async (msg: AdminMessage) => {
+    if (!onSaveAdminMessages) return;
+    const updatedList = (adminMessages || []).filter((m) => m.id !== msg.id);
+    await onSaveAdminMessages(updatedList);
+  };
+
+  const handleResetAdminMessageAcks = async (msg: AdminMessage) => {
+    if (!onSaveAdminMessages) return;
+    const updatedList = (adminMessages || []).map((m) =>
+      m.id === msg.id
+        ? { ...m, acknowledgedByShows: [], updatedAt: new Date().toISOString() }
+        : m
+    );
+    await onSaveAdminMessages(updatedList);
+  };
   const [showInactive, setShowInactive] = useState<boolean>(false);
   const [inactiveSortMode, setInactiveSortMode] = useState<'scheduleTime' | 'newestFirst' | 'oldestFirst'>('scheduleTime');
   const [showIssues, setShowIssues] = useState<boolean>(() => {
@@ -1808,7 +2042,11 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     };
   }, []);
 
-  const togglePreview = async (url: string | undefined, e?: React.MouseEvent) => {
+  const togglePreview = async (
+    url: string | undefined,
+    e?: React.MouseEvent,
+    bucket?: 'active' | 'archived' | 'deleted'
+  ) => {
     if (e) e.stopPropagation();
     if (!url) return;
 
@@ -1826,7 +2064,10 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
       setPreviewUrl(url);
       const cleanName = getFilenameFromUrlOrPath(url) || url;
-      let playable = getPlayableUrl(url) || `/api/media/stream?path=${encodeURIComponent(cleanName)}`;
+      const bucketQuery = bucket && bucket !== 'active' ? `&bucket=${encodeURIComponent(bucket)}` : '';
+      let playable =
+        (bucketQuery ? '' : getPlayableUrl(url)) ||
+        `/api/media/stream?path=${encodeURIComponent(cleanName)}${bucketQuery}`;
 
       if (playable.includes('googleapis.com') && !playable.startsWith('blob:')) {
         try {
@@ -1843,7 +2084,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         setPreviewUrl(null);
       };
       audio.play().catch(() => {
-        const fallbackUrl = `/api/media/stream?path=${encodeURIComponent(cleanName)}`;
+        const fallbackUrl = `/api/media/stream?path=${encodeURIComponent(cleanName)}${bucketQuery}`;
         if (playable !== fallbackUrl) {
           const fallbackAudio = new Audio(fallbackUrl);
           audioRef.current = fallbackAudio;
@@ -2206,6 +2447,26 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         let replaced = false;
         items.forEach((mi, idx) => {
           if (idx === targetIdx) {
+            const oldFileLower = getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase();
+            const replacingWithSameFile = builtItems.some(
+              b => getFilenameFromUrlOrPath(b.mp3Url || '').toLowerCase() === oldFileLower
+            );
+            const existingPlays =
+              oldFileLower && !replacingWithSameFile
+                ? calculateGatedTrackAudit(editingId || formData.id || '', mi.mp3Url || '', logs, {
+                    gate: m,
+                    announcement: formData,
+                    itemIndex: idx,
+                    referenceNow: now,
+                  }).totalPlays
+                : 0;
+            if (existingPlays > 0) {
+              nextItems.push({
+                ...mi,
+                inactivated: true,
+                inactivatedAt: getCurrentDatetimeLocal(),
+              });
+            }
             nextItems.push(...builtItems);
             replaced = true;
           } else if (Boolean(mi.mp3Url && mi.mp3Url.trim()) || Boolean(mi.inactivated)) {
@@ -2427,45 +2688,33 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
     const currentMp3s = formData.timeGatedMp3s || [];
     const nowSaveCheck = getCurrentDatetimeLocal();
-    const validation = validateTimeGatedMp3s(currentMp3s, undefined, effectiveEndDate, formData.startDate);
-    if (!forceSaveAnyway && validation.hasErrors) {
-      const warningMessages: string[] = [];
-      if (currentMp3s.length === 0) {
-        warningMessages.push('At least one Announcement Gate is required.');
-      } else {
-        validation.sorted.forEach((gate, idx) => {
-          // Do not include anything from Past or Inactivated gates in Save validation warnings
-          if (isGateExpiredOrInactivated(gate, nowSaveCheck)) return;
-          const gateNum = idx + 1;
-          const gateErrors = validation.errors[gate.id] || [];
-          const gateWarnings = validation.warnings[gate.id] || [];
-          const isMissingStart = validation.missingStartIds.has(gate.id);
-          const isMissingFile = validation.missingFileIds.has(gate.id);
-
-          if (isMissingStart) {
-            warningMessages.push(`Gate #${gateNum}: Start date & time is missing.`);
-          }
-          if (isMissingFile) {
-            warningMessages.push(`Gate #${gateNum}: File attachment selection is missing.`);
-          }
-          for (const err of gateErrors) {
-            warningMessages.push(`Gate #${gateNum}: ${err}`);
-          }
-          for (const warn of gateWarnings) {
-            if (
-              warn !== 'Start date & time is required.' &&
-              warn !== 'Start date & time is missing.' &&
-              warn !== 'File attachment is required.' &&
-              warn !== 'File attachment selection is missing.'
-            ) {
-              warningMessages.push(`Gate #${gateNum}: ${warn}`);
-            }
-          }
-        });
-      }
-      if (warningMessages.length > 0) {
+    const existingForValidation = announcements.find(s => s.id === editingId);
+    const preExistingExpiredIds = new Set<string>(
+      (existingForValidation?.timeGatedMp3s || [])
+        .filter(g => !g.inactivated && isGateExpiredOrInactivated(g, nowSaveCheck))
+        .map(g => g.id)
+    );
+    const playedGateBounds = computePlayedGateBoundsMap(
+      { ...formData, id: editingId || formData.id },
+      currentMp3s,
+      logs,
+      existingForValidation?.timeGatedMp3s
+    );
+    const validation = validateTimeGatedMp3s(
+      currentMp3s,
+      nowSaveCheck,
+      effectiveEndDate,
+      formData.startDate,
+      playedGateBounds,
+      preExistingExpiredIds
+    );
+    if (validation.hasErrors) {
+      const blockingErrors = [...validation.blockingErrors];
+      const softWarnings = [...validation.softWarnings];
+      // Hard blocking errors CANNOT be bypassed via "Save Anyway" (#43/#113)
+      if (blockingErrors.length > 0 || (!forceSaveAnyway && softWarnings.length > 0)) {
         setSaveValidationOverrideEndDate(effectiveEndDate);
-        setSaveValidationWarnings(warningMessages);
+        setSaveValidationState({ blockingErrors, softWarnings });
         return;
       }
     }
@@ -2514,6 +2763,23 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     if (existingAnnouncement) {
       const sortNumArr = (arr?: number[]) => [...(arr || [])].map(Number).sort((a, b) => a - b).join(',');
       const sortStrArr = (arr?: string[]) => [...(arr || [])].map(String).sort().join(',');
+      // Canonicalize gate arrays without v0.15.4 sibling-bridge fields so no-op saves do not push duplicate revisions
+      const canonicalizeGates = (gates?: TimeGatedMp3[]) =>
+        (gates || []).map(g => ({
+          id: g.id || '',
+          startDate: g.startDate || '',
+          endDate: g.endDate || '',
+          inactivated: Boolean(g.inactivated),
+          inactivatedAt: g.inactivated ? (g.inactivatedAt || '') : '',
+          mediaItems: getGateMediaItems(g).map(mi => ({
+            mp3Url: getFilenameFromUrlOrPath(mi.mp3Url || ''),
+            assetType: classifyMediaAsset(getFilenameFromUrlOrPath(mi.mp3Url || ''), mi.assetType),
+            backupMp3Url: mi.backupMp3Url ? getFilenameFromUrlOrPath(mi.backupMp3Url) : '',
+            approximateReadTime: mi.approximateReadTime || '',
+            inactivated: Boolean(mi.inactivated),
+            inactivatedAt: mi.inactivated ? (mi.inactivatedAt || '') : '',
+          })),
+        }));
 
       const hasScheduleChanged =
         (existingAnnouncement.name || '') !== (formData.name || '') ||
@@ -2527,7 +2793,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         sortNumArr(existingAnnouncement.days) !== sortNumArr(formData.days) ||
         sortNumArr(existingAnnouncement.hours) !== sortNumArr(formData.hours) ||
         sortStrArr(existingAnnouncement.gridRules) !== sortStrArr(formData.gridRules) ||
-        JSON.stringify(existingAnnouncement.timeGatedMp3s || []) !== JSON.stringify(sortedMp3s);
+        JSON.stringify(canonicalizeGates(existingAnnouncement.timeGatedMp3s)) !==
+          JSON.stringify(canonicalizeGates(sortedMp3s));
 
       if (hasScheduleChanged) {
         const prevValidFrom =
@@ -2912,6 +3179,9 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           onClearShowValidationErrors={() => {
             if (showValidationErrors.length > 0) setShowValidationErrors([]);
           }}
+          onSendMessageToShow={(sh) => createNewMessage(sh.id)}
+          onViewMessagesForShow={(sh) => setViewingMessagesForShow(sh)}
+          activeMessagesCountByShowId={activeMessagesCountByShowId}
         />
       ) : !editingId ? (
         <div className="flex flex-col h-full min-h-0 flex-1">
@@ -2924,10 +3194,16 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             setAnnouncementFilterQuery={setAnnouncementFilterQuery}
             showFilterQuery={showFilterQuery}
             setShowFilterQuery={setShowFilterQuery}
+            messageFilterQuery={messageFilterQuery}
+            setMessageFilterQuery={setMessageFilterQuery}
+            activeMessagesCount={activeMessagesCount}
             createNew={createNew}
             createNewShow={createNewShow}
+            createNewMessage={() => createNewMessage()}
             isHeaderStacked={isHeaderStacked}
             isUltraNarrowHeader={isUltraNarrowHeader}
+            compactNavBar={compactNavBar}
+            abbreviateAnnouncements={abbreviateAnnouncements}
             hideCalendarIcon={hideCalendarIcon}
             hideAnnouncementsIcons={hideAnnouncementsIcons}
             hideShowsIcon={hideShowsIcon}
@@ -3001,6 +3277,35 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               isVerifyingEvergreens={isVerifyingEvergreens}
               showsFolderCheckMinimal={showsFolderCheckMinimal}
               showsFolderCheckShort={showsFolderCheckShort}
+              onSendMessageToShow={(sh) => createNewMessage(sh.id)}
+              onViewMessagesForShow={(sh) => setViewingMessagesForShow(sh)}
+              activeMessagesCountByShowId={activeMessagesCountByShowId}
+            />
+          ) : viewMode === 'messages' ? (
+            <AdminMessagesManagerView
+              messages={adminMessages}
+              shows={shows}
+              now={now}
+              compatibilityReport={compatibilityReport}
+              filterQuery={messageFilterQuery}
+              listCardCollapseViewEditText={msgCardCollapseViewEditText}
+              listCardCollapseCopyText={msgCardCollapseCopyText}
+              listCardCollapseDetailsText={msgCardCollapseDetailsText}
+              listCardCollapsePreviewText={msgCardCollapsePreviewText}
+              onCreateNewMessage={() => createNewMessage()}
+              onEditMessage={(msg) => {
+                setReuseSourceAdminMessage(null);
+                setEditingAdminMessage(msg);
+                setMessageInitialShowId(undefined);
+                setIsMessageEditorOpen(true);
+              }}
+              onReuseMessage={handleReuseAdminMessage}
+              onPreviewMessage={(msg) => setPreviewingAdminMessage(msg)}
+              onArchiveMessage={handleArchiveAdminMessage}
+              onRestoreMessage={handleRestoreAdminMessage}
+              onDeleteMessage={handleDeleteAdminMessage}
+              onToggleBuiltInSystemMessage={handleToggleBuiltInSystemMessage}
+              onResetAcknowledgements={handleResetAdminMessageAcks}
             />
           ) : viewMode === 'files' ? (
             <FileManagerView
@@ -3009,10 +3314,11 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
               pickerDurations={pickerDurations}
               metadataCache={metadataCache}
               previewUrl={previewUrl}
-              onTogglePreview={togglePreview}
-              onPreviewScript={(name) => {
+              onTogglePreview={(name, bucket) => togglePreview(name, undefined, bucket)}
+              onPreviewScript={(name, bucket) => {
                 setPreviewScriptOrigin(null);
                 setPreviewScriptFromPicker(false);
+                setPreviewScriptBucket(bucket);
                 setPreviewScriptFile(name);
               }}
               onNewCopy={() => {
@@ -3020,6 +3326,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                   isOpen: true,
                   initialFileName: undefined,
                   sourceFileToCopy: undefined,
+                  sourceBucket: undefined,
                   initialReadTime: undefined,
                   targetGateId: null,
                   targetItemIndex: undefined,
@@ -3027,7 +3334,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                   fromPicker: false,
                 });
               }}
-              onEditScript={(name) => {
+              onEditScript={(name, bucket) => {
                 const allMediaItems = announcements.flatMap(a =>
                   (a.timeGatedMp3s || []).flatMap(m => getGateMediaItems(m))
                 );
@@ -3038,6 +3345,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                   isOpen: true,
                   initialFileName: name,
                   sourceFileToCopy: undefined,
+                  sourceBucket: bucket,
                   initialReadTime: matchingItem?.approximateReadTime,
                   initialIsAutoReadTime: matchingItem?.isAutoReadTime,
                   initialBackupMp3Url: matchingItem?.backupMp3Url,
@@ -3047,7 +3355,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                   fromPicker: false,
                 });
               }}
-              onCopyScript={(name) => {
+              onCopyScript={(name, bucket) => {
                 const allMediaItems = announcements.flatMap(a =>
                   (a.timeGatedMp3s || []).flatMap(m => getGateMediaItems(m))
                 );
@@ -3058,6 +3366,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                   isOpen: true,
                   initialFileName: undefined,
                   sourceFileToCopy: name,
+                  sourceBucket: bucket,
                   initialReadTime: matchingItem?.approximateReadTime,
                   initialIsAutoReadTime: matchingItem?.isAutoReadTime,
                   initialBackupMp3Url: matchingItem?.backupMp3Url,
@@ -3222,6 +3531,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           handleClockInteraction={handleClockInteraction}
           handleAddMp3={handleAddMp3}
           onReuseGate={handleReuseGate}
+          savedGates={announcements.find(a => a.id === editingId)?.timeGatedMp3s}
           initialFocusTarget={initialEditorFocusTarget}
           onClearInitialFocusTarget={() => setInitialEditorFocusTarget(null)}
           logs={logs}
@@ -3572,6 +3882,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         isOpen={copyEditorState.isOpen}
         initialFileName={copyEditorState.initialFileName}
         sourceFileToCopy={copyEditorState.sourceFileToCopy}
+        sourceBucket={copyEditorState.sourceBucket}
         initialReadTime={copyEditorState.initialReadTime}
         initialIsAutoReadTime={copyEditorState.initialIsAutoReadTime}
         initialBackupMp3Url={copyEditorState.initialBackupMp3Url}
@@ -4275,12 +4586,76 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           setSelectedCalendarShow(null);
           startEditShow(s);
         }}
+        onMessageShow={(s) => {
+          setSelectedCalendarShow(null);
+          createNewMessage(s.id);
+        }}
+        onViewMessagesForShow={(s) => {
+          setSelectedCalendarShow(null);
+          setViewingMessagesForShow(s);
+        }}
+        activeMessagesCount={
+          selectedCalendarShow ? activeMessagesCountByShowId[selectedCalendarShow.id] || 0 : 0
+        }
+      />
+
+      <ShowMessagesShortlistModal
+        isOpen={Boolean(viewingMessagesForShow)}
+        show={viewingMessagesForShow}
+        messages={adminMessages}
+        shows={shows}
+        now={now}
+        onClose={() => setViewingMessagesForShow(null)}
+        onCreateMessageForShow={(sh) => {
+          createNewMessage(sh.id);
+        }}
+        onPreviewMessage={(msg, sh) => {
+          setPreviewingAdminMessageShow(sh);
+          setPreviewingAdminMessage(msg);
+        }}
+        onEditMessage={(msg) => {
+          setReuseSourceAdminMessage(null);
+          setEditingAdminMessage(msg);
+          setMessageInitialShowId(undefined);
+          setIsMessageEditorOpen(true);
+        }}
+        onReuseMessage={handleReuseAdminMessage}
+        onArchiveMessage={handleArchiveAdminMessage}
+        onRestoreMessage={handleRestoreAdminMessage}
+      />
+
+      <AdminMessageEditorModal
+        isOpen={isMessageEditorOpen}
+        editingMessage={editingAdminMessage}
+        reuseSourceMessage={reuseSourceAdminMessage}
+        initialTargetShowId={messageInitialShowId}
+        shows={shows}
+        isSaving={isSavingAdminMessage}
+        onClose={() => {
+          setIsMessageEditorOpen(false);
+          setEditingAdminMessage(null);
+          setReuseSourceAdminMessage(null);
+          setMessageInitialShowId(undefined);
+        }}
+        onSave={handleSaveAdminMessage}
+      />
+
+      <AdminMessageReaderModal
+        isOpen={Boolean(previewingAdminMessage)}
+        message={previewingAdminMessage}
+        show={previewingAdminMessageShow}
+        isPreview={true}
+        onClose={() => {
+          setPreviewingAdminMessage(null);
+          setPreviewingAdminMessageShow(null);
+        }}
       />
 
       {previewScriptFile && (
         <div id="preview-script-modal-backdrop" className="fixed inset-0 bg-slate-950/80 flex items-center justify-center p-4 z-[135] animate-in fade-in duration-150">
           <LiveReadPopout
             initialFileName={previewScriptFile}
+            sourceBucket={previewScriptBucket}
             initialAnnouncementName={
               isUpNextPromoUrl(previewScriptFile)
                 ? formatUpNextPromoFilename(previewScriptFile)
@@ -4318,14 +4693,17 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         mi => getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === cleanName.toLowerCase()
                       );
                     const originSnap = previewScriptOrigin;
+                    const bucketSnap = previewScriptBucket;
                     const backupSnap = previewScriptBackupUrl || matchingItem?.backupMp3Url;
                     setPreviewScriptFile(null);
+                    setPreviewScriptBucket(undefined);
                     setPreviewScriptBackupUrl(undefined);
                     setPreviewScriptOrigin(null);
                     setCopyEditorState({
                       isOpen: true,
                       initialFileName: cleanName,
                       sourceFileToCopy: undefined,
+                      sourceBucket: bucketSnap,
                       initialReadTime: matchingItem?.approximateReadTime,
                       initialIsAutoReadTime: matchingItem?.isAutoReadTime,
                       initialBackupMp3Url: backupSnap,
@@ -4367,14 +4745,17 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         mi => getFilenameFromUrlOrPath(mi.mp3Url || '').toLowerCase() === cleanName.toLowerCase()
                       );
                     const originSnap = previewScriptOrigin;
+                    const bucketSnap = previewScriptBucket;
                     const backupSnap = previewScriptBackupUrl || matchingItem?.backupMp3Url;
                     setPreviewScriptFile(null);
+                    setPreviewScriptBucket(undefined);
                     setPreviewScriptBackupUrl(undefined);
                     setPreviewScriptOrigin(null);
                     setCopyEditorState({
                       isOpen: true,
                       initialFileName: undefined,
                       sourceFileToCopy: cleanName,
+                      sourceBucket: bucketSnap,
                       initialReadTime: matchingItem?.approximateReadTime,
                       initialIsAutoReadTime: matchingItem?.isAutoReadTime,
                       initialBackupMp3Url: backupSnap,
@@ -4389,6 +4770,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             }
             onClose={() => {
               setPreviewScriptFile(null);
+              setPreviewScriptBucket(undefined);
               setPreviewScriptBackupUrl(undefined);
               setPreviewScriptOrigin(null);
               setPreviewScriptFromPicker(false);
@@ -4421,74 +4803,136 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
         }}
       />
 
-      {/* Incomplete Gate Data On-Save Warning Modal */}
-      {saveValidationWarnings && (
+      {/* Gate Data On-Save Validation Modal (Hard Blocking Errors vs. Soft Warnings) */}
+      {saveValidationState && (
         <div
           className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-slate-950/60"
-          onClick={() => setSaveValidationWarnings(null)}
+          onClick={() => {
+            setSaveValidationState(null);
+            setSaveValidationOverrideEndDate(undefined);
+          }}
         >
           <div
             className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-slate-200 overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
-            <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
-                  <AlertCircle className="w-4 h-4" />
+            {saveValidationState.blockingErrors.length > 0 ? (
+              <div className="p-3.5 px-4 bg-red-50 border-b border-red-200 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="bg-red-600 p-1.5 rounded text-white shrink-0">
+                    <AlertCircle className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-black text-red-950 uppercase tracking-widest leading-none">
+                      Cannot Save — Gate Errors
+                    </h4>
+                    <p className="text-xs font-bold text-red-800 truncate mt-1">
+                      Fix required errors before saving
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
-                    Incomplete Gate Data
-                  </h4>
-                  <p className="text-xs font-bold text-amber-800 truncate mt-1">
-                    Please fix the following before saving
-                  </p>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSaveValidationState(null);
+                    setSaveValidationOverrideEndDate(undefined);
+                  }}
+                  className="text-red-700 hover:text-red-950 cursor-pointer p-1"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setSaveValidationWarnings(null)}
-                className="text-amber-700 hover:text-amber-950 cursor-pointer p-1"
-                title="Close"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+            ) : (
+              <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
+                    <AlertCircle className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
+                      Gate Schedule Warnings
+                    </h4>
+                    <p className="text-xs font-bold text-amber-800 truncate mt-1">
+                      Review before saving or continue anyway
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSaveValidationState(null);
+                    setSaveValidationOverrideEndDate(undefined);
+                  }}
+                  className="text-amber-700 hover:text-amber-950 cursor-pointer p-1"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
-            <div className="p-4 space-y-2.5 text-xs text-slate-700">
-              <p className="font-bold text-slate-800">
-                One or more Announcement Gates have missing or invalid fields:
-              </p>
-              <ul className="space-y-1.5 max-h-[240px] overflow-y-auto custom-scrollbar">
-                {saveValidationWarnings.map((msg, i) => (
-                  <li
-                    key={i}
-                    className="flex items-start gap-1.5 p-2 rounded bg-amber-50/70 border border-amber-200 text-amber-950 font-bold"
-                  >
-                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
-                    <span>{msg}</span>
-                  </li>
-                ))}
-              </ul>
+            <div className="p-4 space-y-3 text-xs text-slate-700 max-h-[300px] overflow-y-auto custom-scrollbar">
+              {saveValidationState.blockingErrors.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="font-bold text-red-900">
+                    Must be fixed before saving:
+                  </p>
+                  <ul className="space-y-1.5">
+                    {saveValidationState.blockingErrors.map((msg, i) => (
+                      <li
+                        key={`err-${i}`}
+                        className="flex items-start gap-1.5 p-2 rounded bg-red-50/80 border border-red-200 text-red-950 font-bold"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
+                        <span>{msg}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {saveValidationState.softWarnings.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="font-bold text-slate-800">
+                    {saveValidationState.blockingErrors.length > 0
+                      ? 'Additional schedule warnings:'
+                      : 'One or more Announcement Gates have schedule warnings:'}
+                  </p>
+                  <ul className="space-y-1.5">
+                    {saveValidationState.softWarnings.map((msg, i) => (
+                      <li
+                        key={`warn-${i}`}
+                        className="flex items-start gap-1.5 p-2 rounded bg-amber-50/70 border border-amber-200 text-amber-950 font-bold"
+                      >
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <span>{msg}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
 
             <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              {saveValidationState.blockingErrors.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const overrideEnd = saveValidationOverrideEndDate;
+                    setSaveValidationState(null);
+                    setSaveValidationOverrideEndDate(undefined);
+                    saveEdit(overrideEnd, true);
+                  }}
+                  className="px-3.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+                >
+                  Save Anyway
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
-                  const overrideEnd = saveValidationOverrideEndDate;
-                  setSaveValidationWarnings(null);
-                  setSaveValidationOverrideEndDate(undefined);
-                  saveEdit(overrideEnd, true);
-                }}
-                className="px-3.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded text-xs font-black uppercase tracking-wider cursor-pointer"
-              >
-                Save Anyway
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSaveValidationWarnings(null);
+                  setSaveValidationState(null);
                   setSaveValidationOverrideEndDate(undefined);
                 }}
                 className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
@@ -4534,8 +4978,8 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
 
       {/* Folder Verification Progress & Results Modal */}
       {folderCheckModal?.isOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xl w-[95%] max-w-[95vw] overflow-hidden flex flex-col max-h-[85vh]">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 {folderCheckModal.isRunning ? (
@@ -4628,99 +5072,26 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                 folderCheckModal.extraFolders.length > 0 &&
                 sortedActiveShowsWithShortName.length > 0 && (
                   <div className="bg-sky-50 border border-sky-200 rounded-lg p-3 space-y-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-black uppercase tracking-wider text-sky-900">
-                          Merge Stranded Folder into Show
-                        </span>
-                        <span
-                          title="Moves non-duplicate files into the selected destination show folder and removes the empty stranded folder."
-                          className="text-sky-700 hover:text-sky-900 cursor-help inline-flex items-center"
-                        >
-                          <HelpCircle className="w-3.5 h-3.5" />
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1">
-                          <label className="inline-flex items-center gap-1 text-xs font-bold text-slate-700 cursor-pointer select-none">
-                            <input
-                              type="radio"
-                              name="mergeTargetCategory"
-                              checked={mergeTargetCategory === 'media_shows'}
-                              onChange={() => {
-                                setMergeTargetCategory('media_shows');
-                                setConfirmMergeStrandedOpen(false);
-                              }}
-                              disabled={isMergingStranded}
-                              className="w-3.5 h-3.5 text-sky-700 focus:ring-sky-600 cursor-pointer"
-                            />
-                            <span>Shows</span>
-                          </label>
-                          {onOpenShowsFolder && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenShowsFolder(
-                                  folderCheckModal.playlistsPath &&
-                                    !folderCheckModal.playlistsPath.startsWith('Google Drive:')
-                                    ? folderCheckModal.playlistsPath
-                                    : undefined,
-                                  folderCheckModal.playlistsFolderId
-                                )
-                              }
-                              className="p-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded cursor-pointer inline-flex items-center justify-center"
-                              title="Open Shows Folder (media_shows)"
-                              aria-label="Open Shows Folder (media_shows)"
-                            >
-                              <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-1">
-                          <label className="inline-flex items-center gap-1 text-xs font-bold text-slate-700 cursor-pointer select-none">
-                            <input
-                              type="radio"
-                              name="mergeTargetCategory"
-                              checked={mergeTargetCategory === 'media_evergreens'}
-                              onChange={() => {
-                                setMergeTargetCategory('media_evergreens');
-                                setConfirmMergeStrandedOpen(false);
-                              }}
-                              disabled={isMergingStranded}
-                              className="w-3.5 h-3.5 text-sky-700 focus:ring-sky-600 cursor-pointer"
-                            />
-                            <span>Evergreens</span>
-                          </label>
-                          {onOpenEvergreensFolder && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenEvergreensFolder(
-                                  folderCheckModal.evergreensPath &&
-                                    !folderCheckModal.evergreensPath.startsWith('Google Drive:')
-                                    ? folderCheckModal.evergreensPath
-                                    : undefined,
-                                  folderCheckModal.evergreensFolderId
-                                )
-                              }
-                              className="p-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded cursor-pointer inline-flex items-center justify-center"
-                              title="Open Evergreens Folder (media_evergreens)"
-                              aria-label="Open Evergreens Folder (media_evergreens)"
-                            >
-                              <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black uppercase tracking-wider text-sky-900">
+                        Merge Stranded Folder into Show
+                      </span>
+                      <span
+                        title="Moves non-duplicate files into the selected destination show folder and removes the empty stranded folder."
+                        className="text-sky-700 hover:text-sky-900 cursor-help inline-flex items-center"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5" />
+                      </span>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-2 items-center">
-                      <div className="space-y-1 min-w-0">
-                        <label className="text-[11px] font-bold uppercase text-slate-600 block">
-                          Stranded Folder ({folderCheckModal.extraFolders.length})
-                        </label>
+                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-2 items-end">
+                      {/* Left / Top: Stranded Folder */}
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="min-h-[26px] flex items-center">
+                          <label className="text-[11px] font-bold uppercase text-slate-600 block">
+                            Stranded Folder ({folderCheckModal.extraFolders.length})
+                          </label>
+                        </div>
                         <div
                           role="listbox"
                           aria-label="Stranded Folder"
@@ -4729,77 +5100,387 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                           {folderCheckModal.extraFolders.map(ef => {
                             const key = `${ef.category}/${ef.name}`;
                             const isSelected = selectedStrandedKey === key;
+                            const isShowsCat = ef.category === 'media_shows';
+                            const stat = folderCheckModal.subfolderStats?.[key];
+                            const fileCount = typeof stat?.fileCount === 'number' ? stat.fileCount : 0;
+                            const countText = `(${fileCount} ${fileCount === 1 ? 'file' : 'files'})`;
+                            const canPreviewFolder = isShowsCat
+                              ? Boolean(onOpenShowsFolder)
+                              : Boolean(onOpenEvergreensFolder);
+                            const handlePreviewStrandedFolder = (e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              if (isShowsCat && onOpenShowsFolder) {
+                                const fallbackLocal =
+                                  folderCheckModal.playlistsPath &&
+                                  !folderCheckModal.playlistsPath.startsWith('Google Drive:')
+                                    ? `${folderCheckModal.playlistsPath.replace(/[\\/]+$/, '')}/${ef.name}`
+                                    : undefined;
+                                onOpenShowsFolder(
+                                  stat?.localPath || fallbackLocal,
+                                  stat?.driveFolderId || folderCheckModal.playlistsFolderId
+                                );
+                              } else if (!isShowsCat && onOpenEvergreensFolder) {
+                                const fallbackLocal =
+                                  folderCheckModal.evergreensPath &&
+                                  !folderCheckModal.evergreensPath.startsWith('Google Drive:')
+                                    ? `${folderCheckModal.evergreensPath.replace(/[\\/]+$/, '')}/${ef.name}`
+                                    : undefined;
+                                onOpenEvergreensFolder(
+                                  stat?.localPath || fallbackLocal,
+                                  stat?.driveFolderId || folderCheckModal.evergreensFolderId
+                                );
+                              }
+                            };
                             return (
-                              <button
+                              <div
                                 key={key}
-                                type="button"
                                 role="option"
                                 aria-selected={isSelected}
-                                disabled={isMergingStranded}
-                                onClick={() => handleSelectStrandedItem(ef)}
+                                onClick={() => {
+                                  if (!isMergingStranded) {
+                                    handleSelectStrandedItem(ef);
+                                  }
+                                }}
                                 className={cn(
-                                  'w-full px-2.5 py-1.5 text-left text-xs font-mono truncate block cursor-pointer',
+                                  'w-full px-2 py-1 text-left text-xs flex items-center justify-between gap-1.5 cursor-pointer select-none',
                                   isSelected
-                                    ? 'bg-sky-600 text-white font-bold'
-                                    : 'text-slate-800 hover:bg-sky-50 font-medium'
+                                    ? isShowsCat
+                                      ? 'bg-amber-600 text-white font-bold'
+                                      : 'bg-emerald-600 text-white font-bold'
+                                    : isShowsCat
+                                      ? 'text-amber-950 bg-amber-50/40 hover:bg-amber-100/70 font-medium'
+                                      : 'text-emerald-950 bg-emerald-50/40 hover:bg-emerald-100/70 font-medium'
                                 )}
-                                title={key}
+                                title={`${key} ${countText}`}
                               >
-                                {key}
-                              </button>
+                                <span className="font-mono truncate min-w-0 flex-1">
+                                  {key}{' '}
+                                  <span
+                                    className={cn(
+                                      'font-sans text-[11px]',
+                                      isSelected
+                                        ? isShowsCat
+                                          ? 'text-amber-100'
+                                          : 'text-emerald-100'
+                                        : isShowsCat
+                                          ? 'text-amber-700'
+                                          : 'text-emerald-700'
+                                    )}
+                                  >
+                                    {countText}
+                                  </span>
+                                </span>
+                                {canPreviewFolder && (
+                                  <button
+                                    type="button"
+                                    onClick={handlePreviewStrandedFolder}
+                                    className={cn(
+                                      'p-1 rounded border shrink-0 inline-flex items-center justify-center cursor-pointer',
+                                      isSelected
+                                        ? isShowsCat
+                                          ? 'bg-amber-700/80 hover:bg-amber-800 border-amber-400/60 text-white'
+                                          : 'bg-emerald-700/80 hover:bg-emerald-800 border-emerald-400/60 text-white'
+                                        : isShowsCat
+                                          ? 'bg-white hover:bg-amber-100 border-amber-300 text-amber-700'
+                                          : 'bg-white hover:bg-emerald-100 border-emerald-300 text-emerald-700'
+                                    )}
+                                    title={`Open ${key}`}
+                                    aria-label={`Open ${key}`}
+                                  >
+                                    <FolderOpen className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
                             );
                           })}
                         </div>
                       </div>
 
-                      <div className="hidden sm:flex items-center justify-center pt-5">
-                        <ArrowRight className="w-4 h-4 text-sky-700 shrink-0" />
+                      {/* Middle Connector: Right Arrow button on wide screens; Down Arrow button + Merge button when stacked on narrow screens */}
+                      <div className="hidden md:flex items-center justify-center h-[130px]">
+                        <button
+                          type="button"
+                          disabled={
+                            isMergingStranded ||
+                            !selectedStrandedKey ||
+                            !selectedMergeTargetShortName
+                          }
+                          onClick={() => setConfirmMergeStrandedOpen(true)}
+                          className={cn(
+                            'p-1.5 rounded border shadow-2xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center transition-colors',
+                            mergeTargetCategory === 'media_shows'
+                              ? 'bg-amber-50 hover:bg-amber-100 border-amber-300 text-amber-700'
+                              : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-700'
+                          )}
+                          title="Merge into Folder..."
+                          aria-label="Merge into Folder..."
+                        >
+                          <ArrowRight className="w-4 h-4 shrink-0" />
+                        </button>
                       </div>
 
-                      <div className="space-y-1 min-w-0">
-                        <label className="text-[11px] font-bold uppercase text-slate-600 block truncate">
-                          Target Show Folder ({mergeTargetCategory === 'media_shows' ? 'Shows' : 'Evergreens'})
-                        </label>
+                      <div className="flex md:hidden items-center justify-center gap-2 py-1">
+                        <button
+                          type="button"
+                          disabled={
+                            isMergingStranded ||
+                            !selectedStrandedKey ||
+                            !selectedMergeTargetShortName
+                          }
+                          onClick={() => setConfirmMergeStrandedOpen(true)}
+                          className={cn(
+                            'p-1.5 rounded border shadow-2xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center transition-colors',
+                            mergeTargetCategory === 'media_shows'
+                              ? 'bg-amber-50 hover:bg-amber-100 border-amber-300 text-amber-700'
+                              : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-700'
+                          )}
+                          title="Merge into Folder..."
+                          aria-label="Merge into Folder..."
+                        >
+                          <ArrowDown className="w-4 h-4 shrink-0" />
+                        </button>
+                        {!confirmMergeStrandedOpen && (
+                          <button
+                            type="button"
+                            disabled={
+                              isMergingStranded ||
+                              !selectedStrandedKey ||
+                              !selectedMergeTargetShortName
+                            }
+                            onClick={() => setConfirmMergeStrandedOpen(true)}
+                            className={cn(
+                              'px-3 py-1.5 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50',
+                              mergeTargetCategory === 'media_shows'
+                                ? 'bg-amber-600 hover:bg-amber-700'
+                                : 'bg-emerald-600 hover:bg-emerald-700'
+                            )}
+                          >
+                            Merge into Folder...
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Right / Bottom: Joined Shows/Evergreens Radio Control always placed just over Target Show Folder */}
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="min-h-[26px] flex flex-wrap items-center justify-between gap-2">
+                          <label
+                            className={cn(
+                              'text-[11px] font-bold uppercase block truncate',
+                              mergeTargetCategory === 'media_shows'
+                                ? 'text-amber-800'
+                                : 'text-emerald-800'
+                            )}
+                          >
+                            Target Show Folder (
+                            {mergeTargetCategory === 'media_shows' ? 'Shows' : 'Evergreens'})
+                          </label>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {onOpenShowsFolder && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenShowsFolder(
+                                    folderCheckModal.playlistsPath &&
+                                      !folderCheckModal.playlistsPath.startsWith('Google Drive:')
+                                      ? folderCheckModal.playlistsPath
+                                      : undefined,
+                                    folderCheckModal.playlistsFolderId
+                                  )
+                                }
+                                className="p-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300 rounded cursor-pointer inline-flex items-center justify-center"
+                                title="Open Shows Folder (media_shows)"
+                                aria-label="Open Shows Folder (media_shows)"
+                              >
+                                <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
+                              </button>
+                            )}
+
+                            <div
+                              role="radiogroup"
+                              aria-label="Target Show Folder Category"
+                              className="inline-flex bg-slate-200/80 p-0.5 rounded border border-slate-300"
+                            >
+                              <button
+                                type="button"
+                                role="radio"
+                                aria-checked={mergeTargetCategory === 'media_shows'}
+                                disabled={isMergingStranded}
+                                onClick={() => {
+                                  setMergeTargetCategory('media_shows');
+                                  setConfirmMergeStrandedOpen(false);
+                                }}
+                                className={cn(
+                                  'px-2.5 py-0.5 rounded-xs text-xs font-black uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50',
+                                  mergeTargetCategory === 'media_shows'
+                                    ? 'bg-amber-600 text-white shadow-2xs'
+                                    : 'text-amber-800 hover:bg-amber-50/80'
+                                )}
+                              >
+                                Shows
+                              </button>
+                              <button
+                                type="button"
+                                role="radio"
+                                aria-checked={mergeTargetCategory === 'media_evergreens'}
+                                disabled={isMergingStranded}
+                                onClick={() => {
+                                  setMergeTargetCategory('media_evergreens');
+                                  setConfirmMergeStrandedOpen(false);
+                                }}
+                                className={cn(
+                                  'px-2.5 py-0.5 rounded-xs text-xs font-black uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50',
+                                  mergeTargetCategory === 'media_evergreens'
+                                    ? 'bg-emerald-600 text-white shadow-2xs'
+                                    : 'text-emerald-800 hover:bg-emerald-50/80'
+                                )}
+                              >
+                                Evergreens
+                              </button>
+                            </div>
+
+                            {onOpenEvergreensFolder && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenEvergreensFolder(
+                                    folderCheckModal.evergreensPath &&
+                                      !folderCheckModal.evergreensPath.startsWith('Google Drive:')
+                                      ? folderCheckModal.evergreensPath
+                                      : undefined,
+                                    folderCheckModal.evergreensFolderId
+                                  )
+                                }
+                                className="p-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded cursor-pointer inline-flex items-center justify-center"
+                                title="Open Evergreens Folder (media_evergreens)"
+                                aria-label="Open Evergreens Folder (media_evergreens)"
+                              >
+                                <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
                         <div
                           ref={mergeTargetListRef}
                           role="listbox"
                           aria-label="Target Show Folder"
-                          className="h-[130px] overflow-y-auto bg-white border border-slate-300 rounded divide-y divide-slate-100 custom-scrollbar"
+                          className={cn(
+                            'h-[130px] overflow-y-auto bg-white border rounded divide-y divide-slate-100 custom-scrollbar',
+                            mergeTargetCategory === 'media_shows'
+                              ? 'border-amber-300'
+                              : 'border-emerald-300'
+                          )}
                         >
                           {sortedActiveShowsWithShortName.map(s => {
                             const shortName = String(s.nameShort || '').trim();
                             const isSelected = selectedMergeTargetShortName === shortName;
+                            const isShowsCat = mergeTargetCategory === 'media_shows';
                             const targetPath = `${mergeTargetCategory}/${shortName}`;
+                            const stat = folderCheckModal.subfolderStats?.[targetPath];
+                            const fileCount = typeof stat?.fileCount === 'number' ? stat.fileCount : 0;
+                            const countText = `(${fileCount} ${fileCount === 1 ? 'file' : 'files'})`;
+                            const canPreviewFolder = isShowsCat
+                              ? Boolean(onOpenShowsFolder)
+                              : Boolean(onOpenEvergreensFolder);
+                            const handlePreviewTargetFolder = (e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              if (isShowsCat && onOpenShowsFolder) {
+                                const fallbackLocal =
+                                  folderCheckModal.playlistsPath &&
+                                  !folderCheckModal.playlistsPath.startsWith('Google Drive:')
+                                    ? `${folderCheckModal.playlistsPath.replace(/[\\/]+$/, '')}/${shortName}`
+                                    : undefined;
+                                onOpenShowsFolder(
+                                  stat?.localPath || fallbackLocal,
+                                  stat?.driveFolderId || folderCheckModal.playlistsFolderId
+                                );
+                              } else if (!isShowsCat && onOpenEvergreensFolder) {
+                                const fallbackLocal =
+                                  folderCheckModal.evergreensPath &&
+                                  !folderCheckModal.evergreensPath.startsWith('Google Drive:')
+                                    ? `${folderCheckModal.evergreensPath.replace(/[\\/]+$/, '')}/${shortName}`
+                                    : undefined;
+                                onOpenEvergreensFolder(
+                                  stat?.localPath || fallbackLocal,
+                                  stat?.driveFolderId || folderCheckModal.evergreensFolderId
+                                );
+                              }
+                            };
                             return (
-                              <button
+                              <div
                                 key={s.id}
-                                type="button"
                                 role="option"
                                 aria-selected={isSelected}
                                 data-target-short={shortName}
-                                disabled={isMergingStranded}
                                 onClick={() => {
-                                  setSelectedMergeTargetShortName(shortName);
-                                  setConfirmMergeStrandedOpen(false);
+                                  if (!isMergingStranded) {
+                                    setSelectedMergeTargetShortName(shortName);
+                                    setConfirmMergeStrandedOpen(false);
+                                  }
                                 }}
                                 className={cn(
-                                  'w-full px-2.5 py-1.5 text-left text-xs truncate flex items-center justify-between gap-2 cursor-pointer',
+                                  'w-full px-2 py-1 text-left text-xs flex items-center justify-between gap-1.5 cursor-pointer select-none',
                                   isSelected
-                                    ? 'bg-sky-600 text-white font-bold'
-                                    : 'text-slate-800 hover:bg-sky-50 font-medium'
+                                    ? isShowsCat
+                                      ? 'bg-amber-600 text-white font-bold'
+                                      : 'bg-emerald-600 text-white font-bold'
+                                    : isShowsCat
+                                      ? 'text-amber-950 bg-amber-50/30 hover:bg-amber-100/60 font-medium'
+                                      : 'text-emerald-950 bg-emerald-50/30 hover:bg-emerald-100/60 font-medium'
                                 )}
-                                title={`${targetPath} — ${s.name}`}
+                                title={`${targetPath} ${countText} — ${s.name}`}
                               >
-                                <span className="font-mono truncate">{targetPath}</span>
+                                <span className="font-mono truncate min-w-0 flex-1">
+                                  {targetPath}{' '}
+                                  <span
+                                    className={cn(
+                                      'font-sans text-[11px]',
+                                      isSelected
+                                        ? isShowsCat
+                                          ? 'text-amber-100'
+                                          : 'text-emerald-100'
+                                        : isShowsCat
+                                          ? 'text-amber-700'
+                                          : 'text-emerald-700'
+                                    )}
+                                  >
+                                    {countText}
+                                  </span>
+                                </span>
                                 <span
                                   className={cn(
-                                    'text-[11px] truncate shrink-0 max-w-[45%]',
-                                    isSelected ? 'text-sky-100' : 'text-slate-500'
+                                    'text-[11px] truncate shrink-0 max-w-[35%]',
+                                    isSelected
+                                      ? isShowsCat
+                                        ? 'text-amber-100'
+                                        : 'text-emerald-100'
+                                      : 'text-slate-500'
                                   )}
                                 >
                                   {s.name}
                                 </span>
-                              </button>
+                                {canPreviewFolder && (
+                                  <button
+                                    type="button"
+                                    onClick={handlePreviewTargetFolder}
+                                    className={cn(
+                                      'p-1 rounded border shrink-0 inline-flex items-center justify-center cursor-pointer',
+                                      isSelected
+                                        ? isShowsCat
+                                          ? 'bg-amber-700/80 hover:bg-amber-800 border-amber-400/60 text-white'
+                                          : 'bg-emerald-700/80 hover:bg-emerald-800 border-emerald-400/60 text-white'
+                                        : isShowsCat
+                                          ? 'bg-white hover:bg-amber-100 border-amber-300 text-amber-700'
+                                          : 'bg-white hover:bg-emerald-100 border-emerald-300 text-emerald-700'
+                                    )}
+                                    title={`Open ${targetPath}`}
+                                    aria-label={`Open ${targetPath}`}
+                                  >
+                                    <FolderOpen className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
                             );
                           })}
                         </div>
@@ -4807,28 +5488,23 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                     </div>
 
                     {!confirmMergeStrandedOpen ? (
-                      <div className="flex items-center justify-between gap-2 pt-0.5">
-                        <div>
-                          {onOpenLocationsModal && (
-                            <button
-                              type="button"
-                              disabled={folderCheckModal.isRunning || isMergingStranded}
-                              onClick={() => onOpenLocationsModal()}
-                              className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                              title="Open Storage Folders settings"
-                            >
-                              <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
-                              <span>Folders</span>
-                            </button>
-                          )}
-                        </div>
+                      <div className="hidden md:flex items-center justify-end gap-2 pt-0.5">
                         <button
                           type="button"
-                          disabled={isMergingStranded || !selectedStrandedKey || !selectedMergeTargetShortName}
+                          disabled={
+                            isMergingStranded ||
+                            !selectedStrandedKey ||
+                            !selectedMergeTargetShortName
+                          }
                           onClick={() => setConfirmMergeStrandedOpen(true)}
-                          className="px-3 py-1.5 bg-sky-700 hover:bg-sky-800 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50"
+                          className={cn(
+                            'px-3 py-1.5 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer disabled:opacity-50',
+                            mergeTargetCategory === 'media_shows'
+                              ? 'bg-amber-600 hover:bg-amber-700'
+                              : 'bg-emerald-600 hover:bg-emerald-700'
+                          )}
                         >
-                          Merge into Show Folder...
+                          Merge into Folder...
                         </button>
                       </div>
                     ) : (
@@ -4840,40 +5516,24 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                           </span>
                           ?
                         </span>
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            {onOpenLocationsModal && (
-                              <button
-                                type="button"
-                                disabled={isMergingStranded}
-                                onClick={() => onOpenLocationsModal()}
-                                className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                                title="Open Storage Folders settings"
-                              >
-                                <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
-                                <span>Folders</span>
-                              </button>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0 justify-end">
-                            <button
-                              type="button"
-                              disabled={isMergingStranded}
-                              onClick={() => setConfirmMergeStrandedOpen(false)}
-                              className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isMergingStranded}
-                              onClick={handleMergeStrandedFolder}
-                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase cursor-pointer flex items-center gap-1"
-                            >
-                              {isMergingStranded && <RefreshCw className="w-3 h-3 animate-spin" />}
-                              <span>{isMergingStranded ? 'Merging...' : 'Confirm Merge'}</span>
-                            </button>
-                          </div>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            disabled={isMergingStranded}
+                            onClick={() => setConfirmMergeStrandedOpen(false)}
+                            className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isMergingStranded}
+                            onClick={handleMergeStrandedFolder}
+                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase cursor-pointer flex items-center gap-1"
+                          >
+                            {isMergingStranded && <RefreshCw className="w-3 h-3 animate-spin" />}
+                            <span>{isMergingStranded ? 'Merging...' : 'Confirm Merge'}</span>
+                          </button>
                         </div>
                       </div>
                     )}
@@ -4882,13 +5542,27 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
             </div>
 
             <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <span className="text-xs font-bold text-slate-500">
-                {folderCheckModal.isRunning
-                  ? 'Checking folders...'
-                  : folderCheckModal.hasError
-                    ? 'Completed with issues'
-                    : 'Verification complete'}
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {onOpenLocationsModal && (
+                  <button
+                    type="button"
+                    disabled={folderCheckModal.isRunning || isMergingStranded}
+                    onClick={() => onOpenLocationsModal()}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    title="Open Storage Folders settings"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span>Folders</span>
+                  </button>
+                )}
+                <span className="text-xs font-bold text-slate-500">
+                  {folderCheckModal.isRunning
+                    ? 'Checking folders...'
+                    : folderCheckModal.hasError
+                      ? 'Completed with issues'
+                      : 'Verification complete'}
+                </span>
+              </div>
               <div className="flex items-center gap-2 flex-wrap">
                 {(folderCheckModal.isRunning ||
                   folderCheckModal.extraFolders.length === 0 ||
@@ -4934,18 +5608,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                         <FolderOpen className="w-3.5 h-3.5 text-emerald-600" />
                       </button>
                     )}
-                    {onOpenLocationsModal && (
-                      <button
-                        type="button"
-                        disabled={folderCheckModal.isRunning}
-                        onClick={() => onOpenLocationsModal()}
-                        className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                        title="Open Storage Folders settings"
-                      >
-                        <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Folders</span>
-                      </button>
-                    )}
                   </>
                 )}
                 <button
@@ -4980,7 +5642,12 @@ export default React.memo(CalendarTab, (prev, next) => {
     prev.announcements === next.announcements &&
     prev.shows === next.shows &&
     prev.logs === next.logs &&
+    prev.adminMessages === next.adminMessages &&
+    prev.compatibilityReport === next.compatibilityReport &&
     prev.stationTimezone === next.stationTimezone &&
+    prev.adminContactInfo === next.adminContactInfo &&
+    prev.hasSavedAdminContact === next.hasSavedAdminContact &&
+    prev.upNextPromoConfig === next.upNextPromoConfig &&
     prev.isAdmin === next.isAdmin &&
     prev.driveMP3s === next.driveMP3s &&
     prev.isDriveActive === next.isDriveActive &&

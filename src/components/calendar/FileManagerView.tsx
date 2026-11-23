@@ -66,11 +66,11 @@ export interface FileManagerViewProps {
   pickerDurations: Record<string, string>;
   metadataCache: Record<string, any>;
   previewUrl: string | null;
-  onTogglePreview: (fileName: string) => void;
-  onPreviewScript: (fileName: string) => void;
+  onTogglePreview: (fileName: string, bucket?: 'active' | 'archived' | 'deleted') => void;
+  onPreviewScript: (fileName: string, bucket?: 'active' | 'archived' | 'deleted') => void;
   onNewCopy: () => void;
-  onEditScript: (fileName: string) => void;
-  onCopyScript: (fileName: string) => void;
+  onEditScript: (fileName: string, bucket?: 'active' | 'archived' | 'deleted') => void;
+  onCopyScript: (fileName: string, bucket?: 'active' | 'archived' | 'deleted') => void;
   onFileUploaded?: (uploadedFile: MediaPickerFile) => void;
   onRefreshParent?: () => Promise<any> | void;
   isDriveActive: boolean;
@@ -859,7 +859,8 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
         const copied = await copyDriveAnnouncementFile(
           copyPromptState.sourceFile.name,
           finalTargetName,
-          allowOverwrite
+          allowOverwrite,
+          copyPromptState.sourceFile.folderBucket
         );
         const nowMs = Date.now();
         const streamPath = `https://www.googleapis.com/drive/v3/files/${copied.id}?alt=media`;
@@ -891,6 +892,9 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
             sourceFileName: copyPromptState.sourceFile.name,
             targetFileName: finalTargetName,
             allowOverwrite,
+            ...(copyPromptState.sourceFile.folderBucket && copyPromptState.sourceFile.folderBucket !== 'active'
+              ? { sourceBucket: copyPromptState.sourceFile.folderBucket }
+              : {}),
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -1815,7 +1819,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
                                         type="button"
                                         onClick={e => {
                                           e.stopPropagation();
-                                          onPreviewScript(file.name);
+                                          onPreviewScript(file.name, file.folderBucket);
                                         }}
                                         className="text-xs font-bold uppercase text-blue-600 bg-white hover:bg-blue-50 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
                                         title="Preview file"
@@ -1827,7 +1831,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
                                         type="button"
                                         onClick={e => {
                                           e.stopPropagation();
-                                          onTogglePreview(file.name);
+                                          onTogglePreview(file.name, file.folderBucket);
                                         }}
                                         className={cn(
                                           'text-xs font-bold uppercase cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0',
@@ -1857,7 +1861,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
                                           setRecentlyMovedKeys(new Set());
                                           setRecentlyMovedFromByKey({});
                                           setHighlightedFileKey(null);
-                                          onCopyScript(file.name);
+                                          onCopyScript(file.name, file.folderBucket);
                                         } else {
                                           openDuplicateFilePrompt(file);
                                         }
@@ -1877,7 +1881,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
                                         type="button"
                                         onClick={e => {
                                           e.stopPropagation();
-                                          onEditScript(file.name);
+                                          onEditScript(file.name, file.folderBucket);
                                         }}
                                         className="text-xs font-bold uppercase text-slate-700 bg-white hover:bg-slate-100 cursor-pointer inline-flex items-center justify-center h-6 w-6 shrink-0"
                                         title="Edit .txt live read"

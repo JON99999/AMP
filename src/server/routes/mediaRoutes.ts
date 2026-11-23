@@ -8,7 +8,12 @@ import {
   getAmpMediaShowsDir,
   getCalendarFilePath,
   findAnnouncementSourceFile,
-  statFileWithCloudCatchUp
+  statFileWithCloudCatchUp,
+  ALLOWED_STREAM_MEDIA_EXTENSIONS,
+  isPathWithinAnyDir,
+  isPathWithinConfiguredStationDirs,
+  isPathWithinConfiguredMediaDirs,
+  AnnouncementFolderBucket
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -19,7 +24,7 @@ import {
   serverDriveUploadFileContent,
   resolveServerDriveAnnouncementsFolderId,
   listServerDriveAnnouncementMedia,
-  serverDriveFindAnnouncementFileAnyBucket,
+  serverDriveFindAnnouncementFileInBucket,
   listServerDriveAnnouncementFileManager,
   moveServerDriveAnnouncementFiles,
   streamServerDriveFile
@@ -588,7 +593,7 @@ export async function parseM3uFileAsync(m3uPath: string, folderPath: string) {
             if (exists) {
               durationSeconds = await getMp3DurationSecondsAsync(fullPath);
             } else {
-              durationSeconds = 180;
+              durationSeconds = 0;
             }
           }
 
@@ -657,7 +662,7 @@ export function parseM3uFile(m3uPath: string, folderPath: string) {
         if (exists) {
           durationSeconds = getMp3DurationSeconds(fullPath);
         } else {
-          durationSeconds = 180;
+          durationSeconds = 0;
         }
       }
 
@@ -678,151 +683,213 @@ export function parseM3uFile(m3uPath: string, folderPath: string) {
   return result;
 }
 
-// Helper to locate Evergreen track source file strictly inside Media Evergreens directory
-export function findEvergreenSourceFile(folderPath: string, fileName: string, showNameShort?: string, showName?: string): string | null {
-  if (!fileName) return null;
-  if (fs.existsSync(fileName)) return fileName;
+function isWindowsStyleAbsolutePath(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\');
+}
 
-  let cleanName = fileName;
+function hasParentTraversal(p: string): boolean {
+  return p.replace(/\\/g, '/').split('/').some((seg) => seg === '..');
+}
+
+function resolveFileStrictlyInsideMediaBucket(
+  bucketRoot: string,
+  fileName: string,
+  showNameShort?: string,
+  showName?: string
+): string | null {
+  if (!bucketRoot || !fileName || !fs.existsSync(bucketRoot)) return null;
+
+  let cleanName = String(fileName).trim();
+  if (!cleanName) return null;
+
   if (cleanName.includes('/api/media/stream')) {
     const parts = cleanName.split(/(?:file|path)=/);
     if (parts.length > 1) {
       cleanName = decodeURIComponent(parts[1].split('&')[0]);
     }
   }
+  cleanName = cleanName.split('?')[0].trim();
+  if (!cleanName) return null;
+
+  // Reject any absolute path pointing outside the configured media bucket root
+  if (path.isAbsolute(cleanName) || isWindowsStyleAbsolutePath(cleanName)) {
+    if (!path.isAbsolute(cleanName)) return null;
+    if (!isPathWithinAnyDir(cleanName, [bucketRoot])) return null;
+    if (fs.existsSync(cleanName) && fs.statSync(cleanName).isFile()) {
+      return cleanName;
+    }
+    return null;
+  }
+
+  if (hasParentTraversal(cleanName)) return null;
+
+  const normalizedRel = cleanName.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalizedRel) return null;
+
+  // 1. Check relative path inside bucket root (e.g. "ShowSubfolder/track.mp3")
+  const directRelCandidate = path.join(bucketRoot, normalizedRel);
+  if (
+    isPathWithinAnyDir(directRelCandidate, [bucketRoot]) &&
+    fs.existsSync(directRelCandidate) &&
+    fs.statSync(directRelCandidate).isFile()
+  ) {
+    return directRelCandidate;
+  }
+
+  const baseName = path.basename(normalizedRel);
+  if (!baseName || baseName === '.' || baseName === '..') return null;
+
+  // 2. Check specific show subfolder inside bucket root
+  const showFolder = findShowPlaylistFolder(bucketRoot, showNameShort, showName);
+  if (showFolder && isPathWithinAnyDir(showFolder, [bucketRoot])) {
+    const candidate = path.join(showFolder, baseName);
+    if (
+      isPathWithinAnyDir(candidate, [bucketRoot]) &&
+      fs.existsSync(candidate) &&
+      fs.statSync(candidate).isFile()
+    ) {
+      return candidate;
+    }
+  }
+
+  // 3. Check root and immediate show subfolders strictly inside bucketRoot
+  const candidateRoot = path.join(bucketRoot, baseName);
+  if (
+    isPathWithinAnyDir(candidateRoot, [bucketRoot]) &&
+    fs.existsSync(candidateRoot) &&
+    fs.statSync(candidateRoot).isFile()
+  ) {
+    return candidateRoot;
+  }
+
+  try {
+    const entries = fs.readdirSync(bucketRoot, { withFileTypes: true });
+    const baseLower = baseName.toLowerCase();
+    for (const entry of entries) {
+      const fullPath = path.join(bucketRoot, entry.name);
+      if (!isPathWithinAnyDir(fullPath, [bucketRoot])) continue;
+      if (entry.isDirectory()) {
+        const candidate = path.join(fullPath, baseName);
+        if (
+          isPathWithinAnyDir(candidate, [bucketRoot]) &&
+          fs.existsSync(candidate) &&
+          fs.statSync(candidate).isFile()
+        ) {
+          return candidate;
+        }
+      } else if (entry.isFile() && entry.name.toLowerCase() === baseLower) {
+        return fullPath;
+      }
+    }
+  } catch (_) {}
+
+  return null;
+}
+
+// Helper to locate Evergreen track source file strictly inside Media Evergreens directory
+export function findEvergreenSourceFile(folderPath: string, fileName: string, showNameShort?: string, showName?: string): string | null {
+  if (!folderPath || !fileName) return null;
 
   const evergreensRoot = fs.existsSync(path.join(folderPath, 'media_evergreens'))
     ? path.join(folderPath, 'media_evergreens')
     : (fs.existsSync(path.join(folderPath, 'MediaEvergreens')) ? path.join(folderPath, 'MediaEvergreens') : folderPath);
-  const baseName = path.basename(cleanName);
 
-  const showFolder = findShowPlaylistFolder(evergreensRoot, showNameShort, showName);
-  if (showFolder) {
-    const candidate = path.join(showFolder, baseName);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  if (fs.existsSync(evergreensRoot)) {
-    const candidateRoot = path.join(evergreensRoot, baseName);
-    if (fs.existsSync(candidateRoot)) return candidateRoot;
-
-    try {
-      const entries = fs.readdirSync(evergreensRoot);
-      for (const entry of entries) {
-        const fullPath = path.join(evergreensRoot, entry);
-        if (fs.statSync(fullPath).isDirectory()) {
-          const candidate = path.join(fullPath, baseName);
-          if (fs.existsSync(candidate)) return candidate;
-        } else if (entry.toLowerCase() === baseName.toLowerCase()) {
-          return fullPath;
-        }
-      }
-    } catch (e) {}
-  }
-
-  const candidateDirect = path.join(folderPath, baseName);
-  if (fs.existsSync(candidateDirect)) return candidateDirect;
-
-  return null;
+  return resolveFileStrictlyInsideMediaBucket(evergreensRoot, fileName, showNameShort, showName);
 }
 
 // Helper to locate Show track / playlist source file strictly inside Media Shows directory
 export function findShowSourceFile(folderPath: string, fileName: string, showNameShort?: string, showName?: string): string | null {
-  if (!fileName) return null;
-  if (fs.existsSync(fileName)) return fileName;
-
-  let cleanName = fileName;
-  if (cleanName.includes('/api/media/stream')) {
-    const parts = cleanName.split(/(?:file|path)=/);
-    if (parts.length > 1) {
-      cleanName = decodeURIComponent(parts[1].split('&')[0]);
-    }
-  }
+  if (!folderPath || !fileName) return null;
 
   const showsRoot = fs.existsSync(path.join(folderPath, 'media_shows'))
     ? path.join(folderPath, 'media_shows')
     : (fs.existsSync(path.join(folderPath, 'MediaShows')) ? path.join(folderPath, 'MediaShows') : folderPath);
-  const baseName = path.basename(cleanName);
 
-  const showFolder = findShowPlaylistFolder(showsRoot, showNameShort, showName);
-  if (showFolder) {
-    const candidate = path.join(showFolder, baseName);
-    if (fs.existsSync(candidate)) return candidate;
+  return resolveFileStrictlyInsideMediaBucket(showsRoot, fileName, showNameShort, showName);
+}
+
+function isAllowedStreamMediaFile(filePath: string | null): filePath is string {
+  if (!filePath) return false;
+  if (!ALLOWED_STREAM_MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return false;
+  try {
+    return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  } catch (_) {
+    return false;
   }
+}
 
-  if (fs.existsSync(showsRoot)) {
-    const candidateRoot = path.join(showsRoot, baseName);
-    if (fs.existsSync(candidateRoot)) return candidateRoot;
-
-    try {
-      const entries = fs.readdirSync(showsRoot);
-      for (const entry of entries) {
-        const fullPath = path.join(showsRoot, entry);
-        if (fs.statSync(fullPath).isDirectory()) {
-          const candidate = path.join(fullPath, baseName);
-          if (fs.existsSync(candidate)) return candidate;
-        } else if (entry.toLowerCase() === baseName.toLowerCase()) {
-          return fullPath;
-        }
-      }
-    } catch (e) {}
-  }
-
-  const candidateDirect = path.join(folderPath, baseName);
-  if (fs.existsSync(candidateDirect)) return candidateDirect;
-
-  return null;
+function parseAnnouncementBucketParam(raw: unknown): AnnouncementFolderBucket {
+  const val = String(raw || '').trim().toLowerCase();
+  if (val === 'archived' || val === 'deleted') return val;
+  return 'active';
 }
 
 // Universal Media File Path Resolution Engine
 export function resolveMediaFilePath(query: any): string | null {
-  const file = (query.path || query.file) as string;
-  const showNameShort = (query.showNameShort || '') as string;
-  const showName = (query.showName || '') as string;
-  const folderType = (query.folderType || 'Playlists') as string;
-  const targetSubfolder = (query.targetSubfolder || '') as string;
-  const externalAbsolutePath = (query.externalAbsolutePath || '') as string;
+  const file = String(query.path || query.file || '').trim();
+  const showNameShort = String(query.showNameShort || '').trim();
+  const showName = String(query.showName || '').trim();
+  const rawFolderType = String(query.folderType || '').trim();
+  const targetSubfolder = String(query.targetSubfolder || '').trim();
+  const externalAbsolutePath = String(query.externalAbsolutePath || '').trim();
+  const announcementBucket = parseAnnouncementBucketParam(query.bucket);
 
   if (!file && !showNameShort && !showName && !externalAbsolutePath) return null;
 
-  // 1. Direct absolute path check
-  if (file && path.isAbsolute(file) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+  // 1. Direct absolute path check (restricted strictly to configured media dirs or active external media dirs + media extensions)
+  if (
+    file &&
+    path.isAbsolute(file) &&
+    isPathWithinConfiguredMediaDirs(file, true) &&
+    isAllowedStreamMediaFile(file)
+  ) {
     return file;
   }
 
-  // 1b. External directory absolute path check
-  if (externalAbsolutePath && fs.existsSync(externalAbsolutePath)) {
+  // 1b. External directory absolute path check (restricted to configured media or active external media directories)
+  if (
+    externalAbsolutePath &&
+    isPathWithinConfiguredStationDirs(externalAbsolutePath, true) &&
+    fs.existsSync(externalAbsolutePath)
+  ) {
     if (fs.statSync(externalAbsolutePath).isFile()) {
-      return externalAbsolutePath;
+      return isAllowedStreamMediaFile(externalAbsolutePath) ? externalAbsolutePath : null;
     }
-    if (file) {
+    if (file && !hasParentTraversal(file)) {
       const cleanFileName = path.basename(file);
       const directTarget = path.join(externalAbsolutePath, cleanFileName);
-      if (fs.existsSync(directTarget) && fs.statSync(directTarget).isFile()) {
+      if (
+        isPathWithinAnyDir(directTarget, [externalAbsolutePath]) &&
+        isAllowedStreamMediaFile(directTarget)
+      ) {
         return directTarget;
       }
     }
+    return null;
   }
 
-  // 2. Specific show playlist or evergreen subfolder lookup
+  // 2. Specific show playlist or evergreen lookup (strictly isolated to its own bucket)
   if (showNameShort || showName) {
-    const isEvergreen = folderType && folderType.toLowerCase().startsWith('evergreen');
+    const isEvergreen = rawFolderType.toLowerCase().startsWith('evergreen');
     const targetDir = isEvergreen
       ? getAmpMediaEvergreensDir(currentSettings)
       : getAmpMediaShowsDir(currentSettings);
 
     if (targetDir && fs.existsSync(targetDir)) {
       const showFolderPath = findShowPlaylistFolder(targetDir, showNameShort, showName);
-      if (showFolderPath && fs.existsSync(showFolderPath)) {
-        if (targetSubfolder && targetSubfolder !== '.') {
+      if (showFolderPath && isPathWithinAnyDir(showFolderPath, [targetDir]) && fs.existsSync(showFolderPath)) {
+        if (targetSubfolder && targetSubfolder !== '.' && !hasParentTraversal(targetSubfolder)) {
           const subDir = path.join(showFolderPath, targetSubfolder);
-          if (fs.existsSync(subDir) && fs.statSync(subDir).isDirectory()) {
-            if (file) {
-              const cleanFileName = path.basename(file);
-              const subTarget = path.join(subDir, cleanFileName);
-              if (fs.existsSync(subTarget) && fs.statSync(subTarget).isFile()) {
-                return subTarget;
-              }
+          if (
+            isPathWithinAnyDir(subDir, [showFolderPath]) &&
+            fs.existsSync(subDir) &&
+            fs.statSync(subDir).isDirectory() &&
+            file
+          ) {
+            const cleanFileName = path.basename(file);
+            const subTarget = path.join(subDir, cleanFileName);
+            if (isPathWithinAnyDir(subTarget, [subDir]) && isAllowedStreamMediaFile(subTarget)) {
+              return subTarget;
             }
           }
         }
@@ -830,51 +897,63 @@ export function resolveMediaFilePath(query: any): string | null {
         if (file) {
           const cleanFileName = path.basename(file);
           const directTarget = path.join(showFolderPath, cleanFileName);
-          if (fs.existsSync(directTarget) && fs.statSync(directTarget).isFile()) {
+          if (isPathWithinAnyDir(directTarget, [showFolderPath]) && isAllowedStreamMediaFile(directTarget)) {
             return directTarget;
           }
           const { audioFiles } = getAllAudioAndPlaylistFiles(showFolderPath, { targetSubfolder, recursive: false });
           const matched = audioFiles.find(a => a.name === cleanFileName || a.relPath === file);
-          if (matched && fs.existsSync(matched.fullPath) && fs.statSync(matched.fullPath).isFile()) {
+          if (
+            matched &&
+            isPathWithinAnyDir(matched.fullPath, [targetDir]) &&
+            isAllowedStreamMediaFile(matched.fullPath)
+          ) {
             return matched.fullPath;
           }
         }
       }
+      if (file) {
+        const resolved = isEvergreen
+          ? findEvergreenSourceFile(targetDir, file, showNameShort, showName)
+          : findShowSourceFile(targetDir, file, showNameShort, showName);
+        if (resolved && isPathWithinAnyDir(resolved, [targetDir]) && isAllowedStreamMediaFile(resolved)) {
+          return resolved;
+        }
+      }
+    }
+    return null;
+  }
+
+  // 3. Explicit bucket folderType without showName (Evergreens or Shows/Playlists)
+  if (rawFolderType) {
+    const ftLower = rawFolderType.toLowerCase();
+    if (ftLower.startsWith('evergreen')) {
+      const mediaEvergreens = getAmpMediaEvergreensDir(currentSettings);
+      if (mediaEvergreens && fs.existsSync(mediaEvergreens) && file) {
+        const resolved = findEvergreenSourceFile(mediaEvergreens, file);
+        if (resolved && isPathWithinAnyDir(resolved, [mediaEvergreens]) && isAllowedStreamMediaFile(resolved)) {
+          return resolved;
+        }
+      }
+      return null;
+    }
+    if (ftLower.startsWith('playlist') || ftLower.startsWith('show')) {
+      const mediaShows = getAmpMediaShowsDir(currentSettings);
+      if (mediaShows && fs.existsSync(mediaShows) && file) {
+        const resolved = findShowSourceFile(mediaShows, file);
+        if (resolved && isPathWithinAnyDir(resolved, [mediaShows]) && isAllowedStreamMediaFile(resolved)) {
+          return resolved;
+        }
+      }
+      return null;
     }
   }
 
-  // 3. Check Media Announcements (media_announcements)
+  // 4. Announcement lookup (strictly inside media_announcements active root unless bucket=archived|deleted is explicitly requested)
   const mediaAnnounce = getAmpMediaAnnouncementsDir(currentSettings);
   if (mediaAnnounce && fs.existsSync(mediaAnnounce) && file) {
-    const p = path.join(mediaAnnounce, path.basename(file));
-    if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
-    const resolved = findAnnouncementSourceFile(mediaAnnounce, file);
-    if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
-  }
-
-  // 4. Check Media Evergreens (media_evergreens)
-  const mediaEvergreens = getAmpMediaEvergreensDir(currentSettings);
-  if (mediaEvergreens && fs.existsSync(mediaEvergreens) && file) {
-    const p = path.join(mediaEvergreens, file);
-    if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
-    const resolved = findEvergreenSourceFile(mediaEvergreens, file, showNameShort, showName);
-    if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
-  }
-
-  // 5. Check Media Shows (media_shows)
-  const mediaShows = getAmpMediaShowsDir(currentSettings);
-  if (mediaShows && fs.existsSync(mediaShows) && file) {
-    const p = path.join(mediaShows, file);
-    if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
-    const resolved = findShowSourceFile(mediaShows, file, showNameShort, showName) || findAnnouncementSourceFile(mediaShows, file);
-    if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
-  }
-
-  // 6. Check relative to unified AMP station root
-  if (currentSettings.localPathAmp && fs.existsSync(currentSettings.localPathAmp) && file) {
-    const directAmpRel = path.join(currentSettings.localPathAmp, file);
-    if (fs.existsSync(directAmpRel) && fs.statSync(directAmpRel).isFile()) {
-      return directAmpRel;
+    const resolved = findAnnouncementSourceFile(mediaAnnounce, file, { bucket: announcementBucket });
+    if (resolved && isPathWithinAnyDir(resolved, [mediaAnnounce]) && isAllowedStreamMediaFile(resolved)) {
+      return resolved;
     }
   }
 
@@ -997,11 +1076,12 @@ export function registerMediaRoutes(app: express.Express): void {
             const ext = path.extname(f).toLowerCase();
             const isScript = ['.txt', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.md'].includes(ext);
             const { stats, cloudSyncPending } = await statFileWithCloudCatchUp(fullPath);
+            const bucketSuffix = folderBucket !== 'active' ? `&bucket=${encodeURIComponent(folderBucket)}` : '';
             if (!stats || cloudSyncPending) {
               return {
                 name: f,
                 duration: isScript ? '—' : '',
-                path: `/api/media/stream?path=${encodeURIComponent(f)}`,
+                path: `/api/media/stream?path=${encodeURIComponent(f)}${bucketSuffix}`,
                 cloudSyncPending: true,
                 folderBucket
               };
@@ -1017,7 +1097,7 @@ export function registerMediaRoutes(app: express.Express): void {
               name: f,
               size: `${(stats.size / (1024 * 1024)).toFixed(1)} MB`,
               duration: durationStr,
-              path: `/api/media/stream?path=${encodeURIComponent(f)}`,
+              path: `/api/media/stream?path=${encodeURIComponent(f)}${bucketSuffix}`,
               mtimeMs: stats.mtimeMs,
               modifiedTime: stats.mtime.toISOString(),
               cloudSyncPending: false,
@@ -1282,11 +1362,25 @@ export function registerMediaRoutes(app: express.Express): void {
 
       const range = req.headers.range;
       if (range) {
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const rangeMatch = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
+        let start = NaN;
+        let end = NaN;
+        if (rangeMatch && fileSize > 0) {
+          const [, startStr, endStr] = rangeMatch;
+          if (startStr === '' && endStr !== '') {
+            // Suffix byte-range (e.g. bytes=-500)
+            const suffixLength = parseInt(endStr, 10);
+            if (!isNaN(suffixLength) && suffixLength > 0) {
+              start = Math.max(0, fileSize - suffixLength);
+              end = fileSize - 1;
+            }
+          } else if (startStr !== '') {
+            start = parseInt(startStr, 10);
+            end = endStr !== '' ? Math.min(parseInt(endStr, 10), fileSize - 1) : fileSize - 1;
+          }
+        }
 
-        if (isNaN(start) || start >= fileSize || end >= fileSize || start > end) {
+        if (fileSize === 0 || isNaN(start) || isNaN(end) || start < 0 || start >= fileSize || start > end) {
           res.status(416).set({
             'Content-Range': `bytes */${fileSize}`,
             'Accept-Ranges': 'bytes'
@@ -1362,14 +1456,17 @@ export function registerMediaRoutes(app: express.Express): void {
         });
       }
 
+      const requestedBucket = parseAnnouncementBucketParam(req.query.bucket);
+      const bucketQuerySuffix = requestedBucket !== 'active' ? `&bucket=${encodeURIComponent(requestedBucket)}` : '';
+
       // AI Studio Google Drive Provider
       if (isServerDriveStorageRequest(req)) {
         const cleanName = path.basename(String(file).trim());
-        const foundAny = await serverDriveFindAnnouncementFileAnyBucket(req, cleanName);
-        if (!foundAny) {
+        const foundMatch = await serverDriveFindAnnouncementFileInBucket(req, cleanName, requestedBucket);
+        if (!foundMatch) {
           return res.status(404).json({ error: `File "${cleanName}" not found in Google Drive Media Announcements` });
         }
-        const found = foundAny.file;
+        const found = foundMatch.file;
         const resolvedName = found.name || cleanName;
         const ext = path.extname(resolvedName).toLowerCase();
         const isText = ext === '.txt' || ext === '.md';
@@ -1379,7 +1476,7 @@ export function registerMediaRoutes(app: express.Express): void {
           path: `Google Drive / media_announcements / ${resolvedName}`,
           extension: ext,
           url: isText
-            ? `/api/media/stream?path=${encodeURIComponent(resolvedName)}`
+            ? `/api/media/stream?path=${encodeURIComponent(resolvedName)}${bucketQuerySuffix}`
             : `/api/media/stream?path=${encodeURIComponent(found.id)}`,
           storageProvider: 'drive'
         };
@@ -1393,12 +1490,9 @@ export function registerMediaRoutes(app: express.Express): void {
       // Production Local Filesystem Provider (with short cloud-hydration catch-up retry)
       const announcementsDir = getAmpMediaAnnouncementsDir(currentSettings);
       const resolveLocalFilePath = (): string | null => {
-        if (fs.existsSync(file)) return file;
         if (!announcementsDir || !fs.existsSync(announcementsDir)) return null;
-        const directCandidate = path.join(announcementsDir, path.basename(file));
-        if (fs.existsSync(directCandidate)) return directCandidate;
-        const resolved = findAnnouncementSourceFile(announcementsDir, file);
-        if (resolved && fs.existsSync(resolved)) return resolved;
+        const resolved = findAnnouncementSourceFile(announcementsDir, file, { bucket: requestedBucket });
+        if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
         return null;
       };
 
@@ -1420,14 +1514,15 @@ export function registerMediaRoutes(app: express.Express): void {
         return res.status(404).json({ error: 'File not found in Media Announcements directory' });
       }
 
-      const ext = path.extname(file).toLowerCase();
+      const ext = path.extname(targetFilePath).toLowerCase();
       const isText = ext === '.txt' || ext === '.md';
+      const resolvedBaseName = path.basename(targetFilePath);
 
       const responseData: any = {
-        name: file,
+        name: resolvedBaseName,
         path: targetFilePath,
         extension: ext,
-        url: `/api/media/stream?path=${encodeURIComponent(file)}`,
+        url: `/api/media/stream?path=${encodeURIComponent(resolvedBaseName)}${bucketQuerySuffix}`,
         storageProvider: 'local'
       };
 
@@ -1525,16 +1620,26 @@ export function registerMediaRoutes(app: express.Express): void {
       }
 
       let targetFilePath = path.join(announcementsDir, finalFileName);
-      const existingResolved = findAnnouncementSourceFile(announcementsDir, finalFileName);
-      if (existingResolved && fs.existsSync(existingResolved)) {
-        targetFilePath = existingResolved;
+      if (!fs.existsSync(targetFilePath)) {
+        const lowerTarget = finalFileName.toLowerCase();
+        try {
+          const activeEntries = fs.readdirSync(announcementsDir, { withFileTypes: true });
+          const caseMatch = activeEntries.find(
+            (entry) => entry.isFile() && entry.name.toLowerCase() === lowerTarget
+          );
+          if (caseMatch) {
+            targetFilePath = path.join(announcementsDir, caseMatch.name);
+          }
+        } catch {
+          // Ignore directory read errors; proceed with direct path
+        }
       }
 
       if (fs.existsSync(targetFilePath) && !allowOverwrite) {
         return res.status(409).json({
-          error: `A file named "${finalFileName}" already exists in Media Announcements.`,
+          error: `A file named "${path.basename(targetFilePath)}" already exists in Media Announcements.`,
           exists: true,
-          name: finalFileName
+          name: path.basename(targetFilePath)
         });
       }
 
@@ -1562,9 +1667,10 @@ export function registerMediaRoutes(app: express.Express): void {
   // API - Duplicate a live-read or audio asset in media_announcements
   app.post('/api/live-read/copy-file', async (req, res) => {
     try {
-      const { sourceFileName, targetFileName, allowOverwrite } = req.body || {};
+      const { sourceFileName, targetFileName, allowOverwrite, sourceBucket } = req.body || {};
       const rawSource = String(sourceFileName || '').trim();
       const rawTarget = String(targetFileName || '').trim();
+      const requestedSourceBucket = parseAnnouncementBucketParam(sourceBucket);
       if (!rawSource || !rawTarget) {
         return res.status(400).json({ error: 'Source and target filenames are required' });
       }
@@ -1578,7 +1684,7 @@ export function registerMediaRoutes(app: express.Express): void {
       if (isServerDriveStorageRequest(req)) {
         const folderId = await resolveServerDriveAnnouncementsFolderId(req);
         const cleanSource = path.basename(rawSource);
-        const foundSource = await serverDriveFindAnnouncementFileAnyBucket(req, cleanSource);
+        const foundSource = await serverDriveFindAnnouncementFileInBucket(req, cleanSource, requestedSourceBucket, folderId);
         const sourceFile = foundSource?.file || null;
         if (!sourceFile) {
           return res.status(404).json({
@@ -1637,15 +1743,11 @@ export function registerMediaRoutes(app: express.Express): void {
         return res.status(400).json({ error: 'Media Announcements folder is not configured or offline' });
       }
 
-      let sourceFilePath = path.join(announcementsDir, path.basename(rawSource));
-      if (!fs.existsSync(sourceFilePath)) {
-        const resolved = findAnnouncementSourceFile(announcementsDir, rawSource);
-        if (resolved && fs.existsSync(resolved)) {
-          sourceFilePath = resolved;
-        }
-      }
+      const sourceFilePath = findAnnouncementSourceFile(announcementsDir, rawSource, {
+        bucket: requestedSourceBucket
+      });
 
-      if (!fs.existsSync(sourceFilePath)) {
+      if (!sourceFilePath || !fs.existsSync(sourceFilePath)) {
         return res.status(404).json({ error: `Source file "${rawSource}" not found in Media Announcements` });
       }
 
@@ -1771,14 +1873,24 @@ export function registerMediaRoutes(app: express.Express): void {
       }
 
       let targetFilePath = path.join(announcementsDir, finalFileName);
-      const existingResolved = findAnnouncementSourceFile(announcementsDir, finalFileName);
-      if (existingResolved && fs.existsSync(existingResolved)) {
-        targetFilePath = existingResolved;
+      if (!fs.existsSync(targetFilePath)) {
+        const lowerTarget = finalFileName.toLowerCase();
+        try {
+          const activeEntries = fs.readdirSync(announcementsDir, { withFileTypes: true });
+          const caseMatch = activeEntries.find(
+            (entry) => entry.isFile() && entry.name.toLowerCase() === lowerTarget
+          );
+          if (caseMatch) {
+            targetFilePath = path.join(announcementsDir, caseMatch.name);
+          }
+        } catch {
+          // Ignore directory read errors; proceed with direct path
+        }
       }
 
       if (fs.existsSync(targetFilePath) && !allowOverwrite) {
         return res.status(409).json({
-          error: `A file named "${finalFileName}" already exists in Media Announcements.`,
+          error: `A file named "${path.basename(targetFilePath)}" already exists in Media Announcements.`,
           exists: true,
           name: path.basename(targetFilePath)
         });
@@ -1831,21 +1943,13 @@ export function registerMediaRoutes(app: express.Express): void {
         return res.status(400).json({ error: 'Invalid target filename' });
       }
 
-      // AI Studio Google Drive Provider
+      // AI Studio Google Drive Provider (strictly scoped to Active root; never mutates or deletes archived/deleted files)
       if (isServerDriveStorageRequest(req)) {
         const folderId = await resolveServerDriveAnnouncementsFolderId(req);
         const allFiles = await serverDriveListFolderFiles(req, folderId);
         const cleanSource = path.basename(rawSource);
-        let sourceFile =
+        const sourceFile =
           allFiles.find(f => String(f.name || '').toLowerCase() === cleanSource.toLowerCase()) || null;
-        let sourceBucket: 'active' | 'archived' | 'deleted' = 'active';
-        if (!sourceFile) {
-          const anyBucketHit = await serverDriveFindAnnouncementFileAnyBucket(req, cleanSource);
-          if (anyBucketHit) {
-            sourceFile = anyBucketHit.file;
-            sourceBucket = anyBucketHit.bucket;
-          }
-        }
         if (!sourceFile && (!contentBase64 || typeof contentBase64 !== 'string')) {
           return res.status(404).json({
             error: `Source file "${cleanSource}" not found in Google Drive Media Announcements`
@@ -1895,7 +1999,7 @@ export function registerMediaRoutes(app: express.Express): void {
         let sizeMb = 0.1;
         let actionTaken: 'copied' | 'renamed' = isUsedElsewhere ? 'copied' : 'renamed';
 
-        if (!isUsedElsewhere && sourceFile && !existingTarget && sourceBucket === 'active') {
+        if (!isUsedElsewhere && sourceFile && !existingTarget) {
           await serverDriveFetch(req, `drive/v3/files/${sourceFile.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -1949,7 +2053,7 @@ export function registerMediaRoutes(app: express.Express): void {
         });
       }
 
-      // Production Local Filesystem Provider
+      // Production Local Filesystem Provider (strictly scoped to Active root; never mutates or deletes archived/deleted files)
       const announcementsDir = getAmpMediaAnnouncementsDir(currentSettings);
       if (!announcementsDir) {
         return res.status(400).json({ error: 'Media Announcements folder is not configured or offline' });
@@ -1958,15 +2062,9 @@ export function registerMediaRoutes(app: express.Express): void {
         fs.mkdirSync(announcementsDir, { recursive: true });
       }
 
-      let sourceFilePath = path.join(announcementsDir, path.basename(rawSource));
-      if (!fs.existsSync(sourceFilePath)) {
-        const resolved = findAnnouncementSourceFile(announcementsDir, rawSource);
-        if (resolved && fs.existsSync(resolved)) {
-          sourceFilePath = resolved;
-        }
-      }
-
-      const hasSourceOnDisk = fs.existsSync(sourceFilePath);
+      const resolvedActiveSource = findAnnouncementSourceFile(announcementsDir, rawSource, { bucket: 'active' });
+      const sourceFilePath = resolvedActiveSource || path.join(announcementsDir, path.basename(rawSource));
+      const hasSourceOnDisk = Boolean(resolvedActiveSource && fs.existsSync(resolvedActiveSource));
       if (!hasSourceOnDisk && (!contentBase64 || typeof contentBase64 !== 'string')) {
         return res.status(404).json({ error: `Source file "${rawSource}" not found in Media Announcements` });
       }
@@ -1984,7 +2082,7 @@ export function registerMediaRoutes(app: express.Express): void {
       const finalFileName = `${stem}${sourceExt}`;
       const cleanSourceName = hasSourceOnDisk ? path.basename(sourceFilePath) : path.basename(rawSource);
 
-      if (cleanSourceName.toLowerCase() === finalFileName.toLowerCase()) {
+      if (hasSourceOnDisk && cleanSourceName.toLowerCase() === finalFileName.toLowerCase()) {
         const stat = fs.statSync(sourceFilePath);
         const sizeMb = Math.max(0.01, stat.size / (1024 * 1024));
         return res.json({
@@ -2000,11 +2098,7 @@ export function registerMediaRoutes(app: express.Express): void {
         });
       }
 
-      let targetFilePath = path.join(announcementsDir, finalFileName);
-      if (!forceCopy) {
-        const sourceDir = hasSourceOnDisk ? path.dirname(sourceFilePath) : announcementsDir;
-        targetFilePath = path.join(sourceDir, finalFileName);
-      }
+      const targetFilePath = path.join(announcementsDir, finalFileName);
 
       if (fs.existsSync(targetFilePath) && !allowOverwrite) {
         return res.status(409).json({

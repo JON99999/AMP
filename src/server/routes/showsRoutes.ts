@@ -15,7 +15,8 @@ import {
   getAmpMediaEvergreensDir,
   getAmpMediaShowsDir,
   getShowsFilePath,
-  findAnnouncementSourceFile
+  findAnnouncementSourceFile,
+  registerActiveExternalMediaDir
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -63,6 +64,7 @@ async function buildShowContext(params: {
   let showFolderPath: string | null = null;
 
   if (isExternal && externalAbsolutePath && fs.existsSync(externalAbsolutePath)) {
+    registerActiveExternalMediaDir(externalAbsolutePath);
     showFolderPath = externalAbsolutePath;
   } else {
     const isEvergreen = folderType && folderType.toLowerCase().startsWith('evergreen');
@@ -554,21 +556,42 @@ export function registerShowsRoutes(app: express.Express): void {
         }
       }
 
-      const findExtraSubfolders = (baseDirPath: string): string[] => {
+      const subfolderStats: Record<string, { fileCount: number; localPath?: string; driveFolderId?: string }> = {};
+
+      const collectSubfolderStatsAndExtras = (
+        baseDirPath: string,
+        prefix: 'media_evergreens' | 'media_shows'
+      ): string[] => {
         try {
           const entries = fs.readdirSync(baseDirPath, { withFileTypes: true });
-          return entries
-            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-            .map(e => e.name)
-            .filter(name => !knownShortNamesLower.has(name.toLowerCase()))
-            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+          const extraNames: string[] = [];
+          for (const e of entries) {
+            if (!e.isDirectory() || e.name.startsWith('.')) continue;
+            const subPath = path.join(baseDirPath, e.name);
+            let fileCount = 0;
+            try {
+              fileCount = fs
+                .readdirSync(subPath, { withFileTypes: true })
+                .filter(child => child.isFile() && !child.name.startsWith('.')).length;
+            } catch (_) {}
+            subfolderStats[`${prefix}/${e.name}`] = {
+              fileCount,
+              localPath: subPath,
+            };
+            if (!knownShortNamesLower.has(e.name.toLowerCase())) {
+              extraNames.push(e.name);
+            }
+          }
+          return extraNames.sort((a, b) =>
+            a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+          );
         } catch (_) {
           return [];
         }
       };
 
-      const extraEvergreenFolders = findExtraSubfolders(evergreensPath);
-      const extraPlaylistFolders = findExtraSubfolders(playlistsPath);
+      const extraEvergreenFolders = collectSubfolderStatsAndExtras(evergreensPath, 'media_evergreens');
+      const extraPlaylistFolders = collectSubfolderStatsAndExtras(playlistsPath, 'media_shows');
 
       res.json({
         success: true,
@@ -586,7 +609,8 @@ export function registerShowsRoutes(app: express.Express): void {
         createdAnnouncementSubfolders,
         createdFolders,
         extraEvergreenFolders,
-        extraPlaylistFolders
+        extraPlaylistFolders,
+        subfolderStats
       });
     } catch (err: any) {
       console.error('Error in /api/shows/verify-evergreens:', err);
@@ -825,6 +849,7 @@ export function registerShowsRoutes(app: express.Express): void {
       let defaultFolderPath: string | undefined = undefined;
 
       if (customPath && fs.existsSync(customPath)) {
+        registerActiveExternalMediaDir(customPath);
         targetRootPath = customPath;
       } else {
         const searchKey = showNameShort || showName || showId;
@@ -1533,7 +1558,7 @@ export function registerShowsRoutes(app: express.Express): void {
   // API - Export prerecord playlist and files
   app.post('/api/export-prerecord', async (req, res) => {
     try {
-      const { prerecordDate, lengthMinutes, items, exportDestination, folderPrefix, textPrefix, playlistPrefix, overwriteMode } = req.body;
+      const { prerecordDate, lengthMinutes, items, showMessages, exportDestination, folderPrefix, textPrefix, playlistPrefix, overwriteMode } = req.body;
       if (!prerecordDate) {
         return res.status(400).json({ error: 'Prerecord date is required' });
       }
@@ -1577,12 +1602,38 @@ export function registerShowsRoutes(app: express.Express): void {
       const fileReport: any[] = [];
 
       const m3uLines: string[] = ['#EXTM3U'];
+      const showMessageHeaderLines: string[] = [];
+      if (Array.isArray(showMessages) && showMessages.length > 0) {
+        showMessageHeaderLines.push(
+          '========================================================================',
+          '        [OFF-AIR SHOW MESSAGE — DO NOT READ ON AIR]',
+          '========================================================================'
+        );
+        showMessages.forEach((msg: any, msgIdx: number) => {
+          const badge = msg?.severity === 'alert' ? '[!]' : '[i]';
+          const title = typeof msg?.title === 'string' && msg.title.trim() ? msg.title.trim() : 'Show Message';
+          const plainBody = typeof msg?.body === 'string' ? stripFormattingMarkers(msg.body).trim() : '';
+          showMessageHeaderLines.push(`${badge} ${title}`);
+          if (plainBody) {
+            showMessageHeaderLines.push(plainBody);
+          }
+          if (msgIdx < showMessages.length - 1) {
+            showMessageHeaderLines.push('------------------------------------------------------------------------');
+          }
+        });
+        showMessageHeaderLines.push(
+          '========================================================================',
+          ''
+        );
+      }
+
       const txtLines: string[] = [
+        ...showMessageHeaderLines,
         '========================================================================',
         '              PRERECORD BROADCAST SCHEDULE SUMMARY',
         '========================================================================',
         `Air Date: ${dateStr}`,
-        `Start Time: ${hours}:${minutes}`,
+        `Start Time: ${timeStr.replace('-', ':')}`,
         `Duration: ${lengthMinutes} minutes`,
         '========================================================================',
         '',
@@ -1622,7 +1673,10 @@ export function registerShowsRoutes(app: express.Express): void {
         const paddedIdx = String(itemIdx).padStart(2, '0');
         const typePrefix = item.isEvergreen ? 'Track' : 'Break';
         const fallbackShowPrefix = (item.showNameShort || item.showName || folderPrefix || textPrefix || playlistPrefix || 'Show').trim();
-        const rawTargetFileName = item.targetFileName || `${fallbackShowPrefix} ${paddedIdx} ${typePrefix} at ${safeSlotTime} - ${safeName}${ext}`;
+        const fallbackFileName = `${fallbackShowPrefix} ${paddedIdx} ${typePrefix} at ${safeSlotTime} - ${safeName}${ext}`;
+        const rawTargetFileName = path.basename(String(item.targetFileName || fallbackFileName))
+          .replace(/[\/\\?%*:|"<>]/g, ' ')
+          .trim() || fallbackFileName;
         const targetBaseWithoutExt = rawTargetFileName.replace(/\.(txt|md|rtf)$/i, '');
         const targetFileName = isTextScript ? `${targetBaseWithoutExt}.txt` : rawTargetFileName;
         const targetRtfFileName = isTextScript ? `${targetBaseWithoutExt}.rtf` : '';
@@ -1632,15 +1686,9 @@ export function registerShowsRoutes(app: express.Express): void {
           if (evergreensFolder) {
             sourceFilePath = findEvergreenSourceFile(evergreensFolder, sourceFileName, item.showNameShort, item.showName);
           }
-          if (!sourceFilePath && showsFolder) {
-            sourceFilePath = findEvergreenSourceFile(showsFolder, sourceFileName, item.showNameShort, item.showName);
-          }
         } else {
           if (announcementsFolder) {
-            sourceFilePath = findAnnouncementSourceFile(announcementsFolder, sourceFileName);
-          }
-          if (!sourceFilePath && showsFolder) {
-            sourceFilePath = findAnnouncementSourceFile(showsFolder, sourceFileName);
+            sourceFilePath = findAnnouncementSourceFile(announcementsFolder, sourceFileName, { bucket: 'active' });
           }
         }
 
@@ -1755,10 +1803,10 @@ export function registerShowsRoutes(app: express.Express): void {
         let backupStatus = '';
         let backupTargetFileName = '';
         if (isScript && item.backupMp3Url) {
-          const backupExt = path.extname(item.backupMp3Url) || '.mp3';
+          const backupExt = path.extname(path.basename(String(item.backupMp3Url))).replace(/[^a-zA-Z0-9.]/g, '') || '.mp3';
           const dotIdx = targetFileName.lastIndexOf('.');
           const baseTargetWithoutExt = dotIdx !== -1 ? targetFileName.substring(0, dotIdx) : targetFileName;
-          backupTargetFileName = `${baseTargetWithoutExt} (Backup)${backupExt}`;
+          backupTargetFileName = path.basename(`${baseTargetWithoutExt} (Backup)${backupExt}`);
 
           const backupSourcePath = announcementsFolder ? findAnnouncementSourceFile(announcementsFolder, item.backupMp3Url) : null;
           const backupDestPath = path.join(exportFolderPath, backupTargetFileName);

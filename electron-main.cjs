@@ -5,7 +5,7 @@ const os = require('os');
 const net = require('net');
 const http = require('http');
 
-const APP_VERSION = '0.20.7';
+const APP_VERSION = '0.20.8';
 const AMP_GITHUB_REPO_URL = 'https://github.com/JON99999/AMP';
 
 // ==========================================================================================
@@ -140,7 +140,7 @@ function getFreePort(startingPort = 3000, attempts = 0, maxAttempts = 100) {
         .then(resolve)
         .catch(reject);
     });
-    server.listen(startingPort, '0.0.0.0', () => {
+    server.listen(startingPort, '127.0.0.1', () => {
       const { port } = server.address();
       server.close(() => {
         resolve(port);
@@ -754,6 +754,20 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               checked: calendarSubTab === 'shows',
               enabled: !isLiveReadMenuLocked,
               click: () => sendNavigate('calendar', 'shows')
+            },
+            {
+              label: 'Files',
+              type: 'radio',
+              checked: calendarSubTab === 'files',
+              enabled: !isLiveReadMenuLocked,
+              click: () => sendNavigate('calendar', 'files')
+            },
+            {
+              label: 'Show Messages',
+              type: 'radio',
+              checked: calendarSubTab === 'messages',
+              enabled: !isLiveReadMenuLocked,
+              click: () => sendNavigate('calendar', 'messages')
             }
           ]
         } : {})
@@ -837,7 +851,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: 'Version 0.20.7\nAMP = Announcement Media Player\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.'
+              detail: 'Version 0.20.8\nAMP = Announcement Media Player\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.'
             });
           }
         }

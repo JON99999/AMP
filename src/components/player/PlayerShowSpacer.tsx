@@ -18,6 +18,7 @@ export interface LiveSpacerInfo {
   slot: Date;
   shadeBg: string;
   shadeBorder: string;
+  show?: Show;
 }
 
 interface PinnedLiveShowBannerProps {

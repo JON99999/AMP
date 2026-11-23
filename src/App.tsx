@@ -41,15 +41,28 @@ import {
   isBefore,
   parseISO,
 } from "date-fns";
-import { Announcement, AnnouncementType, LiveReadPayload, LogEntry, MediaAssetFile, Show } from "./types";
+import { AdminMessage, Announcement, AnnouncementType, LiveReadPayload, LogEntry, MediaAssetFile, Show } from "./types";
 import PlayerTab from "./components/PlayerTab";
 import CalendarTab from "./components/CalendarTab";
 import LogTab from "./components/LogTab";
 import LiveDevTab from "./components/LiveDevTab";
 import LiveReadPopout from "./components/LiveReadPopout";
+import AdminMessageReaderModal from "./components/AdminMessageReaderModal";
+import { FirstLaunchPersonaModal } from "./components/FirstLaunchPersonaModal";
 import { ReadOnlyCompatibilityBanner } from "./components/ReadOnlyCompatibilityBanner";
+import { AiStudioReconnectModal } from "./components/AiStudioReconnectModal";
 import { AppOverlays, OptimizationConfig } from "./components/app/AppOverlays";
 import { assessDataCompatibility, CompatibilityReport, CURRENT_APP_VERSION, getStationNow, getAdminContactInfo } from "./lib/compatibility";
+import {
+  getPendingStartupMessages,
+  getAdminMessagesForShowOccurrence,
+  markStartupMessageAcknowledgedLocal,
+} from "./lib/adminMessages";
+import {
+  getMachinePersona,
+  getPcUseTypeLabel,
+  shouldPromptForMachinePersona,
+} from "./lib/machinePersona";
 import { getInitialTheme, applyTheme, ThemeId } from "./lib/theme";
 import { cn, getSortedShows, getShowShade, isTimeInShow, normalizeAnnouncements, getActiveMp3ForSlot, formatExportTimeAmPm, buildUpNextPromoAnnouncements, getAnnouncementsForSlot } from "./lib/utils";
 import {
@@ -63,6 +76,7 @@ import {
   clearShowContext,
   DRIVE_FOLDERS,
   validateGoogleDriveAccess,
+  verifyGoogleDriveDetails,
   getSavedSettings,
   DEFAULT_SETTINGS,
   resolveEffectiveLocalPaths,
@@ -153,7 +167,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"player" | "calendar" | "log" | "live_dev">(
     "player",
   );
-  const [calendarSubTab, setCalendarSubTab] = useState<"calendar" | "list" | "shows" | "files">(
+  const [calendarSubTab, setCalendarSubTab] = useState<"calendar" | "list" | "shows" | "files" | "messages">(
     "calendar",
   );
 
@@ -255,7 +269,11 @@ export default function App() {
         err.message ||
           "Archiving failed: Google Drive connection is inaccessible or blocked.",
       );
-      setShowLocationsModal(true);
+      if (isAiStudio) {
+        setShowAiStudioReconnectModal(true);
+      } else {
+        setShowLocationsModal(true);
+      }
     }
   };
 
@@ -456,6 +474,20 @@ export default function App() {
   const [isDriveActive, setIsDriveActive] = useState(false);
   const [isDriveValidated, setIsDriveValidated] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [dataLoadDiagnosis, setDataLoadDiagnosis] = useState<{
+    overallCause: "connection_lost" | "malformed_file" | "missing_file";
+    affectedFiles: Array<{
+      key: "announcements" | "shows" | "logs";
+      label: string;
+      primaryName: string;
+      cause: string;
+      error?: string;
+      backupCount: number;
+    }>;
+  } | null>(null);
+  const [backupRecoveryAutoOpenTarget, setBackupRecoveryAutoOpenTarget] = useState<
+    "announcements" | "shows" | "logs" | null
+  >(null);
   const [isValidatingDrive, setIsValidatingDrive] = useState(false);
   const [driveValidationError, setDriveValidationError] = useState<
     string | null
@@ -473,6 +505,7 @@ export default function App() {
   const hasBackedUpThisSessionRef = useRef(false);
   const hasAttemptedAutoCacheHealRef = useRef(false);
   const [showLocalHelp, setShowLocalHelp] = useState(false);
+  const [showAiStudioReconnectModal, setShowAiStudioReconnectModal] = useState(false);
   const openLocationsModalRef = useRef<() => void>(() => {});
 
   const {
@@ -497,6 +530,9 @@ export default function App() {
     saveUpNextPromoConfig,
     scheduleWindowConfig,
     saveScheduleWindowConfig,
+    adminMessages,
+    saveAdminMessages,
+    acknowledgeAdminMessage,
     saveAnnouncements,
     addLog,
   } = useScheduleManager({
@@ -508,6 +544,11 @@ export default function App() {
     onShowLocationsModal: () => openLocationsModalRef.current(),
     isReadOnly: isReadOnlyCompatibility,
   });
+
+  // Path 1: App Startup / Version Notices evaluated once right after initial launch
+  // so restoring or creating an AMP Launch message in Msgs never interrupts the Admin session.
+  const [startupNoticeQueue, setStartupNoticeQueue] = useState<import("./types").AdminMessage[] | null>(null);
+  const [personaPromptTick, setPersonaPromptTick] = useState<number>(0);
 
   const {
     showLocationsModal,
@@ -600,7 +641,13 @@ export default function App() {
     hasBackedUpThisSessionRef,
     customFetch: fetch,
   });
-  openLocationsModalRef.current = () => setShowLocationsModal(true);
+  openLocationsModalRef.current = () => {
+    if (isAiStudio && (locationMode === "Drive" || locationMode === "Demo")) {
+      setShowAiStudioReconnectModal(true);
+    } else {
+      setShowLocationsModal(true);
+    }
+  };
 
   const {
     showCachingModal,
@@ -636,6 +683,7 @@ export default function App() {
 
   const requiresStartupUserAction = Boolean(
     showLocationsModal ||
+      showAiStudioReconnectModal ||
       showUpgradeModal ||
       showNewerVersionModal ||
       localPathsUnavailable ||
@@ -644,9 +692,42 @@ export default function App() {
   );
 
   const isInitialStartupComplete =
-    minSplashElapsed &&
+    (minSplashElapsed || (isAiStudio && showAiStudioReconnectModal)) &&
     (requiresStartupUserAction ||
       (!loading && hasCompletedInitialFetch && hasCompletedInitialCache));
+
+  useEffect(() => {
+    if (startupNoticeQueue !== null) return;
+    if (
+      !isInitialStartupComplete ||
+      !hasCompletedInitialFetch ||
+      showLocationsModal ||
+      showUpgradeModal ||
+      showNewerVersionModal ||
+      showAiStudioReconnectModal ||
+      shouldPromptForMachinePersona()
+    ) {
+      return;
+    }
+    const initialPending = getPendingStartupMessages(
+      adminMessages,
+      CURRENT_APP_VERSION,
+      compatibilityReport,
+      getStationNow()
+    );
+    setStartupNoticeQueue(initialPending);
+  }, [
+    startupNoticeQueue,
+    isInitialStartupComplete,
+    hasCompletedInitialFetch,
+    showLocationsModal,
+    showUpgradeModal,
+    showNewerVersionModal,
+    showAiStudioReconnectModal,
+    personaPromptTick,
+    adminMessages,
+    compatibilityReport,
+  ]);
 
   const effectiveAnnouncements = React.useMemo(
     () => [...announcements, ...buildUpNextPromoAnnouncements(shows, upNextPromoConfig)],
@@ -706,6 +787,7 @@ export default function App() {
           setLogs(resData.logs);
         }
         setCompatibilityReport(assessDataCompatibility(resData.meta));
+        await loadShows().catch(() => {});
       } else {
         throw new Error(resData?.error || "Upgrade endpoint returned unsuccessful status");
       }
@@ -729,6 +811,7 @@ export default function App() {
   // Export Prerecord states
   const [showExportModal, setShowExportModal] = useState(false);
   const [pendingExportItems, setPendingExportItems] = useState<any[] | null>(null);
+  const [pendingExportShowMessages, setPendingExportShowMessages] = useState<AdminMessage[] | null>(null);
   const [exportState, setExportState] = useState<
     "idle" | "configuring" | "exporting" | "success" | "error"
   >("idle");
@@ -971,6 +1054,7 @@ export default function App() {
               if (success) {
                 setIsDriveValidated(true);
                 setDriveValidationError(null);
+                setShowAiStudioReconnectModal(false);
                 fetchDataForMode(uSettings);
               } else {
                 setIsDriveValidated(false);
@@ -978,7 +1062,7 @@ export default function App() {
                   "Connected Google account lacks read/write access to one or more configured shared directories.",
                 );
                 setLoading(false);
-                setShowLocationsModal(true);
+                setShowAiStudioReconnectModal(true);
               }
             } catch (err: any) {
               setIsDriveValidated(false);
@@ -986,7 +1070,7 @@ export default function App() {
                 err.message || "Error occurred while validating folders.",
               );
               setLoading(false);
-              setShowLocationsModal(true);
+              setShowAiStudioReconnectModal(true);
             } finally {
               setIsValidatingDrive(false);
             }
@@ -1005,7 +1089,7 @@ export default function App() {
             setIsDriveValidated(false);
             setDriveMP3s([]);
             setLoading(false);
-            setShowLocationsModal(true);
+            setShowAiStudioReconnectModal(true);
           } else {
             setLoading(false);
           }
@@ -1064,7 +1148,39 @@ export default function App() {
     setStartupPhaseLabel("Loading schedule & logs...");
     try {
       if (settings.mode === "Local") {
+        const inspectLocalDataHealth = async () => {
+          try {
+            const diagRes = await fetch("/api/backups/diagnose", { cache: "no-store" });
+            if (!diagRes.ok) {
+              return { overallCause: "connection_lost" as const, affectedFiles: [] };
+            }
+            const diagData = await diagRes.json().catch(() => null);
+            const rawCause = diagData?.overallCause;
+            const affected = Array.isArray(diagData?.files)
+              ? diagData.files.filter((f: any) => f && f.status === "error")
+              : [];
+            if (
+              rawCause === "connection_lost" ||
+              rawCause === "malformed_file" ||
+              rawCause === "missing_file"
+            ) {
+              return { overallCause: rawCause, affectedFiles: affected };
+            }
+            return { overallCause: "ok" as const, affectedFiles: [] };
+          } catch {
+            return { overallCause: "connection_lost" as const, affectedFiles: [] };
+          }
+        };
+
         const fetchLocalDataEndpoints = async () => {
+          const healthCheck = await inspectLocalDataHealth();
+          if (healthCheck.overallCause !== "ok") {
+            setDataLoadDiagnosis({
+              overallCause: healthCheck.overallCause,
+              affectedFiles: healthCheck.affectedFiles,
+            });
+            throw new Error(`Local data health check failed (${healthCheck.overallCause})`);
+          }
           return Promise.all([
             fetch("/api/announcements", { cache: "no-store" }).then((r) => {
               if (!r.ok) throw new Error(`Local announcements failed (${r.status})`);
@@ -1088,6 +1204,17 @@ export default function App() {
           try {
             [localAnnouncements, localLogs, localMP3s] = await fetchLocalDataEndpoints();
           } catch (firstErr) {
+            const postErrHealth = await inspectLocalDataHealth();
+            if (
+              postErrHealth.overallCause === "malformed_file" ||
+              postErrHealth.overallCause === "missing_file"
+            ) {
+              setDataLoadDiagnosis({
+                overallCause: postErrHealth.overallCause,
+                affectedFiles: postErrHealth.affectedFiles,
+              });
+              throw firstErr;
+            }
             if (!hasAttemptedAutoCacheHealRef.current && window.electronAPI?.clearAppCache) {
               hasAttemptedAutoCacheHealRef.current = true;
               console.warn(
@@ -1101,6 +1228,7 @@ export default function App() {
             }
           }
 
+          setDataLoadDiagnosis(null);
           setAnnouncements(normalizeAnnouncements(localAnnouncements || []));
           setLogs(localLogs || []);
 
@@ -1138,27 +1266,44 @@ export default function App() {
           setIsDriveValidated(true);
           setConnectionError(null);
 
-          fetch("/api/compatibility/inspect", { cache: "no-store" })
-            .then((r) => r.json())
-            .then((resData) => {
-              if (resData && resData.success && resData.meta) {
-                const report = assessDataCompatibility(resData.meta);
-                setCompatibilityReport(report);
-                if (report.status === 'OLDER_VERSION_DETECTED') {
-                  if (isAdminApp) {
-                    setShowUpgradeModal(true);
-                  }
-                } else if (report.status === 'NEWER_VERSION_DETECTED') {
-                  setShowNewerVersionModal(true);
+          try {
+            const inspectResp = await fetch("/api/compatibility/inspect", { cache: "no-store" });
+            const resData = await inspectResp.json();
+            if (resData && resData.success && resData.meta) {
+              const report = assessDataCompatibility(resData.meta);
+              setCompatibilityReport(report);
+              if (report.status === 'OLDER_VERSION_DETECTED') {
+                if (isAdminApp) {
+                  setShowUpgradeModal(true);
                 }
+              } else if (report.status === 'NEWER_VERSION_DETECTED') {
+                setShowNewerVersionModal(true);
               }
-            })
-            .catch((e) => console.error("Compatibility inspect check failed:", e));
+            }
+          } catch (e) {
+            console.error("Compatibility inspect check failed:", e);
+          }
         } catch (e) {
           console.error("Local mode fetch details failed:", e);
+          const finalDiag = await inspectLocalDataHealth();
+          if (finalDiag.overallCause !== "ok") {
+            setDataLoadDiagnosis({
+              overallCause: finalDiag.overallCause,
+              affectedFiles: finalDiag.affectedFiles,
+            });
+          } else {
+            setDataLoadDiagnosis({
+              overallCause: "connection_lost",
+              affectedFiles: [],
+            });
+          }
           setIsDriveValidated(false);
           setConnectionError(
-            "Failed to reach local server endpoints. Prior configuration remains active.",
+            finalDiag.overallCause === "malformed_file"
+              ? "A station data file is malformed or corrupted."
+              : finalDiag.overallCause === "missing_file"
+                ? "A station data file is missing from the configured folder."
+                : "Failed to reach local server endpoints. Prior configuration remains active.",
           );
         }
       } else {
@@ -1169,6 +1314,9 @@ export default function App() {
           setConnectionError(
             "Missing authentication token. Please reconnect your account.",
           );
+          if (isAiStudio) {
+            setShowAiStudioReconnectModal(true);
+          }
           setIsSyncing(false);
           setLoading(false);
           return;
@@ -1181,12 +1329,16 @@ export default function App() {
           setConnectionError(
             "Unable to access specified folders. Prior configuration remains active. Please check folder configuration or reconnect.",
           );
+          if (isAiStudio) {
+            setShowAiStudioReconnectModal(true);
+          }
           setIsSyncing(false);
           setLoading(false);
           return;
         }
 
         setIsDriveValidated(true);
+        setShowAiStudioReconnectModal(false);
 
         const headers = await getStorageApiHeaders();
         const hasPreferencesFolder = !!(settings.driveFolderPreferences || settings.driveFolderAmp || DRIVE_FOLDERS.preferences || DRIVE_FOLDERS.amp);
@@ -1254,22 +1406,23 @@ export default function App() {
           setDriveMP3s(mp3Files || []);
         }
 
-        fetch("/api/compatibility/inspect", { headers })
-          .then((r) => r.json())
-          .then((resData) => {
-            if (resData && resData.success && resData.meta) {
-              const report = assessDataCompatibility(resData.meta);
-              setCompatibilityReport(report);
-              if (report.status === 'OLDER_VERSION_DETECTED') {
-                if (isAdminApp) {
-                  setShowUpgradeModal(true);
-                }
-              } else if (report.status === 'NEWER_VERSION_DETECTED') {
-                setShowNewerVersionModal(true);
+        try {
+          const inspectResp = await fetch("/api/compatibility/inspect", { headers });
+          const resData = await inspectResp.json();
+          if (resData && resData.success && resData.meta) {
+            const report = assessDataCompatibility(resData.meta);
+            setCompatibilityReport(report);
+            if (report.status === 'OLDER_VERSION_DETECTED') {
+              if (isAdminApp) {
+                setShowUpgradeModal(true);
               }
+            } else if (report.status === 'NEWER_VERSION_DETECTED') {
+              setShowNewerVersionModal(true);
             }
-          })
-          .catch((e) => console.error("Compatibility inspect check failed:", e));
+          }
+        } catch (e) {
+          console.error("Compatibility inspect check failed:", e);
+        }
 
         setSyncTime(new Date());
         setScrollTrigger((prev) => prev + 1);
@@ -1392,7 +1545,7 @@ export default function App() {
             confirmNavActionRef.current(() => {
               setActiveTab(tab as "player" | "calendar" | "log");
               if (tab === "calendar" && subTab) {
-                setCalendarSubTab(subTab as "calendar" | "list" | "shows" | "files");
+                setCalendarSubTab(subTab as "calendar" | "list" | "shows" | "files" | "messages");
               }
             });
           }
@@ -1875,7 +2028,11 @@ export default function App() {
     };
   };
 
-  const handleExportPrerecord = async (items?: any[]) => {
+  const handleExportPrerecord = async (
+    items?: any[],
+    _txtSummary?: string,
+    showMessagesParam?: AdminMessage[]
+  ) => {
     if (!prerecordDate) return;
     if (items && Array.isArray(items) && items.length > 0) {
       setPendingExportItems(items);
@@ -1887,7 +2044,14 @@ export default function App() {
     const dayName = daysOrder[prerecordDate.getDay()];
     const hour = prerecordDate.getHours();
     const minute = prerecordDate.getMinutes();
-    const activeShow = shows.find((s) => isTimeInShow(s, dayName, hour, minute));
+    const activeShow = shows.find((s) => isTimeInShow(s, dayName, hour, minute)) || null;
+
+    const resolvedExportMessages = Array.isArray(showMessagesParam)
+      ? showMessagesParam
+      : getAdminMessagesForShowOccurrence(adminMessages, activeShow, prerecordDate, logs).map(
+          (item) => item.message
+        );
+    setPendingExportShowMessages(resolvedExportMessages);
 
     const initialPrefix = activeShow?.nameShort?.trim() 
       || (items && items.length > 0 && items[0]?.showNameShort?.trim())
@@ -1924,6 +2088,7 @@ export default function App() {
       setExportError(null);
       setExportResult(null);
       setPendingExportItems(null);
+      setPendingExportShowMessages(null);
     }, 200);
   };
 
@@ -2011,6 +2176,7 @@ export default function App() {
           prerecordDate: prerecordDate.toISOString(),
           lengthMinutes: prerecordLengthMinutes,
           items: itemsToExport,
+          showMessages: pendingExportShowMessages || [],
           exportDestination: exportDestinationInput,
           folderPrefix: exportFolderPrefixInput,
           textPrefix: exportTextPrefixInput,
@@ -2314,7 +2480,37 @@ export default function App() {
             AMP = Announcement Media Player
           </p>
 
-          <div className="mt-5 flex items-center justify-center gap-2 text-xs font-semibold text-slate-400">
+          {(() => {
+            const persona = getMachinePersona();
+            const isUnfilled = shouldPromptForMachinePersona(persona);
+            const computerTypeLabel =
+              persona.personaType === "personal" ? "Personal PC" : "Shared PC";
+            const useTypeLabel = getPcUseTypeLabel(persona.pcUseType);
+            const customLabel = (persona.personaName || "").trim();
+            return (
+              <div className="mt-3 w-full px-3 py-2 rounded-lg bg-slate-800/75 border border-slate-700/80 text-center space-y-0.5">
+                {isUnfilled ? (
+                  <div className="text-xs font-semibold text-slate-400">
+                    Computer Persona: Not set yet
+                  </div>
+                ) : (
+                  <>
+                    {customLabel && (
+                      <div className="text-xs font-black text-white truncate" title={customLabel}>
+                        {customLabel}
+                      </div>
+                    )}
+                    <div className="text-xs font-semibold text-slate-300 truncate">
+                      {computerTypeLabel}
+                      {useTypeLabel ? ` · ${useTypeLabel}` : ""}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
+          <div className="mt-4 flex items-center justify-center gap-2 text-xs font-semibold text-slate-400">
             <RefreshCw
               className={cn(
                 "w-3.5 h-3.5 shrink-0 animate-spin",
@@ -2632,54 +2828,115 @@ export default function App() {
           activeTab === "player" ? "overflow-hidden pb-0" : "overflow-hidden pb-2",
         )}
       >
-        {/* Connection Error Warning Banner */}
-        {connectionError && (
-          <div
-            className={cn(
-              "mx-auto px-4 mt-3 transition-all shrink-0",
-              activeTab === "player"
-                ? "max-w-[400px]"
-                : "max-w-full md:px-6 lg:px-8",
-            )}
-          >
-            <div className="bg-red-950/60 border border-red-500/40 text-red-200 rounded-xl p-3 flex flex-col gap-1.5 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-red-400">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400" />
-                Connection Warning
-              </div>
-              <p className="text-xs font-bold leading-relaxed text-red-100">
-                {locationMode === "Local" && isStartupReady && !localPathsUnavailable
-                  ? "Folders are verified on disk, but schedule data could not be loaded. Click Reset Cache & Reload (keeps your folders) or Retry Sync."
-                  : "Can't access folders. Please retry."}
-              </p>
-              <div className="mt-1 flex flex-wrap gap-2">
-                <button
-                  onClick={() => setShowLocationsModal(true)}
-                  className="flex items-center gap-1.5 py-1 px-2.5 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded border border-red-500 transition cursor-pointer active:translate-y-px"
-                >
-                  <Folder className="w-3 h-3 shrink-0" />
-                  <span>Configure folders</span>
-                </button>
-                <button
-                  onClick={handleRefresh}
-                  className="flex items-center gap-1.5 py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 font-black text-xs uppercase tracking-wider rounded border border-slate-700 transition cursor-pointer active:translate-y-px shadow-sm"
-                >
-                  <RefreshCw className="w-3 h-3 shrink-0 text-slate-100" />
-                  <span>Retry Sync</span>
-                </button>
-                {locationMode === "Local" && (
-                  <button
-                    onClick={handleHealRuntimeCacheAndReload}
-                    className="flex items-center gap-1.5 py-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded border border-amber-400 transition cursor-pointer active:translate-y-px shadow-sm"
-                  >
-                    <RotateCcw className="w-3 h-3 shrink-0" />
-                    <span>Reset Cache & Reload</span>
-                  </button>
-                )}
+        {/* Connection Error / Data File Warning Banner */}
+        {connectionError && (() => {
+          const isDataFileIssue =
+            locationMode === "Local" &&
+            (dataLoadDiagnosis?.overallCause === "malformed_file" ||
+              dataLoadDiagnosis?.overallCause === "missing_file");
+          const canUseAdminBackup = isAdmin || isAiStudio;
+          const primaryBrokenFile = dataLoadDiagnosis?.affectedFiles?.[0];
+          const affectedNames = (dataLoadDiagnosis?.affectedFiles || [])
+            .map((f) => f.primaryName)
+            .join(", ");
+
+          return (
+            <div
+              className={cn(
+                "mx-auto px-4 mt-3 transition-all shrink-0",
+                activeTab === "player"
+                  ? "max-w-[400px]"
+                  : "max-w-full md:px-6 lg:px-8",
+              )}
+            >
+              <div className="bg-red-950/60 border border-red-500/40 text-red-200 rounded-xl p-3 flex flex-col gap-1.5 shadow-sm">
+                <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-red-400">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400" />
+                  {isDataFileIssue
+                    ? dataLoadDiagnosis?.overallCause === "malformed_file"
+                      ? "Malformed Data File Detected"
+                      : "Missing Data File Detected"
+                    : "Connection Warning"}
+                </div>
+                <p className="text-xs font-bold leading-relaxed text-red-100">
+                  {isDataFileIssue
+                    ? canUseAdminBackup
+                      ? `${
+                          dataLoadDiagnosis?.overallCause === "malformed_file"
+                            ? `The file (${affectedNames || "station data"}) could not be parsed.`
+                            : `The file (${affectedNames || "station data"}) is missing while backup files exist.`
+                        } Would you like to fix the folder location or try a backup?`
+                      : "Station data files could not be read. Please retry or contact your station administrator."
+                    : locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                      ? "Folders are verified on disk, but the connection could not load schedule data. Try Retry Sync or Reset Cache & Reload."
+                      : "Can't access folders. Check your folder connection and retry."}
+                </p>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {isDataFileIssue ? (
+                    <>
+                      <button
+                        onClick={handleRefresh}
+                        className="flex items-center gap-1.5 py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 font-black text-xs uppercase tracking-wider rounded border border-slate-700 transition cursor-pointer active:translate-y-px shadow-sm"
+                      >
+                        <RefreshCw className="w-3 h-3 shrink-0 text-slate-100" />
+                        <span>Retry</span>
+                      </button>
+                      {canUseAdminBackup && (
+                        <>
+                          <button
+                            onClick={() => setShowLocationsModal(true)}
+                            className="flex items-center gap-1.5 py-1 px-2.5 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded border border-red-500 transition cursor-pointer active:translate-y-px"
+                          >
+                            <Folder className="w-3 h-3 shrink-0" />
+                            <span>Fix Folder</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setBackupRecoveryAutoOpenTarget(
+                                primaryBrokenFile?.key || "announcements",
+                              );
+                              setShowLocalHelp(true);
+                            }}
+                            className="flex items-center gap-1.5 py-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded border border-amber-400 transition cursor-pointer active:translate-y-px shadow-sm"
+                          >
+                            <RotateCcw className="w-3 h-3 shrink-0" />
+                            <span>Try a Backup</span>
+                          </button>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setShowLocationsModal(true)}
+                        className="flex items-center gap-1.5 py-1 px-2.5 bg-red-600 hover:bg-red-700 text-white font-black text-xs uppercase tracking-wider rounded border border-red-500 transition cursor-pointer active:translate-y-px"
+                      >
+                        <Folder className="w-3 h-3 shrink-0" />
+                        <span>Configure folders</span>
+                      </button>
+                      <button
+                        onClick={handleRefresh}
+                        className="flex items-center gap-1.5 py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 font-black text-xs uppercase tracking-wider rounded border border-slate-700 transition cursor-pointer active:translate-y-px shadow-sm"
+                      >
+                        <RefreshCw className="w-3 h-3 shrink-0 text-slate-100" />
+                        <span>Retry Sync</span>
+                      </button>
+                      {locationMode === "Local" && (
+                        <button
+                          onClick={handleHealRuntimeCacheAndReload}
+                          className="flex items-center gap-1.5 py-1 px-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded border border-amber-400 transition cursor-pointer active:translate-y-px shadow-sm"
+                        >
+                          <RotateCcw className="w-3 h-3 shrink-0" />
+                          <span>Reset Cache & Reload</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Cloud Drive On-Demand Syncing Files Banner */}
         {locationMode === "Local" && cloudSyncPendingFiles.length > 0 && !connectionError && (
@@ -2810,64 +3067,144 @@ export default function App() {
           return null;
         })()}
 
-        {(!isDriveValidated || localPathsUnavailable || (locationMode === "Local" && !isStartupReady)) ? (
-          <div className="w-full flex-1 flex flex-col items-center justify-center p-6 text-center">
-            <div className="max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl flex flex-col items-center gap-3">
-              <Folder className="w-10 h-10 text-amber-400" />
-              <h2 className="text-sm font-black uppercase tracking-wider text-slate-200">
-                {locationMode === "Local" && isStartupReady && !localPathsUnavailable
-                  ? "Schedule Sync Recovery Required"
-                  : "Storage Folders Required"}
-              </h2>
-              <p className="text-xs text-slate-400 font-sans leading-relaxed">
-                {locationMode === "Local" && isStartupReady && !localPathsUnavailable
-                  ? "Your AMP Station Location and 5-folder structure are verified on disk, but the player could not load schedule data. Reset the runtime cache (keeps your folders) or retry sync."
-                  : startupMessage || "Please define and verify your storage folders before loading schedule data or player views."}
-              </p>
-              {missingDefinitions.length > 0 && (
-                <div className="text-left w-full bg-slate-950/60 rounded-lg p-3 border border-slate-800 text-[11px] text-amber-300/90 flex flex-col gap-1">
-                  <span className="font-semibold text-slate-300">Unconfigured Paths:</span>
-                  {missingDefinitions.map((def) => (
-                    <span key={def}>• {def}</span>
-                  ))}
-                </div>
-              )}
-              {missingFolders.length > 0 && (
-                <div className="text-left w-full bg-slate-950/60 rounded-lg p-3 border border-slate-800 text-[11px] text-red-300/90 flex flex-col gap-1">
-                  <span className="font-semibold text-slate-300">Inaccessible Directories:</span>
-                  {missingFolders.map((dir) => (
-                    <span key={dir} className="font-mono break-all">• {dir}</span>
-                  ))}
-                </div>
-              )}
-              <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-                {locationMode === "Local" && isStartupReady && !localPathsUnavailable && (
-                  <button
-                    type="button"
-                    onClick={handleHealRuntimeCacheAndReload}
-                    className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs uppercase tracking-wider rounded-lg border border-amber-400 transition cursor-pointer"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Reset Cache & Reload (Keep Folders)</span>
-                  </button>
+        {(!isDriveValidated || localPathsUnavailable || (locationMode === "Local" && !isStartupReady)) ? (() => {
+          const isDataFileIssue =
+            locationMode === "Local" &&
+            !localPathsUnavailable &&
+            (dataLoadDiagnosis?.overallCause === "malformed_file" ||
+              dataLoadDiagnosis?.overallCause === "missing_file");
+          const canUseAdminBackup = isAdmin || isAiStudio;
+          const primaryBrokenFile = dataLoadDiagnosis?.affectedFiles?.[0];
+
+          return (
+            <div className="w-full flex-1 flex flex-col items-center justify-center p-6 text-center">
+              <div className="max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl flex flex-col items-center gap-3">
+                <Folder className="w-10 h-10 text-amber-400" />
+                <h2 className="text-sm font-black uppercase tracking-wider text-slate-200">
+                  {isDataFileIssue
+                    ? dataLoadDiagnosis?.overallCause === "malformed_file"
+                      ? "Malformed Station Data File"
+                      : "Missing Station Data File"
+                    : locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                      ? "Connection Refresh Troubleshooting"
+                      : "Storage Folders Required"}
+                </h2>
+                <p className="text-xs text-slate-400 font-sans leading-relaxed">
+                  {isDataFileIssue
+                    ? canUseAdminBackup
+                      ? dataLoadDiagnosis?.overallCause === "malformed_file"
+                        ? "Your folder is reachable, but a station data file is malformed and could not be read. Choose whether to fix the folder or try a backup."
+                        : "Your folder is reachable, but a required station data file is missing while backup files exist. Choose whether to fix the folder or try a backup."
+                      : "Station data files could not be read. Please retry or contact your station administrator."
+                    : locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                      ? "Your AMP Station Location and 5-folder structure are verified on disk, but the connection could not load schedule data. Retry sync or reset the runtime cache (keeps your folders)."
+                      : startupMessage || "Please define and verify your storage folders before loading schedule data or player views."}
+                </p>
+                {isDataFileIssue && (dataLoadDiagnosis?.affectedFiles?.length || 0) > 0 && (
+                  <div className="text-left w-full bg-slate-950/60 rounded-lg p-3 border border-slate-800 text-[11px] text-amber-300/90 flex flex-col gap-1">
+                    <span className="font-semibold text-slate-300">Affected Files:</span>
+                    {dataLoadDiagnosis?.affectedFiles.map((af) => (
+                      <span key={af.key} className="font-mono break-all">
+                        • {af.primaryName} ({af.cause === "malformed_file" ? "malformed" : "missing"})
+                      </span>
+                    ))}
+                  </div>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowLocationsModal(true)}
-                  className={cn(
-                    "flex items-center gap-2 px-4 py-2 font-black text-xs uppercase tracking-wider rounded-lg border transition cursor-pointer",
-                    locationMode === "Local" && isStartupReady && !localPathsUnavailable
-                      ? "bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700"
-                      : "bg-amber-500 hover:bg-amber-600 text-slate-950 border-amber-400",
+                {missingDefinitions.length > 0 && (
+                  <div className="text-left w-full bg-slate-950/60 rounded-lg p-3 border border-slate-800 text-[11px] text-amber-300/90 flex flex-col gap-1">
+                    <span className="font-semibold text-slate-300">Unconfigured Paths:</span>
+                    {missingDefinitions.map((def) => (
+                      <span key={def}>• {def}</span>
+                    ))}
+                  </div>
+                )}
+                {missingFolders.length > 0 && (
+                  <div className="text-left w-full bg-slate-950/60 rounded-lg p-3 border border-slate-800 text-[11px] text-red-300/90 flex flex-col gap-1">
+                    <span className="font-semibold text-slate-300">Inaccessible Directories:</span>
+                    {missingFolders.map((dir) => (
+                      <span key={dir} className="font-mono break-all">• {dir}</span>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+                  {isDataFileIssue ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleRefresh}
+                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 font-black text-xs uppercase tracking-wider rounded-lg border border-slate-700 transition cursor-pointer"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        <span>Retry</span>
+                      </button>
+                      {canUseAdminBackup && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setShowLocationsModal(true)}
+                            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 font-black text-xs uppercase tracking-wider rounded-lg border border-slate-700 transition cursor-pointer"
+                          >
+                            <Folder className="w-4 h-4" />
+                            <span>Fix Folder</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBackupRecoveryAutoOpenTarget(
+                                primaryBrokenFile?.key || "announcements",
+                              );
+                              setShowLocalHelp(true);
+                            }}
+                            className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs uppercase tracking-wider rounded-lg border border-amber-400 transition cursor-pointer"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                            <span>Try a Backup</span>
+                          </button>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {locationMode === "Local" && isStartupReady && !localPathsUnavailable && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleRefresh}
+                            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 font-black text-xs uppercase tracking-wider rounded-lg border border-slate-700 transition cursor-pointer"
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                            <span>Retry Sync</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleHealRuntimeCacheAndReload}
+                            className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs uppercase tracking-wider rounded-lg border border-amber-400 transition cursor-pointer"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                            <span>Reset Cache & Reload (Keep Folders)</span>
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowLocationsModal(true)}
+                        className={cn(
+                          "flex items-center gap-2 px-4 py-2 font-black text-xs uppercase tracking-wider rounded-lg border transition cursor-pointer",
+                          locationMode === "Local" && isStartupReady && !localPathsUnavailable
+                            ? "bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700"
+                            : "bg-amber-500 hover:bg-amber-600 text-slate-950 border-amber-400",
+                        )}
+                      >
+                        <Folder className="w-4 h-4" />
+                        <span>Configure Storage Folders</span>
+                      </button>
+                    </>
                   )}
-                >
-                  <Folder className="w-4 h-4" />
-                  <span>Configure Storage Folders</span>
-                </button>
+                </div>
               </div>
             </div>
-          </div>
-        ) : (
+          );
+        })() : (
           <div
             className={cn(
               "w-full mx-auto h-full transition-all flex flex-col min-h-0",
@@ -2905,6 +3242,8 @@ export default function App() {
                     isAdmin={isAdmin}
                     onRefresh={handleRefresh}
                     shows={shows}
+                    adminMessages={adminMessages}
+                    onAcknowledgeAdminMessage={acknowledgeAdminMessage}
                     onTriggerCaching={(mode, urls) => triggerCachingForMode(mode, urls)}
                     isFolderChooserOpen={isFolderChooserOpen}
                     onCloseFolderChooser={() => setIsFolderChooserOpen(false)}
@@ -2947,6 +3286,9 @@ export default function App() {
                     onSaveAdminContactInfo={saveAdminContactInfo}
                     upNextPromoConfig={upNextPromoConfig}
                     logs={logs}
+                    adminMessages={adminMessages}
+                    onSaveAdminMessages={saveAdminMessages}
+                    compatibilityReport={compatibilityReport}
                     isAdmin={isAdmin}
                     onAdminToggle={setIsAdmin}
                     now={now}
@@ -3567,6 +3909,15 @@ export default function App() {
         saveUpNextPromoConfig={saveUpNextPromoConfig}
         scheduleWindowConfig={scheduleWindowConfig}
         saveScheduleWindowConfig={saveScheduleWindowConfig}
+        autoOpenBackupTarget={backupRecoveryAutoOpenTarget}
+        onClearAutoOpenBackupTarget={() => setBackupRecoveryAutoOpenTarget(null)}
+        onBackupRestored={async () => {
+          setDataLoadDiagnosis(null);
+          setConnectionError(null);
+          setShowLocalHelp(false);
+          setBackupRecoveryAutoOpenTarget(null);
+          await handleRefresh();
+        }}
         showAdminContactPopup={showAdminContactPopup}
         setShowAdminContactPopup={setShowAdminContactPopup}
         resolvedAdminContact={resolvedAdminContact}
@@ -3618,6 +3969,92 @@ export default function App() {
         saveRecoveryModal={saveRecoveryModal}
         setSaveRecoveryModal={setSaveRecoveryModal}
       />
+      {(() => {
+        const canShowPostStartupPrompts =
+          isInitialStartupComplete &&
+          !showLocationsModal &&
+          !showUpgradeModal &&
+          !showNewerVersionModal &&
+          !showAiStudioReconnectModal;
+
+        if (!canShowPostStartupPrompts) {
+          return null;
+        }
+
+        if (shouldPromptForMachinePersona()) {
+          return (
+            <FirstLaunchPersonaModal
+              isOpen={true}
+              shows={shows}
+              onClose={() => {
+                // Re-evaluate post-startup prompts once the first-launch persona modal finishes
+                setPersonaPromptTick((prev) => prev + 1);
+              }}
+            />
+          );
+        }
+
+        if (!startupNoticeQueue || startupNoticeQueue.length === 0) return null;
+        const activeNotice = startupNoticeQueue[0];
+        return (
+          <AdminMessageReaderModal
+            isOpen={true}
+            message={activeNotice}
+            acknowledged={false}
+            queueIndex={0}
+            queueTotal={startupNoticeQueue.length}
+            onClose={() => {
+              setStartupNoticeQueue((prev) =>
+                prev ? prev.filter((m) => m.id !== activeNotice.id) : []
+              );
+            }}
+            onAcknowledge={async (msg) => {
+              if (msg.clearMode !== 'date_range') {
+                markStartupMessageAcknowledgedLocal(
+                  msg.id,
+                  msg.updatedAt,
+                  CURRENT_APP_VERSION
+                );
+              }
+              setStartupNoticeQueue((prev) =>
+                prev ? prev.filter((m) => m.id !== msg.id) : []
+              );
+              await acknowledgeAdminMessage(msg, { playMode });
+            }}
+          />
+        );
+      })()}
+      {isAiStudio && (
+        <AiStudioReconnectModal
+          isOpen={showAiStudioReconnectModal && !showLocationsModal}
+          connectionReason={driveValidationError || connectionError}
+          setToken={setToken}
+          setUser={setUser}
+          onReconnectSuccess={async (accessToken) => {
+            const currentSettings = getSavedSettings();
+            const validation = await verifyGoogleDriveDetails(currentSettings, accessToken);
+            if (validation.valid) {
+              setIsDriveActive(true);
+              setIsDriveValidated(true);
+              setDriveValidationError(null);
+              setConnectionError(null);
+              setShowAiStudioReconnectModal(false);
+              await fetchDataForMode(currentSettings, { force: true });
+              return { valid: true };
+            }
+            setIsDriveValidated(false);
+            const errMsg =
+              validation.errorMessage ||
+              "Connected Google account lacks read/write access to one or more configured shared directories.";
+            setDriveValidationError(errMsg);
+            return { valid: false, errorMessage: errMsg };
+          }}
+          onGoToFolders={() => {
+            setShowAiStudioReconnectModal(false);
+            setShowLocationsModal(true);
+          }}
+        />
+      )}
     </div>
   );
 }

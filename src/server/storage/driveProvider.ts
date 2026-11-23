@@ -2,8 +2,6 @@ import express from 'express';
 import path from 'path';
 import {
   currentSettings,
-  SETTINGS_FILE,
-  atomicWriteFileSync,
   generateBackupFilename
 } from '../state';
 import { Announcement, LogEntry, Show, DiscoveredFolderItem } from '../../types';
@@ -12,9 +10,12 @@ import {
   migrateShowsPayload,
   migrateLogsPayload,
   seedLogEntrySiblings,
+  compareSemver,
+  resolveHighestAppVersion,
   CURRENT_APP_VERSION,
   CURRENT_MIN_APP_VERSION,
-  CURRENT_SCHEMA_VERSION
+  CURRENT_SCHEMA_VERSION,
+  DEFAULT_SCHEDULE_WINDOW_CONFIG
 } from '../../lib/compatibility';
 
 const serverDriveFolderCache = new Map<string, string>();
@@ -90,9 +91,6 @@ export async function refreshServerDriveAccessToken(): Promise<string | null> {
       refreshToken,
       expiresAt
     };
-    try {
-      atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2));
-    } catch (_) {}
     return accessToken;
   } catch (_) {
     return null;
@@ -513,7 +511,8 @@ export async function readDriveShows(
         adminContactInfo: '',
         hasSavedAdminContact: false,
         upNextPromo: { enabled: true, minutesBefore: 20 },
-        scheduleWindow: { windowBeforeMinutes: 5, windowAfterMinutes: 5, showLookaroundHours: 1 },
+        scheduleWindow: { ...DEFAULT_SCHEDULE_WINDOW_CONFIG },
+        adminMessages: [],
         ShowsBackupCounter: 0,
         data: []
       };
@@ -523,17 +522,22 @@ export async function readDriveShows(
 
   const res = await serverDriveFetch(req, `drive/v3/files/${found.id}?alt=media`);
   const parsed = JSON.parse((await res.text()) || '[]');
+  const embeddedMeta = Array.isArray(parsed?.data)
+    ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
+    : undefined;
   const hasSavedTimezone = Boolean(
-    parsed &&
+    (parsed &&
       typeof parsed === 'object' &&
       !Array.isArray(parsed) &&
-      (parsed.stationTimezone || parsed._meta?.stationTimezone)
+      (parsed.stationTimezone || parsed._meta?.stationTimezone)) ||
+    embeddedMeta?.stationTimezone
   );
   const hasSavedAdminContact = Boolean(
-    parsed &&
+    (parsed &&
       typeof parsed === 'object' &&
       !Array.isArray(parsed) &&
-      (parsed.adminContactInfo !== undefined || parsed._meta?.adminContactInfo !== undefined)
+      (parsed.adminContactInfo !== undefined || parsed._meta?.adminContactInfo !== undefined)) ||
+    embeddedMeta?.adminContactInfo !== undefined
   );
   const lastMod =
     parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed._meta?.lastModifiedBy
@@ -551,7 +555,8 @@ export async function readDriveShows(
       scheduleWindow:
         seededResult.envelope.scheduleWindow ||
         seededResult.envelope._meta?.scheduleWindow ||
-        { windowBeforeMinutes: 5, windowAfterMinutes: 5, showLookaroundHours: 1 },
+        { ...DEFAULT_SCHEDULE_WINDOW_CONFIG },
+      adminMessages: Array.isArray(seededResult.envelope.adminMessages) ? seededResult.envelope.adminMessages : [],
       ShowsBackupCounter: parsed?.ShowsBackupCounter || 0,
       data: seededResult.data
     };
@@ -568,23 +573,52 @@ export async function writeDriveShows(
   let fileId = found?.id || '';
   let counter = 0;
   let existingMeta: any = null;
+  let existingTz: string | undefined = undefined;
   let existingAdminContact: string | undefined = undefined;
   let existingUpNextPromo: any = undefined;
   let existingScheduleWindow: any = undefined;
+  let existingAdminMessages: any[] | undefined = undefined;
 
   if (fileId) {
+    const res = await serverDriveFetch(req, `drive/v3/files/${fileId}?alt=media`);
+    const rawExistingText = await res.text();
+    if (!rawExistingText || !rawExistingText.trim()) {
+      throw new Error('Existing Drive shows.json is empty and cannot be overwritten safely.');
+    }
+    let parsed: any;
     try {
-      const res = await serverDriveFetch(req, `drive/v3/files/${fileId}?alt=media`);
-      const parsed = JSON.parse((await res.text()) || '{}');
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        counter = parsed.ShowsBackupCounter || 0;
-        existingMeta = parsed._meta || null;
-        existingAdminContact =
-          parsed.adminContactInfo !== undefined ? parsed.adminContactInfo : parsed._meta?.adminContactInfo;
-        existingUpNextPromo = parsed.upNextPromo || parsed._meta?.upNextPromo;
-        existingScheduleWindow = parsed.scheduleWindow || parsed._meta?.scheduleWindow;
-      }
-    } catch (_) {}
+      parsed = JSON.parse(rawExistingText);
+    } catch (err: any) {
+      throw new Error(`Existing Drive shows.json is malformed and cannot be overwritten safely: ${err?.message || 'parse failed'}`);
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const embeddedExistingMeta = Array.isArray(parsed.data)
+        ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
+        : undefined;
+      counter = parsed.ShowsBackupCounter || 0;
+      existingMeta = parsed._meta || null;
+      existingTz =
+        parsed.stationTimezone || parsed._meta?.stationTimezone || embeddedExistingMeta?.stationTimezone;
+      existingAdminContact =
+        parsed.adminContactInfo !== undefined
+          ? parsed.adminContactInfo
+          : parsed._meta?.adminContactInfo !== undefined
+            ? parsed._meta.adminContactInfo
+            : embeddedExistingMeta?.adminContactInfo;
+      existingUpNextPromo =
+        parsed.upNextPromo || parsed._meta?.upNextPromo || embeddedExistingMeta?.upNextPromo;
+      existingScheduleWindow =
+        parsed.scheduleWindow || parsed._meta?.scheduleWindow || embeddedExistingMeta?.scheduleWindow;
+      existingAdminMessages = Array.isArray(parsed.adminMessages)
+        ? parsed.adminMessages
+        : Array.isArray(parsed._meta?.adminMessages)
+          ? parsed._meta.adminMessages
+          : Array.isArray(embeddedExistingMeta?.adminMessages)
+            ? embeddedExistingMeta.adminMessages
+            : undefined;
+    } else if (!Array.isArray(parsed)) {
+      throw new Error('Existing Drive shows.json has invalid structure and cannot be overwritten safely.');
+    }
   } else {
     fileId = await serverDriveCreateFileInFolder(req, 'shows.json', settingsFolder);
   }
@@ -610,6 +644,14 @@ export async function writeDriveShows(
     rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
       ? rawPayload.scheduleWindow
       : undefined;
+  const explicitAdminMessages =
+    rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+      ? (Array.isArray(rawPayload.adminMessages)
+          ? rawPayload.adminMessages
+          : Array.isArray(rawPayload._meta?.adminMessages)
+            ? rawPayload._meta.adminMessages
+            : undefined)
+      : undefined;
 
   const migrated = migrateShowsPayload(
     {
@@ -618,14 +660,16 @@ export async function writeDriveShows(
       data: shows,
       ...(existingAdminContact !== undefined ? { adminContactInfo: existingAdminContact } : {}),
       ...(existingUpNextPromo !== undefined ? { upNextPromo: existingUpNextPromo } : {}),
-      ...(existingScheduleWindow !== undefined ? { scheduleWindow: existingScheduleWindow } : {})
+      ...(existingScheduleWindow !== undefined ? { scheduleWindow: existingScheduleWindow } : {}),
+      ...(existingAdminMessages !== undefined ? { adminMessages: existingAdminMessages } : {})
     },
     CURRENT_APP_VERSION,
     counter,
-    explicitTz,
+    explicitTz ?? existingTz,
     explicitAdminContact,
     explicitUpNextPromo,
-    explicitScheduleWindow
+    explicitScheduleWindow,
+    explicitAdminMessages
   );
 
   await serverDriveUploadFileContent(req, fileId, JSON.stringify(migrated.envelope, null, 2));
@@ -674,7 +718,9 @@ export async function writeDriveShows(
             stationTimezone: migrated.envelope.stationTimezone,
             adminContactInfo: migrated.envelope.adminContactInfo ?? '',
             upNextPromo: migrated.envelope.upNextPromo,
-            scheduleWindow: migrated.envelope.scheduleWindow
+            scheduleWindow: migrated.envelope.scheduleWindow,
+            adminMessages: migrated.envelope.adminMessages ?? [],
+            ...(migrated.envelope._meta?.highestAppVersion ? { highestAppVersion: migrated.envelope._meta.highestAppVersion } : {})
           };
         }
         await serverDriveUploadFileContent(req, calFile.id, JSON.stringify(migratedCal.envelope, null, 2));
@@ -719,18 +765,29 @@ export async function appendDriveLog(req: express.Request, rawEntry: any): Promi
   let fileId = found?.id || '';
   let logs: LogEntry[] = [];
   let counter = 0;
+  let existingMeta: any = null;
 
   if (fileId) {
+    const res = await serverDriveFetch(req, `drive/v3/files/${fileId}?alt=media`);
+    const rawLogsText = await res.text();
+    if (!rawLogsText || !rawLogsText.trim()) {
+      throw new Error('Existing Drive logs.json is empty and cannot be appended safely.');
+    }
+    let parsed: any;
     try {
-      const res = await serverDriveFetch(req, `drive/v3/files/${fileId}?alt=media`);
-      const parsed = JSON.parse((await res.text()) || '[]');
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        logs = Array.isArray(parsed.data) ? parsed.data : [];
-        counter = parsed.LogsBackupCounter || 0;
-      } else {
-        logs = Array.isArray(parsed) ? parsed : [];
-      }
-    } catch (_) {}
+      parsed = JSON.parse(rawLogsText);
+    } catch (err: any) {
+      throw new Error(`Existing Drive logs.json is malformed and cannot be appended safely: ${err?.message || 'parse failed'}`);
+    }
+    if (Array.isArray(parsed)) {
+      logs = parsed;
+    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.data)) {
+      logs = parsed.data;
+      counter = parsed.LogsBackupCounter || 0;
+      existingMeta = parsed._meta || null;
+    } else {
+      throw new Error('Existing Drive logs.json has invalid structure and cannot be appended safely.');
+    }
   } else {
     fileId = await serverDriveCreateFileInFolder(req, 'logs.json', logsFolder);
   }
@@ -739,7 +796,7 @@ export async function appendDriveLog(req: express.Request, rawEntry: any): Promi
   logs.push(entry);
 
   const migrated = migrateLogsPayload(
-    { LogsBackupCounter: counter, data: logs },
+    { _meta: existingMeta, LogsBackupCounter: counter, data: logs },
     CURRENT_APP_VERSION,
     counter
   );
@@ -763,12 +820,42 @@ export async function inspectServerDriveCompatibility(req: express.Request): Pro
   let announcementsMeta: any = null;
   let showsMeta: any = null;
   let parsedLogsForBackfill: any = undefined;
+  let rawLogsTextForBackup: string | null = null;
+
+  let cachedBackupsFolderId: string | null = null;
+  let cachedBackupNamesLower: string[] | null = null;
+  const ensureDriveFirstTouchPreUpgradeBackup = async (
+    storeName: 'announcements' | 'shows' | 'logs',
+    rawText: string
+  ) => {
+    try {
+      if (!rawText || !rawText.trim()) return;
+      if (!cachedBackupsFolderId) {
+        cachedBackupsFolderId = await resolveServerDriveBackupsFolderId(req, settingsFolder);
+      }
+      if (!cachedBackupNamesLower) {
+        const files = await serverDriveListFolderFiles(req, cachedBackupsFolderId);
+        cachedBackupNamesLower = files.map((f) => String(f.name || '').toLowerCase());
+      }
+      const prefix = `${storeName}.backup-pre-upgrade-`;
+      const alreadyHasPreUpgrade = cachedBackupNamesLower.some((name) => name.startsWith(prefix));
+      if (!alreadyHasPreUpgrade) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupFileName = `${prefix}${ts}.json`;
+        const backupId = await serverDriveCreateFileInFolder(req, backupFileName, cachedBackupsFolderId);
+        await serverDriveUploadFileContent(req, backupId, rawText);
+        cachedBackupNamesLower.push(backupFileName.toLowerCase());
+      }
+    } catch (_) {}
+  };
 
   const logsFile = await serverDriveFindFileCaseInsensitive(req, 'logs.json', logsFolder);
   if (logsFile) {
     try {
       const res = await serverDriveFetch(req, `drive/v3/files/${logsFile.id}?alt=media`);
-      parsedLogsForBackfill = JSON.parse((await res.text()) || '{}');
+      const rawText = await res.text();
+      rawLogsTextForBackup = rawText;
+      parsedLogsForBackfill = JSON.parse(rawText || '{}');
     } catch (_) {}
   }
 
@@ -776,9 +863,11 @@ export async function inspectServerDriveCompatibility(req: express.Request): Pro
   if (showsFile) {
     try {
       const res = await serverDriveFetch(req, `drive/v3/files/${showsFile.id}?alt=media`);
-      const parsed = JSON.parse((await res.text()) || '{}');
+      const rawText = await res.text();
+      const parsed = JSON.parse(rawText || '{}');
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.data)) {
         if (!parsed._meta) {
+          await ensureDriveFirstTouchPreUpgradeBackup('shows', rawText);
           const counter =
             typeof parsed.ShowsBackupCounter === 'number'
               ? Math.max(0, parsed.ShowsBackupCounter - 1)
@@ -791,6 +880,30 @@ export async function inspectServerDriveCompatibility(req: express.Request): Pro
           );
           showsMeta = seeded.envelope._meta;
         } else {
+          const recordedHighest = resolveHighestAppVersion(
+            parsed._meta?.highestAppVersion,
+            parsed._meta?.lastModifiedBy
+          );
+          const isCompatibleShowsMeta =
+            (parsed._meta?.schemaVersion ?? 0) >= CURRENT_SCHEMA_VERSION &&
+            compareSemver(parsed._meta?.minAppVersion || '0.0.0', CURRENT_APP_VERSION) <= 0;
+          if (
+            isCompatibleShowsMeta &&
+            (!parsed._meta?.highestAppVersion ||
+              compareSemver(CURRENT_APP_VERSION, recordedHighest) > 0)
+          ) {
+            parsed._meta.highestAppVersion = resolveHighestAppVersion(
+              recordedHighest,
+              CURRENT_APP_VERSION
+            );
+            try {
+              await serverDriveUploadFileContent(
+                req,
+                showsFile.id,
+                JSON.stringify(parsed, null, 2)
+              );
+            } catch (_) {}
+          }
           showsMeta = parsed._meta;
         }
       } else {
@@ -803,9 +916,11 @@ export async function inspectServerDriveCompatibility(req: express.Request): Pro
   if (calFile) {
     try {
       const res = await serverDriveFetch(req, `drive/v3/files/${calFile.id}?alt=media`);
-      const parsed = JSON.parse((await res.text()) || '{}');
+      const rawText = await res.text();
+      const parsed = JSON.parse(rawText || '{}');
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.data)) {
         if (!parsed._meta) {
+          await ensureDriveFirstTouchPreUpgradeBackup('announcements', rawText);
           const counter =
             typeof parsed.AnnouncementsBackupCounter === 'number'
               ? Math.max(0, parsed.AnnouncementsBackupCounter - 1)
@@ -831,12 +946,57 @@ export async function inspectServerDriveCompatibility(req: express.Request): Pro
     } catch (_) {}
   }
 
-  const activeMeta = announcementsMeta ||
+  if (
+    logsFile &&
+    parsedLogsForBackfill &&
+    typeof parsedLogsForBackfill === 'object' &&
+    !Array.isArray(parsedLogsForBackfill) &&
+    Array.isArray(parsedLogsForBackfill.data) &&
+    !parsedLogsForBackfill._meta
+  ) {
+    try {
+      if (rawLogsTextForBackup) {
+        await ensureDriveFirstTouchPreUpgradeBackup('logs', rawLogsTextForBackup);
+      }
+      const counter =
+        typeof parsedLogsForBackfill.LogsBackupCounter === 'number'
+          ? Math.max(0, parsedLogsForBackfill.LogsBackupCounter - 1)
+          : 0;
+      const seededLogs = migrateLogsPayload(parsedLogsForBackfill, CURRENT_APP_VERSION, counter);
+      await serverDriveUploadFileContent(
+        req,
+        logsFile.id,
+        JSON.stringify(seededLogs.envelope, null, 2)
+      );
+      parsedLogsForBackfill = seededLogs.envelope;
+    } catch (_) {}
+  }
+
+  const logsMeta =
+    parsedLogsForBackfill &&
+    typeof parsedLogsForBackfill === 'object' &&
+    !Array.isArray(parsedLogsForBackfill)
+      ? parsedLogsForBackfill._meta
+      : null;
+  const baseMeta = announcementsMeta ||
     showsMeta || {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       minAppVersion: CURRENT_MIN_APP_VERSION,
       lastModifiedBy: CURRENT_APP_VERSION
     };
+  const highestAppVersion = resolveHighestAppVersion(
+    announcementsMeta?.highestAppVersion,
+    announcementsMeta?.lastModifiedBy,
+    showsMeta?.highestAppVersion,
+    showsMeta?.lastModifiedBy,
+    logsMeta?.highestAppVersion,
+    logsMeta?.lastModifiedBy,
+    CURRENT_APP_VERSION
+  );
+  const activeMeta = {
+    ...baseMeta,
+    highestAppVersion
+  };
   return { success: true, meta: activeMeta, announcementsMeta, showsMeta };
 }
 
@@ -846,6 +1006,11 @@ export async function upgradeServerDriveSchema(req: express.Request): Promise<{
   announcements: Announcement[];
   shows: Show[];
   logs: LogEntry[];
+  stationTimezone?: string;
+  adminContactInfo?: string;
+  upNextPromo?: any;
+  scheduleWindow?: any;
+  adminMessages?: any[];
   backupsCreated: string[];
 }> {
   const settingsFolder = await resolveServerDriveSettingsFolderId(req);
@@ -925,12 +1090,27 @@ export async function upgradeServerDriveSchema(req: express.Request): Promise<{
     );
   }
 
+  const upgradedMeta = {
+    ...(annMigration.envelope._meta || {}),
+    highestAppVersion: resolveHighestAppVersion(
+      annMigration.envelope._meta?.highestAppVersion,
+      showsMigration.envelope._meta?.highestAppVersion,
+      logsMigration.envelope._meta?.highestAppVersion,
+      CURRENT_APP_VERSION
+    )
+  };
+
   return {
     success: true,
-    meta: annMigration.envelope._meta,
+    meta: upgradedMeta,
     announcements: annMigration.data,
     shows: showsMigration.data,
     logs: logsMigration.data,
+    stationTimezone: showsMigration.envelope.stationTimezone,
+    adminContactInfo: showsMigration.envelope.adminContactInfo ?? '',
+    upNextPromo: showsMigration.envelope.upNextPromo,
+    scheduleWindow: showsMigration.envelope.scheduleWindow,
+    adminMessages: Array.isArray(showsMigration.envelope.adminMessages) ? showsMigration.envelope.adminMessages : [],
     backupsCreated
   };
 }
@@ -943,6 +1123,20 @@ export async function triggerServerDriveBackup(
   const settingsBackupsFolder = await resolveServerDriveBackupsFolderId(req, settingsFolder);
   const logsFolder = await resolveServerDriveLogsFolderId(req);
   const logsBackupsFolder = await resolveServerDriveLogHistoryFolderId(req, logsFolder);
+
+  const parseDriveStoreOrThrow = (storeName: string, rawText: string): any => {
+    if (!rawText || !rawText.trim()) {
+      throw new Error(`Drive ${storeName}.json is empty; skipping backup to prevent data wipe.`);
+    }
+    const parsed = JSON.parse(rawText);
+    const hasValidArray =
+      Array.isArray(parsed) ||
+      (parsed && typeof parsed === 'object' && Array.isArray(parsed.data));
+    if (!hasValidArray) {
+      throw new Error(`Drive ${storeName}.json has invalid structure; skipping backup to prevent data wipe.`);
+    }
+    return parsed;
+  };
 
   // 1. Announcements backup
   let annFile = await serverDriveFindFileCaseInsensitive(req, 'announcements.json', settingsFolder);
@@ -958,7 +1152,7 @@ export async function triggerServerDriveBackup(
   }
   {
     const res = await serverDriveFetch(req, `drive/v3/files/${annFile.id}?alt=media`);
-    const parsed = JSON.parse((await res.text()) || '[]');
+    const parsed = parseDriveStoreOrThrow('announcements', await res.text());
     const existingCounter = Array.isArray(parsed) ? 0 : parsed.AnnouncementsBackupCounter || 0;
     const migrated = migrateAnnouncementsPayload(
       parsed,
@@ -983,7 +1177,7 @@ export async function triggerServerDriveBackup(
   }
   {
     const res = await serverDriveFetch(req, `drive/v3/files/${showsFile.id}?alt=media`);
-    const parsed = JSON.parse((await res.text()) || '[]');
+    const parsed = parseDriveStoreOrThrow('shows', await res.text());
     const existingCounter = Array.isArray(parsed) ? 0 : parsed.ShowsBackupCounter || 0;
     const migrated = migrateShowsPayload(
       parsed,
@@ -1008,7 +1202,7 @@ export async function triggerServerDriveBackup(
   }
   {
     const res = await serverDriveFetch(req, `drive/v3/files/${logsFile.id}?alt=media`);
-    const parsed = JSON.parse((await res.text()) || '[]');
+    const parsed = parseDriveStoreOrThrow('logs', await res.text());
     const existingCounter = Array.isArray(parsed) ? 0 : parsed.LogsBackupCounter || 0;
     const migrated = migrateLogsPayload(
       parsed,
@@ -1101,6 +1295,20 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
   const createdPlaylistFolders: string[] = [];
   let checkedShowCount = 0;
 
+  const evergreenSubfolders = new Map<string, { id: string; name: string }>();
+  for (const f of evergreenChildren) {
+    if (f.mimeType === folderMime && f.name && !f.name.startsWith('.') && f.id) {
+      evergreenSubfolders.set(String(f.name).toLowerCase(), { id: String(f.id), name: String(f.name) });
+    }
+  }
+
+  const playlistSubfolders = new Map<string, { id: string; name: string }>();
+  for (const f of playlistChildren) {
+    if (f.mimeType === folderMime && f.name && !f.name.startsWith('.') && f.id) {
+      playlistSubfolders.set(String(f.name).toLowerCase(), { id: String(f.id), name: String(f.name) });
+    }
+  }
+
   for (const show of activeShows) {
     const shortName = String(show?.nameShort || '').trim();
     if (shortName) {
@@ -1109,13 +1317,16 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
       knownShortNamesLower.add(lowerName);
 
       if (!existingEvergreenLower.has(lowerName)) {
-        await serverDriveCreateFileInFolder(
+        const createdId = await serverDriveCreateFileInFolder(
           req,
           shortName,
           evergreensId,
           folderMime
         );
         existingEvergreenLower.add(lowerName);
+        if (createdId) {
+          evergreenSubfolders.set(lowerName, { id: String(createdId), name: shortName });
+        }
         if (!createdEvergreenFolders.includes(shortName)) {
           createdEvergreenFolders.push(shortName);
         }
@@ -1125,13 +1336,16 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
       }
 
       if (!existingPlaylistLower.has(lowerName)) {
-        await serverDriveCreateFileInFolder(
+        const createdId = await serverDriveCreateFileInFolder(
           req,
           shortName,
           playlistsId,
           folderMime
         );
         existingPlaylistLower.add(lowerName);
+        if (createdId) {
+          playlistSubfolders.set(lowerName, { id: String(createdId), name: shortName });
+        }
         if (!createdPlaylistFolders.includes(shortName)) {
           createdPlaylistFolders.push(shortName);
         }
@@ -1142,17 +1356,53 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
     }
   }
 
-  const extraEvergreenFolders = evergreenChildren
-    .filter(f => f.mimeType === folderMime && f.name && !f.name.startsWith('.'))
-    .map(f => String(f.name))
+  const extraEvergreenFolders = Array.from(evergreenSubfolders.values())
+    .map(f => f.name)
     .filter(name => !knownShortNamesLower.has(name.toLowerCase()))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
 
-  const extraPlaylistFolders = playlistChildren
-    .filter(f => f.mimeType === folderMime && f.name && !f.name.startsWith('.'))
-    .map(f => String(f.name))
+  const extraPlaylistFolders = Array.from(playlistSubfolders.values())
+    .map(f => f.name)
     .filter(name => !knownShortNamesLower.has(name.toLowerCase()))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
+  const subfolderStats: Record<string, { fileCount: number; driveFolderId?: string }> = {};
+  const countDriveSubfolderFiles = async (
+    prefix: 'media_evergreens' | 'media_shows',
+    folder: { id: string; name: string },
+    wasJustCreated: boolean
+  ) => {
+    let fileCount = 0;
+    if (!wasJustCreated && folder.id) {
+      try {
+        const files = await serverDriveListFolderFiles(req, folder.id);
+        fileCount = files.filter(
+          child => child.mimeType !== folderMime && child.name && !String(child.name).startsWith('.')
+        ).length;
+      } catch (_) {}
+    }
+    subfolderStats[`${prefix}/${folder.name}`] = {
+      fileCount,
+      driveFolderId: folder.id,
+    };
+  };
+
+  await Promise.all([
+    ...Array.from(evergreenSubfolders.values()).map(folder =>
+      countDriveSubfolderFiles(
+        'media_evergreens',
+        folder,
+        createdEvergreenFolders.some(c => c.toLowerCase() === folder.name.toLowerCase())
+      )
+    ),
+    ...Array.from(playlistSubfolders.values()).map(folder =>
+      countDriveSubfolderFiles(
+        'media_shows',
+        folder,
+        createdPlaylistFolders.some(c => c.toLowerCase() === folder.name.toLowerCase())
+      )
+    ),
+  ]);
 
   const isAmp = !!getRootDriveFolderId(req);
   return {
@@ -1180,7 +1430,8 @@ export async function verifyServerDriveEvergreens(req: express.Request): Promise
     createdAnnouncementSubfolders,
     createdFolders,
     extraEvergreenFolders,
-    extraPlaylistFolders
+    extraPlaylistFolders,
+    subfolderStats
   };
 }
 
@@ -2076,6 +2327,28 @@ export async function resolveServerDriveAnnouncementsSubfolders(
   return { activeFolderId, archivedFolderId, deletedFolderId };
 }
 
+export async function serverDriveFindAnnouncementFileInBucket(
+  req: express.Request,
+  name: string,
+  bucket: 'active' | 'archived' | 'deleted' = 'active',
+  announcementsFolderId?: string
+): Promise<{
+  file: { id: string; name: string; mimeType: string; size?: string; modifiedTime?: string };
+  bucket: 'active' | 'archived' | 'deleted';
+  folderId: string;
+} | null> {
+  if (bucket === 'active') {
+    const activeFolderId = announcementsFolderId || (await resolveServerDriveAnnouncementsFolderId(req));
+    const inActive = await serverDriveFindFileCaseInsensitive(req, name, activeFolderId);
+    return inActive ? { file: inActive, bucket: 'active', folderId: activeFolderId } : null;
+  }
+  const { archivedFolderId, deletedFolderId } =
+    await resolveServerDriveAnnouncementsSubfolders(req, announcementsFolderId);
+  const targetFolderId = bucket === 'archived' ? archivedFolderId : deletedFolderId;
+  const hit = await serverDriveFindFileCaseInsensitive(req, name, targetFolderId);
+  return hit ? { file: hit, bucket, folderId: targetFolderId } : null;
+}
+
 export async function serverDriveFindAnnouncementFileAnyBucket(
   req: express.Request,
   name: string,
@@ -2369,8 +2642,11 @@ export async function streamServerDriveFile(
       fileId = trimmed;
     } else if (isServerDriveStorageRequest(req)) {
       const cleanName = path.basename(trimmed);
-      const anyMatch = await serverDriveFindAnnouncementFileAnyBucket(req, cleanName);
-      if (anyMatch) fileId = anyMatch.file.id;
+      const rawBucket = String(req.query?.bucket || '').trim().toLowerCase();
+      const bucket: 'active' | 'archived' | 'deleted' =
+        rawBucket === 'archived' || rawBucket === 'deleted' ? rawBucket : 'active';
+      const bucketMatch = await serverDriveFindAnnouncementFileInBucket(req, cleanName, bucket);
+      if (bucketMatch) fileId = bucketMatch.file.id;
     }
 
     if (!fileId) return false;

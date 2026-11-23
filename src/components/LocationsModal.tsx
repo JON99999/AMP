@@ -344,7 +344,7 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
                     Please don&apos;t change or edit unless you know how it all works. Thanks!
                   </p>
                   <div className="w-full max-w-[320px] mb-5 p-3 rounded-lg bg-slate-50 border border-slate-200 text-left">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
+                    <span className="text-xs font-black uppercase tracking-wider text-slate-500 block mb-1">
                       Admin Contact
                     </span>
                     <p className="text-xs font-bold text-slate-800 whitespace-pre-wrap break-words leading-snug">

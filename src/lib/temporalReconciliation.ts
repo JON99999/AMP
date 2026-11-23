@@ -167,11 +167,9 @@ export function resolveAnnouncementsForDate(
       if (matchedRev) {
         const currentGates = Array.isArray(ann.timeGatedMp3s) ? ann.timeGatedMp3s : [];
         const revGates = Array.isArray(matchedRev.timeGatedMp3s) ? matchedRev.timeGatedMp3s : [];
-        const currentGateIds = new Set(currentGates.map(g => g.id));
-        const mergedGates =
-          currentGates.length > 0
-            ? [...currentGates, ...revGates.filter(rg => !currentGateIds.has(rg.id))]
-            : revGates;
+        // Prefer the historical revision's gate snapshot over current head gates (#43/#113)
+        // Fall back to currentGates only for legacy revisions that predated gate snapshotting
+        const mergedGates = revGates.length > 0 ? revGates : currentGates;
 
         resolved = {
           ...ann,
@@ -580,6 +578,8 @@ export function calculateGateSlotAssessment(
 ): {
   gateScore: SlotAssessmentScore;
   itemAudits: GatedTrackAuditMetrics[];
+  firstPlayedLocalIso: string | null;
+  lastPlayedLocalIso: string | null;
 } {
   const mediaItems = getGateMediaItems(gate);
   const itemCount = Math.max(1, mediaItems.length);
@@ -596,6 +596,8 @@ export function calculateGateSlotAssessment(
     return {
       gateScore: buildAssessmentScore(0, 0, 0, 0, false),
       itemAudits: mediaItems.map(() => emptyItemAudit()),
+      firstPlayedLocalIso: null,
+      lastPlayedLocalIso: null,
     };
   }
 
@@ -669,8 +671,10 @@ export function calculateGateSlotAssessment(
     return -1;
   };
 
-  // Filter logs strictly to this announcement, this gate's active window [effectiveStart, effectiveEnd],
-  // AND files (primary or backup) that actually belong to this gate
+  // Filter logs strictly to this announcement and gate:
+  // 1) If log.gateId is present (#113 structured lineage), match strictly by gateId (never stolen by filename reuse or date edits)
+  // 2) For legacy logs without gateId, fall back to [effectiveStart, effectiveEnd] + filename matching
+  const gateIdStr = String(gate.id || '').trim();
   const gateScopedLogs: { log: LogEntry; localIso: string; fileName: string }[] = [];
   if (annId && Array.isArray(allLogs)) {
     for (const log of allLogs) {
@@ -680,10 +684,16 @@ export function calculateGateSlotAssessment(
         log.announcementTime || log.scheduledFor || log.timestamp || log.executedAt || '';
       const localIso = logTimestampToStationLocalIso(String(rawTs), tz);
       if (!localIso) continue;
-      if (effectiveStart && localIso < effectiveStart) continue;
-      if (effectiveEnd && localIso > effectiveEnd) continue;
       const logFile = extractFileName(log.mp3Name);
-      if (findMatchingItemIdx(logFile) === -1) continue;
+      const logGateId = typeof log.gateId === 'string' ? log.gateId.trim() : '';
+
+      if (logGateId) {
+        if (logGateId !== gateIdStr) continue;
+      } else {
+        if (effectiveStart && localIso < effectiveStart) continue;
+        if (effectiveEnd && localIso > effectiveEnd) continue;
+        if (findMatchingItemIdx(logFile) === -1) continue;
+      }
       gateScopedLogs.push({ log, localIso, fileName: logFile });
     }
   }
@@ -837,7 +847,7 @@ export function calculateGateSlotAssessment(
     }
   }
 
-  // Include any remaining unmatched logs that occurred within the gate's active window and match a file in this gate
+  // Include any remaining unmatched logs that belong to this gate (via gateId or legacy window+filename match)
   for (let i = 0; i < gateScopedLogs.length; i++) {
     if (matchedLogIndices.has(i)) continue;
     const entry = gateScopedLogs[i];
@@ -845,6 +855,8 @@ export function calculateGateSlotAssessment(
     if (fileMatchIdx !== -1 && itemPlayedLogs[fileMatchIdx]) {
       gatePlayed++;
       itemPlayedLogs[fileMatchIdx].push(entry.log);
+    } else if (typeof entry.log.gateId === 'string' && entry.log.gateId.trim() === gateIdStr) {
+      gatePlayed++;
     }
   }
 
@@ -894,7 +906,62 @@ export function calculateGateSlotAssessment(
     };
   });
 
-  return { gateScore, itemAudits };
+  const firstPlayedLocalIso = gateScopedLogs.length > 0 ? gateScopedLogs[0].localIso : null;
+  const lastPlayedLocalIso =
+    gateScopedLogs.length > 0 ? gateScopedLogs[gateScopedLogs.length - 1].localIso : null;
+
+  return { gateScore, itemAudits, firstPlayedLocalIso, lastPlayedLocalIso };
+}
+
+/**
+ * Computes tamper-resistant played date bounds for every gate in an announcement.
+ * Unions logs matched against BOTH the saved gate snapshot (if any) and the draft gate
+ * so editing a gate's Start/End date in the editor can never orphan legacy logs or drop playCount to 0.
+ */
+export function computePlayedGateBoundsMap(
+  announcement: Partial<Announcement>,
+  draftGates: TimeGatedMp3[],
+  allLogs: LogEntry[],
+  savedGates?: TimeGatedMp3[],
+  referenceNow?: Date
+): Record<string, { playCount: number; firstPlayedLocalIso: string | null; lastPlayedLocalIso: string | null }> {
+  const result: Record<
+    string,
+    { playCount: number; firstPlayedLocalIso: string | null; lastPlayedLocalIso: string | null }
+  > = {};
+  const savedById = new Map<string, TimeGatedMp3>();
+  if (Array.isArray(savedGates)) {
+    for (const sg of savedGates) {
+      if (sg?.id) savedById.set(sg.id, sg);
+    }
+  }
+
+  for (const gate of draftGates || []) {
+    if (!gate?.id) continue;
+    const draftEval = calculateGateSlotAssessment(announcement, gate, allLogs, referenceNow);
+    const savedGate = savedById.get(gate.id);
+    const savedEval = savedGate
+      ? calculateGateSlotAssessment(announcement, savedGate, allLogs, referenceNow)
+      : null;
+
+    const playCount = Math.max(draftEval.gateScore.played, savedEval?.gateScore.played || 0);
+    const firstCandidates = [draftEval.firstPlayedLocalIso, savedEval?.firstPlayedLocalIso].filter(
+      (v): v is string => Boolean(v)
+    );
+    const lastCandidates = [draftEval.lastPlayedLocalIso, savedEval?.lastPlayedLocalIso].filter(
+      (v): v is string => Boolean(v)
+    );
+    firstCandidates.sort();
+    lastCandidates.sort();
+
+    result[gate.id] = {
+      playCount,
+      firstPlayedLocalIso: firstCandidates.length > 0 ? firstCandidates[0] : null,
+      lastPlayedLocalIso: lastCandidates.length > 0 ? lastCandidates[lastCandidates.length - 1] : null,
+    };
+  }
+
+  return result;
 }
 
 /**

@@ -50,8 +50,12 @@ async function startServer() {
     });
   }
 
-  const serverInstance = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+  const isElectronDesktop = Boolean(
+    process.env.APP_USER_DATA_PATH || process.env.PORTABLE_EXECUTABLE_DIR
+  );
+  const bindHost = process.env.HOST || (isElectronDesktop ? '127.0.0.1' : '0.0.0.0');
+  const serverInstance = app.listen(PORT, bindHost, () => {
+    console.log(`Server running at http://${bindHost === '0.0.0.0' ? 'localhost' : bindHost}:${PORT}`);
   });
   serverInstance.on('error', (err: any) => {
     if (err.code === 'EADDRINUSE') {

@@ -105,16 +105,82 @@ export interface UpNextPromoConfig {
   minutesBefore: number;
 }
 
+export type AdminMessageSeverity = 'info' | 'alert';
+
+export type AdminMessageTargetScope =
+  | 'single_show'
+  | 'selected_shows'
+  | 'all_shows'
+  | 'time_window'
+  | 'app_startup';
+
+export type AdminMessageStartupCondition =
+  | 'all_users'
+  | 'old_version'
+  | 'old_version_schema';
+
+export type AdminMessageClearMode = 'once_acknowledged' | 'date_range';
+
+export type MachinePersonaType = 'shared' | 'personal';
+
+export type MachinePcUseType = 'live_studio' | 'prerecord_studio' | 'admin_workstation';
+
+export interface MachinePersonaConfig {
+  machineId: string;
+  personaType: MachinePersonaType;
+  pcUseType: MachinePcUseType;
+  personaName: string;
+  dismissedFirstLaunch?: boolean;
+  updatedAt?: string;
+}
+
+export interface AdminMessageAckRecord {
+  showId: string;
+  showName?: string;
+  acknowledgedAt: string;
+  airDate?: string;
+  playMode?: string;
+  appVersion?: string;
+  machineId?: string;
+  personaName?: string;
+  personaType?: MachinePersonaType;
+  pcUseType?: MachinePcUseType;
+  appEdition?: string;
+  platform?: string;
+}
+
+export interface AdminMessage {
+  id: string;
+  title: string;
+  body: string;
+  severity: AdminMessageSeverity;
+  enabled: boolean;
+  archived?: boolean;
+  archivedAt?: string;
+  isSystemBuiltIn?: boolean;
+  targetScope: AdminMessageTargetScope;
+  targetShowIds?: string[];
+  startupCondition?: AdminMessageStartupCondition;
+  targetAppVersion?: string;
+  startDate?: string;
+  endDate?: string;
+  clearMode: AdminMessageClearMode;
+  acknowledgedByShows?: AdminMessageAckRecord[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: string;
+}
+
 export interface LogEntry {
   timestamp: string;
   announcementTime?: string;
   mp3Name: string;
   announcementName: string;
   announcementId: string;
-  status: 'played' | 'skipped' | 'failed' | 'backup play';
+  status: 'played' | 'skipped' | 'failed' | 'backup play' | 'acknowledged';
   playMode?: 'Live' | 'Prerecord' | 'Export' | 'Playlist';
   logTimeStamp?: string;
-  assetType?: 'audio' | 'script';
+  assetType?: 'audio' | 'script' | 'message';
   showId?: string;
   showName?: string;
   hostName?: string;
@@ -127,6 +193,10 @@ export interface LogEntry {
   // Dual-Timestamp Temporal Reconciliation Fields
   executedAt?: string;
   scheduledFor?: string | null;
+  // Historical Gate & Rotation Lineage (#113)
+  gateId?: string;
+  rotationIndex?: number;
+  rotationTotal?: number;
 }
 
 export interface ShowPlaylistLogTrackItem {
@@ -356,6 +426,7 @@ export interface LiveReadPayload {
   isPreview?: boolean;
   isTestPopup?: boolean;
   isReadOnly?: boolean;
+  gateId?: string;
   rotationIndex?: number;
   rotationTotal?: number;
   [key: string]: unknown;

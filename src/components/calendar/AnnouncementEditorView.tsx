@@ -57,6 +57,7 @@ import {
   calculateGatedTrackAudit,
   calculateGateSlotAssessment,
   formatSlotAssessmentTooltip,
+  computePlayedGateBoundsMap,
 } from '../../lib/temporalReconciliation';
 import { normalizeReadTimeDisplay } from '../../lib/liveReadFormatting';
 import { MilitaryTimeInput } from '../MilitaryTimeInput';
@@ -77,6 +78,7 @@ export interface AnnouncementEditorViewProps {
   handleClockInteraction: (e: React.MouseEvent<SVGSVGElement> | React.TouchEvent<SVGSVGElement>) => void;
   handleAddMp3: () => void;
   onReuseGate?: (gate: TimeGatedMp3) => string | undefined;
+  savedGates?: TimeGatedMp3[];
   initialFocusTarget?: {
     slotIso?: string;
     gateId?: string;
@@ -141,6 +143,7 @@ export function AnnouncementEditorView({
   handleClockInteraction,
   handleAddMp3,
   onReuseGate,
+  savedGates,
   initialFocusTarget,
   onClearInitialFocusTarget,
   logs,
@@ -398,6 +401,8 @@ export function AnnouncementEditorView({
     new Set((formData.timeGatedMp3s || []).map(g => g.id))
   );
 
+  const [pendingDateFocusGateId, setPendingDateFocusGateId] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     const initialNow = getCurrentDatetimeLocal();
     const initialList = formData.timeGatedMp3s || [];
@@ -410,6 +415,7 @@ export function AnnouncementEditorView({
       )
     );
     setLastDateAdjustment(null);
+    setPendingDateFocusGateId(null);
   }, [editingId]);
 
   const announcementAudit = React.useMemo(
@@ -620,6 +626,34 @@ export function AnnouncementEditorView({
       }));
   }, [formData.timeGatedMp3s, sessionActiveGateIds]);
 
+  const playedGateBounds = React.useMemo(
+    () =>
+      computePlayedGateBoundsMap(
+        { ...formData, id: editingId || formData.id },
+        formData.timeGatedMp3s || [],
+        logs,
+        savedGates
+      ),
+    [formData, editingId, logs, savedGates]
+  );
+
+  const { overallFirstPlayed, overallLastPlayed } = React.useMemo(() => {
+    let first: string | null = null;
+    let last: string | null = null;
+    Object.keys(playedGateBounds).forEach(gateId => {
+      const b = playedGateBounds[gateId];
+      if (b && b.playCount > 0) {
+        if (b.firstPlayedLocalIso && (!first || b.firstPlayedLocalIso < first)) {
+          first = b.firstPlayedLocalIso;
+        }
+        if (b.lastPlayedLocalIso && (!last || b.lastPlayedLocalIso > last)) {
+          last = b.lastPlayedLocalIso;
+        }
+      }
+    });
+    return { overallFirstPlayed: first, overallLastPlayed: last };
+  }, [playedGateBounds]);
+
   React.useEffect(() => {
     const currentList = formData.timeGatedMp3s || [];
     const newlyAddedActiveIds: string[] = [];
@@ -639,6 +673,172 @@ export function AnnouncementEditorView({
       });
     }
   }, [formData.timeGatedMp3s]);
+
+  const dateFocusTimersRef = React.useRef<number[]>([]);
+  const clearDateFocusTimers = React.useCallback(() => {
+    dateFocusTimersRef.current.forEach(id => window.clearTimeout(id));
+    dateFocusTimersRef.current = [];
+  }, []);
+
+  React.useEffect(() => clearDateFocusTimers, [clearDateFocusTimers]);
+  React.useEffect(() => {
+    clearDateFocusTimers();
+  }, [editingId, clearDateFocusTimers]);
+
+  // Smart auto-focus, scroll, and calendar open on Create / Reuse / Reactivate:
+  // Priority 1: Gap handler or open-ended prior gate End immediately before target gate
+  // Priority 2: Target gate Start (if unset or has Start warning/error and not locked)
+  // Priority 3: Target gate End (if unset or has End warning/error)
+  // All Clear: Scroll to gate card only — do NOT open any calendar
+  React.useEffect(() => {
+    if (!pendingDateFocusGateId || typeof document === 'undefined') return;
+    const currentList = formData.timeGatedMp3s || [];
+    const targetGate = currentList.find(g => g.id === pendingDateFocusGateId);
+    if (!targetGate) return;
+
+    clearDateFocusTimers();
+    setPendingDateFocusGateId(null);
+    setHighlightedGateId(targetGate.id);
+    const clearHighlightTimer = window.setTimeout(() => {
+      setHighlightedGateId(prev => (prev === targetGate.id ? null : prev));
+    }, 2400);
+    dateFocusTimersRef.current.push(clearHighlightTimer);
+
+    const nowIso = getCurrentDatetimeLocal();
+    const preExistingExpiredIds = new Set<string>(
+      (savedGates || [])
+        .filter(g => !g.inactivated && isGateExpiredOrInactivated(g, nowIso))
+        .map(g => g.id)
+    );
+    const liveValidation = validateTimeGatedMp3s(
+      currentList,
+      nowIso,
+      formData.endDate,
+      formData.startDate,
+      playedGateBounds,
+      preExistingExpiredIds
+    );
+
+    const activeGates = currentList.filter(item => {
+      const rawExpired = isGateExpiredOrInactivated(item, nowIso);
+      const isKeptInActive = !item.inactivated && sessionActiveGateIds.has(item.id);
+      return !(rawExpired && !isKeptInActive);
+    });
+    const activeIdx = activeGates.findIndex(g => g.id === targetGate.id);
+    const prevGate = activeIdx > 0 ? activeGates[activeIdx - 1] : undefined;
+
+    const targetBounds = playedGateBounds[targetGate.id];
+    const targetAssessment = calculateGateSlotAssessment(formData, targetGate, logs);
+    const targetPlayCount = Math.max(
+      targetAssessment.gateScore.played,
+      targetBounds?.playCount || 0
+    );
+    const isTargetStartLocked = targetPlayCount > 0;
+    const hasRenderedGapHandlerBefore = Boolean(
+      document.querySelector(`[data-gap-handler-for="${targetGate.id}"]`)
+    );
+
+    let action:
+      | { type: 'gap-handler'; gateId: string }
+      | { type: 'calendar'; key: string; cardGateId: string }
+      | { type: 'card-only'; gateId: string };
+
+    // Priority 1: Open-ended prior gate or gap handler immediately before target gate
+    if (prevGate && (!prevGate.endDate || !prevGate.endDate.trim())) {
+      action = { type: 'calendar', key: `gate-${prevGate.id}-end`, cardGateId: prevGate.id };
+    } else if (liveValidation.gapStartIds.has(targetGate.id) || hasRenderedGapHandlerBefore) {
+      action = { type: 'gap-handler', gateId: targetGate.id };
+    }
+    // Priority 2: Target gate Start unset or has Start warning/error (and unlocked)
+    else if (
+      !isTargetStartLocked &&
+      (!targetGate.startDate?.trim() ||
+        liveValidation.missingStartIds.has(targetGate.id) ||
+        liveValidation.overlapStartIds.has(targetGate.id) ||
+        liveValidation.overreachStartIds.has(targetGate.id))
+    ) {
+      action = { type: 'calendar', key: `gate-${targetGate.id}-start`, cardGateId: targetGate.id };
+    }
+    // Priority 3: Target gate End unset or has End warning/error
+    else if (
+      !targetGate.endDate?.trim() ||
+      liveValidation.overlapEndIds.has(targetGate.id) ||
+      liveValidation.overreachEndIds.has(targetGate.id) ||
+      liveValidation.gapEndIds.has(targetGate.id) ||
+      (liveValidation.errors[targetGate.id] || []).length > 0
+    ) {
+      action = { type: 'calendar', key: `gate-${targetGate.id}-end`, cardGateId: targetGate.id };
+    }
+    // All Clear: Scroll to gate card only without opening a calendar
+    else {
+      action = { type: 'card-only', gateId: targetGate.id };
+    }
+
+    const scrollTimer = window.setTimeout(() => {
+      if (action.type === 'gap-handler') {
+        const gapEl = document.querySelector(
+          `[data-gap-handler-for="${action.gateId}"]`
+        ) as HTMLElement | null;
+        if (gapEl) {
+          gapEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const focusGapBtnTimer = window.setTimeout(() => {
+            const firstBtn = gapEl.querySelector('button:not([disabled])') as HTMLButtonElement | null;
+            if (firstBtn) {
+              firstBtn.focus({ preventScroll: true });
+            }
+          }, 180);
+          dateFocusTimersRef.current.push(focusGapBtnTimer);
+          return;
+        }
+        const fallbackCard = document.querySelector(
+          `[data-gate-card-id="${action.gateId}"]`
+        ) as HTMLElement | null;
+        if (fallbackCard) {
+          fallbackCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
+      }
+
+      if (action.type === 'calendar') {
+        const inputEl = document.querySelector(
+          `input[data-date-input-key="${action.key}"]`
+        ) as HTMLInputElement | null;
+        const cardEl = document.querySelector(
+          `[data-gate-card-id="${action.cardGateId}"]`
+        ) as HTMLElement | null;
+        const scrollEl = cardEl || inputEl;
+        if (scrollEl && typeof scrollEl.scrollIntoView === 'function') {
+          scrollEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        if (inputEl && !inputEl.disabled) {
+          const openCalTimer = window.setTimeout(() => {
+            inputEl.focus({ preventScroll: true });
+            window.dispatchEvent(
+              new CustomEvent('amp-open-calendar-input', { detail: { key: action.key } })
+            );
+          }, 200);
+          dateFocusTimersRef.current.push(openCalTimer);
+        }
+        return;
+      }
+
+      const cardEl = document.querySelector(
+        `[data-gate-card-id="${action.gateId}"]`
+      ) as HTMLElement | null;
+      if (cardEl && typeof cardEl.scrollIntoView === 'function') {
+        cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 60);
+    dateFocusTimersRef.current.push(scrollTimer);
+  }, [
+    pendingDateFocusGateId,
+    formData,
+    savedGates,
+    logs,
+    playedGateBounds,
+    sessionActiveGateIds,
+    clearDateFocusTimers,
+  ]);
 
   return (
     <div
@@ -923,6 +1123,12 @@ export function AnnouncementEditorView({
                       currentTime={getTimePart(formData.startDate) || '00:00'}
                       pairedTime={getTimePart(formData.endDate) || '23:59'}
                       gateRanges={allGateRangesForCalendar}
+                      hardMaxDate={overallFirstPlayed ? getDatePart(overallFirstPlayed) : undefined}
+                      hardMaxReason={
+                        overallFirstPlayed
+                          ? `Cannot start after first logged play (${formatDatetime12(overallFirstPlayed)}).`
+                          : undefined
+                      }
                       value={getDatePart(formData.startDate)}
                       onCalendarConfirm={(_newDate, prevDate) => {
                         const prevT = getTimePart(formData.startDate) || '00:00';
@@ -977,6 +1183,12 @@ export function AnnouncementEditorView({
                       currentTime={getTimePart(formData.endDate) || '23:59'}
                       pairedTime={getTimePart(formData.startDate) || '00:00'}
                       gateRanges={allGateRangesForCalendar}
+                      hardMinDate={overallLastPlayed ? getDatePart(overallLastPlayed) : undefined}
+                      hardMinReason={
+                        overallLastPlayed
+                          ? `Cannot end before last logged play (${formatDatetime12(overallLastPlayed)}).`
+                          : undefined
+                      }
                       value={getDatePart(formData.endDate)}
                       onCalendarConfirm={(_newDate, prevDate) => {
                         const prevT = getTimePart(formData.endDate) || '23:59';
@@ -1052,14 +1264,20 @@ export function AnnouncementEditorView({
                 />
                 {(() => {
                   const currentMp3s = formData.timeGatedMp3s || [];
+                  const nowIso = getCurrentDatetimeLocal();
+                  const preExistingExpiredIds = new Set<string>(
+                    (savedGates || [])
+                      .filter(g => !g.inactivated && isGateExpiredOrInactivated(g, nowIso))
+                      .map(g => g.id)
+                  );
                   const validation = validateTimeGatedMp3s(
                     currentMp3s,
-                    undefined,
+                    nowIso,
                     formData.endDate,
-                    formData.startDate
+                    formData.startDate,
+                    playedGateBounds,
+                    preExistingExpiredIds
                   );
-
-                  const nowIso = getCurrentDatetimeLocal();
 
                   const addInlineDraftGate = (prefillStart?: string, prefillEnd?: string) => {
                     const gateId = `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -1113,7 +1331,7 @@ export function AnnouncementEditorView({
                       ...formData,
                       timeGatedMp3s: nextList,
                     });
-                    focusGateAndMedia(gateId, 0, true);
+                    setPendingDateFocusGateId(gateId);
                   };
 
                   if (currentMp3s.length === 0) {
@@ -1328,7 +1546,7 @@ export function AnnouncementEditorView({
                       timeGatedMp3s: updated,
                     });
                     setReactivatePromptState(null);
-                    focusGateAndMedia(gate.id, 0, true);
+                    setPendingDateFocusGateId(gate.id);
                   };
 
                   const applyReactivateSplitToNewGate = (gate: TimeGatedMp3) => {
@@ -1351,11 +1569,14 @@ export function AnnouncementEditorView({
                       return next;
                     });
 
+                    const rawSplitItems = getGateMediaItems(gate);
+                    const activeSplitItems = rawSplitItems.filter(mi => !mi.inactivated);
+                    const splitSourceItems = activeSplitItems.length > 0 ? activeSplitItems : rawSplitItems;
                     const newActiveGate: TimeGatedMp3 = {
                       id: `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
                       startDate: currentNowIso,
                       endDate: gate.endDate,
-                      mediaItems: getGateMediaItems(gate).map(mi => {
+                      mediaItems: splitSourceItems.map(mi => {
                         const nextMi = { ...mi };
                         delete nextMi.inactivated;
                         delete nextMi.inactivatedAt;
@@ -1376,7 +1597,7 @@ export function AnnouncementEditorView({
                       timeGatedMp3s: nextSorted,
                     });
                     setReactivatePromptState(null);
-                    focusGateAndMedia(newActiveGate.id, 0, true);
+                    setPendingDateFocusGateId(newActiveGate.id);
                   };
 
                   const handleReactivateGateClick = (gate: TimeGatedMp3) => {
@@ -1397,15 +1618,19 @@ export function AnnouncementEditorView({
                           next.add(reusedGateId);
                           return next;
                         });
-                        focusGateAndMedia(reusedGateId, 0, true);
+                        setPendingDateFocusGateId(reusedGateId);
                       }
                       return;
                     }
+                    const rawFallbackItems = getGateMediaItems(gate);
+                    const activeFallbackItems = rawFallbackItems.filter(mi => !mi.inactivated);
+                    const fallbackSourceItems =
+                      activeFallbackItems.length > 0 ? activeFallbackItems : rawFallbackItems;
                     const clonedGate: TimeGatedMp3 = {
                       id: `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
                       startDate: getCurrentDatetimeLocal(),
                       endDate: undefined,
-                      mediaItems: getGateMediaItems(gate).map(mi => {
+                      mediaItems: fallbackSourceItems.map(mi => {
                         const nextMi = { ...mi };
                         delete nextMi.inactivated;
                         delete nextMi.inactivatedAt;
@@ -1424,7 +1649,7 @@ export function AnnouncementEditorView({
                       ...formData,
                       timeGatedMp3s: nextSorted,
                     });
-                    focusGateAndMedia(clonedGate.id, 0, true);
+                    setPendingDateFocusGateId(clonedGate.id);
                   };
 
                   const indexedGates = currentMp3s.map((item, idx) => {
@@ -1484,7 +1709,12 @@ export function AnnouncementEditorView({
                     const totalActiveInGate = activeRowsToRender.length;
                     const isInactivatedMediaExpanded = expandedInactivatedMediaGateIds.has(item.id);
                     const gateAssessment = getGateAssessment(item);
-                    const gatePlayCount = gateAssessment.gateScore.played;
+                    const gateBounds = playedGateBounds[item.id];
+                    const gatePlayCount = Math.max(
+                      gateAssessment.gateScore.played,
+                      gateBounds?.playCount || 0
+                    );
+                    const isStartLocked = isItemExpired || gatePlayCount > 0;
                     const isManuallyInactivated = Boolean(item.inactivated);
                     const isDateExpired = Boolean(
                       item.endDate && item.endDate.trim() && formatToDatetimeLocal(item.endDate) < nowIso
@@ -1517,15 +1747,25 @@ export function AnnouncementEditorView({
                     };
 
                     const updateGateStartDate = (newVal: string) => {
-                      if (isItemExpired) return;
+                      if (isStartLocked) return;
                       // Reciprocal boundary prefill (#108 / 13.a): if previous active gate is open-ended and this gate had an open start, prefill previous gate's End using 11:59-to-12:00 logic
+                      const candidateBackfillEnd = newVal ? computeBackfilledEndTime(newVal) : undefined;
+                      const prevGateLastPlayed = prevActiveGate
+                        ? playedGateBounds[prevActiveGate.id]?.lastPlayedLocalIso
+                        : null;
+                      const backfillViolatesPrevLastPlay = Boolean(
+                        candidateBackfillEnd &&
+                          prevGateLastPlayed &&
+                          formatToDatetimeLocal(candidateBackfillEnd) < prevGateLastPlayed
+                      );
                       const shouldBackfillPrevEnd = Boolean(
                         newVal &&
                           prevActiveGate &&
                           (!prevActiveGate.endDate || !prevActiveGate.endDate.trim()) &&
-                          (!item.startDate || !item.startDate.trim())
+                          (!item.startDate || !item.startDate.trim()) &&
+                          !backfillViolatesPrevLastPlay
                       );
-                      const backfilledPrevEnd = shouldBackfillPrevEnd ? computeBackfilledEndTime(newVal) : undefined;
+                      const backfilledPrevEnd = shouldBackfillPrevEnd ? candidateBackfillEnd : undefined;
 
                       const applyChange = () => {
                         const updated = currentMp3s.map(m => {
@@ -1679,7 +1919,7 @@ export function AnnouncementEditorView({
                                       ...gr,
                                       isCurrent: gr.id === item.id,
                                     }))}
-                                    disabled={isItemExpired}
+                                    disabled={isStartLocked}
                                     value={getDatePart(item.startDate)}
                                     onCalendarConfirm={(newDate, prevDate) => {
                                       const prevT = getTimePart(item.startDate) || '00:00';
@@ -1705,6 +1945,7 @@ export function AnnouncementEditorView({
                                       focusDateInputByKey(`gate-${item.id}-start`);
                                     }}
                                     onChange={d => {
+                                      if (isStartLocked) return;
                                       setLastDateAdjustment(null);
                                       const t = getTimePart(item.startDate) || '00:00';
                                       const newVal = d ? `${d}T${t}` : '';
@@ -1712,7 +1953,7 @@ export function AnnouncementEditorView({
                                     }}
                                     className={cn(
                                       'w-[104px] p-0.5 border-0 border-b rounded-none text-xs font-bold font-sans tabular-nums outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5',
-                                      isItemExpired
+                                      isStartLocked
                                         ? 'border-slate-300 bg-slate-100 text-slate-600 cursor-not-allowed'
                                         : hasStartOverlap
                                           ? 'border-red-500 bg-red-50 text-red-900 font-bold'
@@ -1723,11 +1964,18 @@ export function AnnouncementEditorView({
                                               : 'border-blue-300 bg-white text-slate-800'
                                     )}
                                   />
-                                  <div className={cn('shrink-0', isItemExpired && 'pointer-events-none opacity-75')}>
+                                  <div
+                                    className={cn('shrink-0', isStartLocked && 'pointer-events-none opacity-75')}
+                                    title={
+                                      !isItemExpired && gatePlayCount > 0
+                                        ? 'Start date & time are locked because this gate has logged plays'
+                                        : undefined
+                                    }
+                                  >
                                     <MilitaryTimeInput
                                       value={getTimePart(item.startDate)}
                                       onChange={t => {
-                                        if (isItemExpired) return;
+                                        if (isStartLocked) return;
                                         setLastDateAdjustment(null);
                                         let d = getDatePart(item.startDate);
                                         if (!d && t) {
@@ -1738,7 +1986,7 @@ export function AnnouncementEditorView({
                                       }}
                                       className={cn(
                                         'p-0.5 border-0 border-b rounded-none text-xs font-bold outline-none shadow-none focus:ring-0 focus:border-b-2 focus:border-blue-600 h-6.5',
-                                        isItemExpired
+                                        isStartLocked
                                           ? 'border-slate-300 bg-slate-100 text-slate-600 cursor-not-allowed'
                                           : hasStartOverlap
                                             ? 'border-red-500 bg-red-50 text-red-900 font-bold'
@@ -1797,6 +2045,16 @@ export function AnnouncementEditorView({
                                       ...gr,
                                       isCurrent: gr.id === item.id,
                                     }))}
+                                    hardMinDate={
+                                      gateBounds && gateBounds.playCount > 0 && gateBounds.lastPlayedLocalIso
+                                        ? getDatePart(gateBounds.lastPlayedLocalIso)
+                                        : undefined
+                                    }
+                                    hardMinReason={
+                                      gateBounds && gateBounds.playCount > 0 && gateBounds.lastPlayedLocalIso
+                                        ? `Cannot end before last logged play (${formatDatetime12(gateBounds.lastPlayedLocalIso)}).`
+                                        : undefined
+                                    }
                                     disabled={isItemExpired}
                                     value={getDatePart(item.endDate)}
                                     onCalendarConfirm={(newDate, prevDate) => {
@@ -2841,6 +3099,7 @@ export function AnnouncementEditorView({
                       return (
                         <div
                           key="leading-gap-interstitial"
+                          data-gap-handler-for={firstGate.id}
                           className="px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50/95 flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-amber-900 shadow-2xs"
                         >
                           <div className="flex items-center gap-1.5 min-w-0">
@@ -2856,41 +3115,43 @@ export function AnnouncementEditorView({
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 flex-wrap min-w-0 max-w-full">
-                            {isPriorAllPast ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const currentNow = getCurrentDatetimeLocal();
-                                  recordDateAdjustment(`gate-${firstGate.id}-start`, () => {
-                                    const updated = currentMp3s.map(m =>
-                                      m.id === firstGate.id ? { ...m, startDate: currentNow } : m
-                                    );
-                                    setFormData({ ...formData, timeGatedMp3s: updated });
-                                  });
-                                }}
-                                className="px-2 py-0.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
-                                title={`Set Gate #${firstNum} Start to now (${formatDatetime12(nowIso)})`}
-                              >
-                                <ArrowUp className="w-3 h-3 text-amber-700 shrink-0" />
-                                <span>Set to now ({nowMd})</span>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  recordDateAdjustment(`gate-${firstGate.id}-start`, () => {
-                                    const updated = currentMp3s.map(m =>
-                                      m.id === firstGate.id ? { ...m, startDate: targetStartFromPrior } : m
-                                    );
-                                    setFormData({ ...formData, timeGatedMp3s: updated });
-                                  });
-                                }}
-                                className="px-2 py-0.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
-                                title={`Set Gate #${firstNum} Start to ${formatDatetime12(targetStartFromPrior)}`}
-                              >
-                                <ArrowUp className="w-3 h-3 text-amber-700 shrink-0" />
-                                <span>Set Gate #{firstNum} to Start ({startBoundaryMd})</span>
-                              </button>
+                            {((playedGateBounds[firstGate.id]?.playCount ?? 0) === 0) && (
+                              isPriorAllPast ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const currentNow = getCurrentDatetimeLocal();
+                                    recordDateAdjustment(`gate-${firstGate.id}-start`, () => {
+                                      const updated = currentMp3s.map(m =>
+                                        m.id === firstGate.id ? { ...m, startDate: currentNow } : m
+                                      );
+                                      setFormData({ ...formData, timeGatedMp3s: updated });
+                                    });
+                                  }}
+                                  className="px-2 py-0.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
+                                  title={`Set Gate #${firstNum} Start to now (${formatDatetime12(nowIso)})`}
+                                >
+                                  <ArrowUp className="w-3 h-3 text-amber-700 shrink-0" />
+                                  <span>Set to now ({nowMd})</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    recordDateAdjustment(`gate-${firstGate.id}-start`, () => {
+                                      const updated = currentMp3s.map(m =>
+                                        m.id === firstGate.id ? { ...m, startDate: targetStartFromPrior } : m
+                                      );
+                                      setFormData({ ...formData, timeGatedMp3s: updated });
+                                    });
+                                  }}
+                                  className="px-2 py-0.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
+                                  title={`Set Gate #${firstNum} Start to ${formatDatetime12(targetStartFromPrior)}`}
+                                >
+                                  <ArrowUp className="w-3 h-3 text-amber-700 shrink-0" />
+                                  <span>Set Gate #{firstNum} to Start ({startBoundaryMd})</span>
+                                </button>
+                              )
                             )}
                             <button
                               type="button"
@@ -2940,22 +3201,24 @@ export function AnnouncementEditorView({
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 flex-wrap min-w-0 max-w-full">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                recordDateAdjustment(`gate-${firstGate.id}-start`, () => {
-                                  const updated = currentMp3s.map(m =>
-                                    m.id === firstGate.id ? { ...m, startDate: annStart } : m
-                                  );
-                                  setFormData({ ...formData, timeGatedMp3s: updated });
-                                });
-                              }}
-                              className="px-2 py-0.5 rounded border border-red-300 bg-white hover:bg-red-100 text-red-800 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
-                              title={`Set Gate #${firstNum} Start to Announcement Start (${formatDatetime12(annStart)})`}
-                            >
-                              <ArrowDown className="w-3 h-3 text-red-700 shrink-0" />
-                              <span>Set Gate #{firstNum} to Start ({annStartMd})</span>
-                            </button>
+                            {!(playedGateBounds[firstGate.id]?.playCount > 0) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  recordDateAdjustment(`gate-${firstGate.id}-start`, () => {
+                                    const updated = currentMp3s.map(m =>
+                                      m.id === firstGate.id ? { ...m, startDate: annStart } : m
+                                    );
+                                    setFormData({ ...formData, timeGatedMp3s: updated });
+                                  });
+                                }}
+                                className="px-2 py-0.5 rounded border border-red-300 bg-white hover:bg-red-100 text-red-800 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
+                                title={`Set Gate #${firstNum} Start to Announcement Start (${formatDatetime12(annStart)})`}
+                              >
+                                <ArrowDown className="w-3 h-3 text-red-700 shrink-0" />
+                                <span>Set Gate #{firstNum} to Start ({annStartMd})</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() =>
@@ -3013,6 +3276,7 @@ export function AnnouncementEditorView({
                       return (
                         <div
                           key={`mid-gap-${currGate.id}-${nextGate.id}`}
+                          data-gap-handler-for={nextGate.id}
                           className="px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50/95 flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-amber-900 shadow-2xs"
                         >
                           <div className="flex items-center gap-1.5 min-w-0">
@@ -3038,22 +3302,24 @@ export function AnnouncementEditorView({
                               <ArrowDown className="w-3 h-3 text-amber-700 shrink-0" />
                               <span>Extend Gate #{currNum} ({gapFillEndMd})</span>
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                recordDateAdjustment(`gate-${nextGate.id}-start`, () => {
-                                  const updated = currentMp3s.map(m =>
-                                    m.id === nextGate.id ? { ...m, startDate: gapFillStart } : m
-                                  );
-                                  setFormData({ ...formData, timeGatedMp3s: updated });
-                                });
-                              }}
-                              className="px-2 py-0.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
-                              title={`Set Gate #${nextNum} Start to ${formatDatetime12(gapFillStart)}`}
-                            >
-                              <ArrowUp className="w-3 h-3 text-amber-700 shrink-0" />
-                              <span>Set Gate #{nextNum} to Prior ({gapFillStartMd})</span>
-                            </button>
+                            {!(playedGateBounds[nextGate.id]?.playCount > 0) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  recordDateAdjustment(`gate-${nextGate.id}-start`, () => {
+                                    const updated = currentMp3s.map(m =>
+                                      m.id === nextGate.id ? { ...m, startDate: gapFillStart } : m
+                                    );
+                                    setFormData({ ...formData, timeGatedMp3s: updated });
+                                  });
+                                }}
+                                className="px-2 py-0.5 rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
+                                title={`Set Gate #${nextNum} Start to ${formatDatetime12(gapFillStart)}`}
+                              >
+                                <ArrowUp className="w-3 h-3 text-amber-700 shrink-0" />
+                                <span>Set Gate #{nextNum} to Prior ({gapFillStartMd})</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
@@ -3079,6 +3345,10 @@ export function AnnouncementEditorView({
                       const truncatedCurrEndMd = formatMonthDay(truncatedCurrEnd);
                       const nextStartFromCurr = currEnd ? getNextGapAutoFillStart(currEnd).startIso : '';
                       const nextStartFromCurrMd = nextStartFromCurr ? formatMonthDay(nextStartFromCurr) : '';
+                      const currLastPlayed = playedGateBounds[currGate.id]?.lastPlayedLocalIso;
+                      const canTruncateCurrEnd =
+                        !currLastPlayed || truncatedCurrEnd >= currLastPlayed;
+                      const canMoveNextStart = !(playedGateBounds[nextGate.id]?.playCount > 0);
                       return (
                         <div
                           key={`mid-overlap-${currGate.id}-${nextGate.id}`}
@@ -3091,23 +3361,25 @@ export function AnnouncementEditorView({
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 flex-wrap min-w-0 max-w-full">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                recordDateAdjustment(`gate-${currGate.id}-end`, () => {
-                                  const updated = currentMp3s.map(m =>
-                                    m.id === currGate.id ? { ...m, endDate: truncatedCurrEnd } : m
-                                  );
-                                  setFormData({ ...formData, timeGatedMp3s: updated });
-                                });
-                              }}
-                              className="px-2 py-0.5 rounded border border-red-300 bg-white hover:bg-red-100 text-red-800 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
-                              title={`Set Gate #${currNum} End to ${formatDatetime12(truncatedCurrEnd)}`}
-                            >
-                              <ArrowUp className="w-3 h-3 text-red-700 shrink-0" />
-                              <span>End Gate #{currNum} ({truncatedCurrEndMd})</span>
-                            </button>
-                            {currEnd && (
+                            {canTruncateCurrEnd && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  recordDateAdjustment(`gate-${currGate.id}-end`, () => {
+                                    const updated = currentMp3s.map(m =>
+                                      m.id === currGate.id ? { ...m, endDate: truncatedCurrEnd } : m
+                                    );
+                                    setFormData({ ...formData, timeGatedMp3s: updated });
+                                  });
+                                }}
+                                className="px-2 py-0.5 rounded border border-red-300 bg-white hover:bg-red-100 text-red-800 text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors whitespace-normal text-left leading-tight"
+                                title={`Set Gate #${currNum} End to ${formatDatetime12(truncatedCurrEnd)}`}
+                              >
+                                <ArrowUp className="w-3 h-3 text-red-700 shrink-0" />
+                                <span>End Gate #{currNum} ({truncatedCurrEndMd})</span>
+                              </button>
+                            )}
+                            {currEnd && canMoveNextStart && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -3344,22 +3616,27 @@ export function AnnouncementEditorView({
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 flex-wrap min-w-0 max-w-full">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                recordDateAdjustment(`gate-${lastGate.id}-end`, () => {
-                                  const updated = currentMp3s.map(m =>
-                                    m.id === lastGate.id ? { ...m, endDate: annEnd } : m
-                                  );
-                                  setFormData({ ...formData, timeGatedMp3s: updated });
-                                });
-                              }}
-                              className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded border border-indigo-300 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 transition-colors flex items-center gap-1 cursor-pointer select-none shadow-2xs whitespace-normal text-left leading-tight"
-                              title={`Set Gate #${lastNum} End date to ${formatDatetime12(annEnd)}`}
-                            >
-                              <ArrowUp className="w-3 h-3 text-indigo-700 shrink-0" />
-                              <span>End Gate #{lastNum} ({annEndMd})</span>
-                            </button>
+                            {!(
+                              playedGateBounds[lastGate.id]?.lastPlayedLocalIso &&
+                              annEnd < playedGateBounds[lastGate.id]!.lastPlayedLocalIso!
+                            ) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  recordDateAdjustment(`gate-${lastGate.id}-end`, () => {
+                                    const updated = currentMp3s.map(m =>
+                                      m.id === lastGate.id ? { ...m, endDate: annEnd } : m
+                                    );
+                                    setFormData({ ...formData, timeGatedMp3s: updated });
+                                  });
+                                }}
+                                className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded border border-indigo-300 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 transition-colors flex items-center gap-1 cursor-pointer select-none shadow-2xs whitespace-normal text-left leading-tight"
+                                title={`Set Gate #${lastNum} End date to ${formatDatetime12(annEnd)}`}
+                              >
+                                <ArrowUp className="w-3 h-3 text-indigo-700 shrink-0" />
+                                <span>End Gate #{lastNum} ({annEndMd})</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() =>
@@ -3438,6 +3715,19 @@ export function AnnouncementEditorView({
                       )}
 
                       <div className="p-2 space-y-2 bg-slate-50/40">
+                        {validation.parentBlockingErrors && validation.parentBlockingErrors.length > 0 && (
+                          <div className="space-y-1">
+                            {validation.parentBlockingErrors.map((msg, i) => (
+                              <div
+                                key={`parent-err-${i}`}
+                                className="px-2.5 py-1.5 rounded-lg border border-red-300 bg-red-50 flex items-center gap-1.5 text-xs font-bold text-red-900 shadow-2xs"
+                              >
+                                <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                                <span>{msg}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         {activeIndexedGates.length > 0 ? (
                           <>
                             {renderLeadingInterstitial()}

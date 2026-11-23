@@ -1,7 +1,8 @@
 import React, { useState, useRef, useCallback, Dispatch, SetStateAction } from 'react';
-import { Announcement, Show, LogEntry, UpNextPromoConfig } from '../types';
+import { Announcement, Show, LogEntry, UpNextPromoConfig, AdminMessage, AdminMessageAckRecord } from '../types';
 import { normalizeAnnouncements, isTimeInShow, getActualShowStart, classifyMediaAsset, isUpNextPromoUrl, formatUpNextPromoFilename } from '../lib/utils';
 import {
+  CURRENT_APP_VERSION,
   getStationTimezone,
   setStationTimezone,
   detectSystemStationTimezone,
@@ -13,8 +14,21 @@ import {
   setUpNextPromoConfig,
   getScheduleWindowConfig,
   setScheduleWindowConfig,
+  getAdminMessages,
+  setAdminMessages,
   ScheduleWindowConfig,
 } from '../lib/compatibility';
+import {
+  normalizeAdminMessages,
+  getStationAirDateStr,
+  markStartupMessageAcknowledgedLocal,
+  isSystemBuiltInMessage,
+} from '../lib/adminMessages';
+import {
+  getMachinePersona,
+  getEffectivePersonaLabel,
+  getRuntimeAppContext,
+} from '../lib/machinePersona';
 import {
   getSavedSettings,
   getAccessToken,
@@ -49,7 +63,8 @@ export interface UseScheduleManagerResult {
     explicitStationTimezone?: string,
     explicitAdminContactInfo?: string,
     explicitUpNextPromo?: UpNextPromoConfig,
-    explicitScheduleWindow?: ScheduleWindowConfig
+    explicitScheduleWindow?: ScheduleWindowConfig,
+    explicitAdminMessages?: AdminMessage[]
   ) => Promise<boolean>;
   stationTimezone: string;
   saveStationTimezone: (newTimezone: string) => Promise<boolean>;
@@ -60,6 +75,17 @@ export interface UseScheduleManagerResult {
   saveUpNextPromoConfig: (newConfig: UpNextPromoConfig) => Promise<boolean>;
   scheduleWindowConfig: ScheduleWindowConfig;
   saveScheduleWindowConfig: (newConfig: ScheduleWindowConfig) => Promise<boolean>;
+  adminMessages: AdminMessage[];
+  setAdminMessagesState: Dispatch<SetStateAction<AdminMessage[]>>;
+  saveAdminMessages: (newMessages: AdminMessage[]) => Promise<boolean>;
+  acknowledgeAdminMessage: (
+    message: AdminMessage,
+    context?: {
+      show?: Show | null;
+      airDate?: Date;
+      playMode?: 'Live' | 'Prerecord' | 'Export' | 'Playlist';
+    }
+  ) => Promise<boolean>;
   saveAnnouncements: (newAnnouncements: Announcement[]) => Promise<boolean>;
   addLog: (entry: LogEntry) => Promise<void>;
 }
@@ -80,6 +106,9 @@ export function useScheduleManager({
   const [hasSavedAdminContact, setHasSavedAdminContact] = useState<boolean>(false);
   const [upNextPromoConfig, setUpNextPromoConfigState] = useState<UpNextPromoConfig>(() => getUpNextPromoConfig());
   const [scheduleWindowConfig, setScheduleWindowConfigState] = useState<ScheduleWindowConfig>(() => getScheduleWindowConfig());
+  const [adminMessages, setAdminMessagesState] = useState<AdminMessage[]>(() =>
+    normalizeAdminMessages(getAdminMessages())
+  );
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [savingLabel, setSavingLabel] = useState<string | null>(null);
@@ -90,6 +119,9 @@ export function useScheduleManager({
 
   const showsRef = useRef(shows);
   showsRef.current = shows;
+
+  const adminMessagesRef = useRef(adminMessages);
+  adminMessagesRef.current = adminMessages;
 
   const playModeRef = useRef(playMode);
   playModeRef.current = playMode;
@@ -145,6 +177,17 @@ export function useScheduleManager({
             setScheduleWindowConfigState(resolvedScheduleWindow);
           }
 
+          const rawAdminMessages = Array.isArray(payload.adminMessages)
+            ? payload.adminMessages
+            : Array.isArray(payload._meta?.adminMessages)
+              ? payload._meta.adminMessages
+              : undefined;
+          if (rawAdminMessages !== undefined) {
+            const normalizedMsgs = normalizeAdminMessages(rawAdminMessages);
+            setAdminMessages(normalizedMsgs);
+            setAdminMessagesState(normalizedMsgs);
+          }
+
           if (!payload.hasSavedTimezone) {
             const sysTz = setStationTimezone(detectSystemStationTimezone());
             setStationTimezoneState(sysTz);
@@ -158,6 +201,7 @@ export function useScheduleManager({
                   ...(effectiveContact !== undefined ? { adminContactInfo: effectiveContact } : {}),
                   upNextPromo: getUpNextPromoConfig(),
                   scheduleWindow: getScheduleWindowConfig(),
+                  adminMessages: rawAdminMessages !== undefined ? normalizeAdminMessages(rawAdminMessages) : getAdminMessages(),
                   data: loadedShows
                 }),
               }).catch(() => {});
@@ -179,7 +223,8 @@ export function useScheduleManager({
     explicitStationTimezone?: string,
     explicitAdminContactInfo?: string,
     explicitUpNextPromo?: UpNextPromoConfig,
-    explicitScheduleWindow?: ScheduleWindowConfig
+    explicitScheduleWindow?: ScheduleWindowConfig,
+    explicitAdminMessages?: AdminMessage[]
   ): Promise<boolean> => {
     if (isReadOnlyRef.current) {
       console.warn('Saving shows skipped: Station data is in read-only compatibility mode.');
@@ -202,6 +247,11 @@ export function useScheduleManager({
         ? setScheduleWindowConfig(explicitScheduleWindow)
         : getScheduleWindowConfig();
     setScheduleWindowConfigState(targetScheduleWindow);
+    const targetAdminMessages =
+      explicitAdminMessages !== undefined
+        ? setAdminMessages(normalizeAdminMessages(explicitAdminMessages))
+        : getAdminMessages();
+    setAdminMessagesState(targetAdminMessages);
     const settings = getSavedSettings();
     setIsSaving(true);
     setSavingLabel('Saving shows profile...');
@@ -222,6 +272,7 @@ export function useScheduleManager({
           adminContactInfo: targetContact,
           upNextPromo: targetUpNext,
           scheduleWindow: targetScheduleWindow,
+          adminMessages: targetAdminMessages,
           data: newShows
         }),
       });
@@ -249,7 +300,7 @@ export function useScheduleManager({
         filePath: settings.mode === 'Drive' ? (settings.driveFolderPreferences || 'Google Drive Preferences Folder') : (settings.localPathCalendar || 'Local Shows Storage'),
         error: error.message || 'Write error',
         retryAction: async () => {
-          await saveShows(newShows, targetTz, targetContact, targetUpNext, targetScheduleWindow);
+          await saveShows(newShows, targetTz, targetContact, targetUpNext, targetScheduleWindow, targetAdminMessages);
         },
         onFixFolder: () => {
           if (onShowLocationsModal) onShowLocationsModal();
@@ -262,26 +313,40 @@ export function useScheduleManager({
   const saveStationTimezone = useCallback(async (newTimezone: string): Promise<boolean> => {
     const resolvedTz = setStationTimezone(newTimezone);
     setStationTimezoneState(resolvedTz);
-    return saveShows(showsRef.current, resolvedTz, getAdminContactInfo(), getUpNextPromoConfig(), getScheduleWindowConfig());
+    return saveShows(showsRef.current, resolvedTz, getAdminContactInfo(), getUpNextPromoConfig(), getScheduleWindowConfig(), adminMessagesRef.current);
   }, [saveShows]);
 
   const saveAdminContactInfo = useCallback(async (newContact: string): Promise<boolean> => {
     const resolvedContact = setAdminContactInfo(newContact);
     setAdminContactInfoState(resolvedContact);
     setHasSavedAdminContact(true);
-    return saveShows(showsRef.current, getStationTimezone(), resolvedContact, getUpNextPromoConfig(), getScheduleWindowConfig());
+    return saveShows(showsRef.current, getStationTimezone(), resolvedContact, getUpNextPromoConfig(), getScheduleWindowConfig(), adminMessagesRef.current);
   }, [saveShows]);
 
   const saveUpNextPromoConfig = useCallback(async (newConfig: UpNextPromoConfig): Promise<boolean> => {
     const resolvedUpNext = setUpNextPromoConfig(newConfig);
     setUpNextPromoConfigState(resolvedUpNext);
-    return saveShows(showsRef.current, getStationTimezone(), getAdminContactInfo(), resolvedUpNext, getScheduleWindowConfig());
+    return saveShows(showsRef.current, getStationTimezone(), getAdminContactInfo(), resolvedUpNext, getScheduleWindowConfig(), adminMessagesRef.current);
   }, [saveShows]);
 
   const saveScheduleWindowConfig = useCallback(async (newConfig: ScheduleWindowConfig): Promise<boolean> => {
     const resolvedWindow = setScheduleWindowConfig(newConfig);
     setScheduleWindowConfigState(resolvedWindow);
-    return saveShows(showsRef.current, getStationTimezone(), getAdminContactInfo(), getUpNextPromoConfig(), resolvedWindow);
+    return saveShows(showsRef.current, getStationTimezone(), getAdminContactInfo(), getUpNextPromoConfig(), resolvedWindow, adminMessagesRef.current);
+  }, [saveShows]);
+
+  const saveAdminMessages = useCallback(async (newMessages: AdminMessage[]): Promise<boolean> => {
+    const normalized = normalizeAdminMessages(newMessages);
+    setAdminMessages(normalized);
+    setAdminMessagesState(normalized);
+    return saveShows(
+      showsRef.current,
+      getStationTimezone(),
+      getAdminContactInfo(),
+      getUpNextPromoConfig(),
+      getScheduleWindowConfig(),
+      normalized
+    );
   }, [saveShows]);
 
   const saveAnnouncements = useCallback(async (newAnnouncements: Announcement[]): Promise<boolean> => {
@@ -397,9 +462,12 @@ export function useScheduleManager({
       }
     }
 
-    const resolvedAssetType = entry.status === 'backup play' 
-      ? 'audio' 
-      : classifyMediaAsset(entry.mp3Name, entry.assetType);
+    const resolvedAssetType =
+      entry.assetType === 'message' || entry.status === 'acknowledged'
+        ? 'message'
+        : entry.status === 'backup play'
+          ? 'audio'
+          : classifyMediaAsset(entry.mp3Name, entry.assetType);
 
     const cleanMp3Name = isUpNextPromoUrl(entry.mp3Name)
       ? formatUpNextPromoFilename(entry.mp3Name, entry.announcementName)
@@ -454,6 +522,116 @@ export function useScheduleManager({
     }
   }, [now, token]);
 
+  const acknowledgeAdminMessage = useCallback(
+    async (
+      message: AdminMessage,
+      context?: {
+        show?: Show | null;
+        airDate?: Date;
+        playMode?: 'Live' | 'Prerecord' | 'Export' | 'Playlist';
+      }
+    ): Promise<boolean> => {
+      const nowIso = new Date().toISOString();
+      const targetAirDate = context?.airDate || getStationNow(new Date());
+      const airDateStr = getStationAirDateStr(targetAirDate);
+      const effectiveMode = context?.playMode || playModeRef.current || 'Live';
+
+      if (message.targetScope === 'app_startup' && message.clearMode !== 'date_range') {
+        markStartupMessageAcknowledgedLocal(message.id, message.updatedAt, CURRENT_APP_VERSION);
+      }
+
+      const persona = getMachinePersona();
+      const runtimeCtx = getRuntimeAppContext();
+      const effectivePersonaLabel = getEffectivePersonaLabel(persona);
+
+      const showId = context?.show?.id || (message.targetScope === 'app_startup' ? `machine:${persona.machineId}` : 'station');
+      const showName = context?.show?.name || (message.targetScope === 'app_startup' ? effectivePersonaLabel : undefined);
+
+      const ackRecord: AdminMessageAckRecord = {
+        showId,
+        ...(showName ? { showName } : {}),
+        acknowledgedAt: nowIso,
+        airDate: airDateStr,
+        playMode: effectiveMode,
+        appVersion: runtimeCtx.appVersion,
+        machineId: persona.machineId,
+        personaName: effectivePersonaLabel,
+        personaType: persona.personaType,
+        pcUseType: persona.pcUseType,
+        appEdition: runtimeCtx.appEdition,
+        platform: runtimeCtx.platform,
+      };
+
+      // Persist acknowledgement directly on the message record in shows.json
+      // (covering Show Messages, custom AMP Launch messages, and Built-In System Notices)
+      // rather than cluttering broadcast logs.json.
+      const currentMsgs = adminMessagesRef.current;
+      const existsInStored = currentMsgs.some((m) => m.id === message.id);
+      let nextMsgs: AdminMessage[];
+
+      if (existsInStored) {
+        nextMsgs = currentMsgs.map((m) => {
+          if (m.id !== message.id) return m;
+          const existingAcks = Array.isArray(m.acknowledgedByShows) ? m.acknowledgedByShows : [];
+          const filtered = existingAcks.filter((r) => {
+            if (message.targetScope === 'app_startup') {
+              const sameMachine =
+                (r.machineId && r.machineId === persona.machineId) || r.showId === showId;
+              if (m.clearMode === 'once_acknowledged') {
+                return !(sameMachine && r.appVersion === runtimeCtx.appVersion);
+              }
+              return !(sameMachine && r.airDate === airDateStr);
+            }
+            if (m.clearMode === 'once_acknowledged') {
+              return r.showId !== showId;
+            }
+            return !(r.showId === showId && r.airDate === airDateStr);
+          });
+          return {
+            ...m,
+            acknowledgedByShows: [...filtered, ackRecord],
+          };
+        });
+      } else if (isSystemBuiltInMessage(message)) {
+        const persistedBuiltIn: AdminMessage = {
+          id: message.id,
+          title: message.title,
+          body: '',
+          severity: message.severity,
+          enabled: message.enabled !== false,
+          isSystemBuiltIn: true,
+          targetScope: 'app_startup',
+          clearMode: message.clearMode,
+          acknowledgedByShows: [ackRecord],
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          createdBy: 'System',
+        };
+        nextMsgs = [persistedBuiltIn, ...currentMsgs];
+      } else {
+        nextMsgs = currentMsgs;
+      }
+
+      if (nextMsgs !== currentMsgs) {
+        setAdminMessages(nextMsgs);
+        setAdminMessagesState(nextMsgs);
+        if (!isReadOnlyRef.current) {
+          await saveShows(
+            showsRef.current,
+            getStationTimezone(),
+            getAdminContactInfo(),
+            getUpNextPromoConfig(),
+            getScheduleWindowConfig(),
+            nextMsgs
+          );
+        }
+      }
+
+      return true;
+    },
+    [addLog, saveShows]
+  );
+
   return {
     announcements,
     setAnnouncements,
@@ -476,6 +654,10 @@ export function useScheduleManager({
     saveUpNextPromoConfig,
     scheduleWindowConfig,
     saveScheduleWindowConfig,
+    adminMessages,
+    setAdminMessagesState,
+    saveAdminMessages,
+    acknowledgeAdminMessage,
     saveAnnouncements,
     addLog,
   };

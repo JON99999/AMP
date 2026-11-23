@@ -90,12 +90,21 @@ export function setCurrentSettings(next: ServerSettings): ServerSettings {
   return currentSettings;
 }
 
-// Load settings from file on launch if available
+export function serializeSettingsForDisk(settings: ServerSettings): string {
+  const { googleAuth: _omitGoogleAuth, ...persistable } = settings;
+  return JSON.stringify(persistable, null, 2);
+}
+
+// Load settings from file on launch if available (never hydrate OAuth tokens from disk)
 try {
   if (fs.existsSync(SETTINGS_FILE)) {
     const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
-    currentSettings = { ...currentSettings, ...JSON.parse(raw) };
-    console.log('Loaded application folder settings from shared settings path:', currentSettings);
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const { googleAuth: _omitGoogleAuth, ...loaded } = parsed;
+      currentSettings = { ...currentSettings, ...loaded };
+      console.log('Loaded application folder settings from shared settings path:', currentSettings);
+    }
   }
 } catch (e) {
   console.log('Started with default settings configuration');
@@ -364,6 +373,7 @@ export interface StationSettingsSidecar {
   adminContactInfo?: string;
   upNextPromo?: any;
   scheduleWindow?: any;
+  adminMessages?: any[];
   updatedAt?: string;
 }
 
@@ -399,6 +409,7 @@ export function writeStationSettingsSidecar(partial: StationSettingsSidecar): vo
       ...(partial.adminContactInfo !== undefined ? { adminContactInfo: partial.adminContactInfo } : {}),
       ...(partial.upNextPromo !== undefined ? { upNextPromo: partial.upNextPromo } : {}),
       ...(partial.scheduleWindow !== undefined ? { scheduleWindow: partial.scheduleWindow } : {}),
+      ...(partial.adminMessages !== undefined ? { adminMessages: partial.adminMessages } : {}),
       updatedAt: new Date().toISOString()
     };
     atomicWriteFileSync(sidecarPath, JSON.stringify(merged, null, 2));
@@ -468,45 +479,98 @@ export function atomicWriteFileSync(filePath: string, data: string | Buffer): vo
   }
 }
 
-export function findAnnouncementSourceFile(folderPath: string, fileName: string): string | null {
-  if (!fileName) return null;
-  if (fs.existsSync(fileName)) return fileName;
+export type AnnouncementFolderBucket = 'active' | 'archived' | 'deleted';
 
-  let cleanName = fileName;
+function isWindowsAbsolutePath(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\');
+}
+
+function hasPathTraversalSegment(p: string): boolean {
+  const normalized = p.replace(/\\/g, '/');
+  return normalized.split('/').some((seg) => seg === '..');
+}
+
+export function findAnnouncementSourceFile(
+  folderPath: string,
+  fileName: string,
+  options?: { bucket?: AnnouncementFolderBucket }
+): string | null {
+  if (!folderPath || !fileName) return null;
+
+  let cleanName = String(fileName).trim();
+  if (!cleanName) return null;
+
   if (cleanName.includes('/api/media/stream')) {
     const parts = cleanName.split(/(?:file|path)=/);
     if (parts.length > 1) {
       cleanName = decodeURIComponent(parts[1].split('&')[0]);
     }
   }
+  cleanName = cleanName.split('?')[0].trim();
+  if (!cleanName) return null;
 
-  const baseName = path.basename(cleanName);
   const announcementsRoot = fs.existsSync(path.join(folderPath, 'media_announcements'))
     ? path.join(folderPath, 'media_announcements')
     : fs.existsSync(path.join(folderPath, 'MediaAnnouncements'))
       ? path.join(folderPath, 'MediaAnnouncements')
       : folderPath;
 
-  const candidateDirect = path.join(announcementsRoot, baseName);
-  if (fs.existsSync(candidateDirect)) return candidateDirect;
+  const bucket: AnnouncementFolderBucket =
+    options?.bucket === 'archived' || options?.bucket === 'deleted' ? options.bucket : 'active';
+
+  const targetDir =
+    bucket === 'archived'
+      ? path.join(announcementsRoot, 'archived')
+      : bucket === 'deleted'
+        ? path.join(announcementsRoot, 'deleted_in_AMP_OK_to_purge')
+        : announcementsRoot;
+
+  if (!fs.existsSync(targetDir)) return null;
+
+  // Reject any absolute path pointing outside the target announcement bucket folder
+  if (path.isAbsolute(cleanName) || isWindowsAbsolutePath(cleanName)) {
+    if (!path.isAbsolute(cleanName)) return null;
+    if (!isPathWithinAnyDir(cleanName, [targetDir])) return null;
+    const rel = path.relative(path.resolve(targetDir), path.resolve(cleanName));
+    if (!rel || rel.includes(path.sep) || rel.includes('/') || rel === '..' || rel.startsWith('..')) {
+      return null;
+    }
+    if (fs.existsSync(cleanName) && fs.statSync(cleanName).isFile()) {
+      return cleanName;
+    }
+    return null;
+  }
+
+  if (hasPathTraversalSegment(cleanName)) return null;
+
+  // Require a plain filename inside the target bucket (no cross-subfolder paths)
+  const normalizedRel = cleanName.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (normalizedRel.includes('/')) return null;
+
+  const baseName = path.basename(normalizedRel);
+  if (!baseName || baseName === '.' || baseName === '..') return null;
+
+  const candidateDirect = path.join(targetDir, baseName);
+  if (
+    isPathWithinAnyDir(candidateDirect, [targetDir]) &&
+    fs.existsSync(candidateDirect) &&
+    fs.statSync(candidateDirect).isFile()
+  ) {
+    return candidateDirect;
+  }
 
   try {
-    if (fs.existsSync(announcementsRoot)) {
-      const entries = fs.readdirSync(announcementsRoot);
-      for (const entry of entries) {
-        const fullPath = path.join(announcementsRoot, entry);
-        if (fs.statSync(fullPath).isDirectory()) {
-          const candidate = path.join(fullPath, baseName);
-          if (fs.existsSync(candidate)) return candidate;
-        } else if (entry.toLowerCase() === baseName.toLowerCase()) {
-          return fullPath;
+    const entries = fs.readdirSync(targetDir, { withFileTypes: true });
+    const baseLower = baseName.toLowerCase();
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase() === baseLower) {
+        const matchedPath = path.join(targetDir, entry.name);
+        if (isPathWithinAnyDir(matchedPath, [targetDir])) {
+          return matchedPath;
         }
       }
     }
-  } catch (e) {}
-
-  const candidateOrig = path.join(folderPath, baseName);
-  if (fs.existsSync(candidateOrig)) return candidateOrig;
+  } catch (_) {}
 
   return null;
 }
@@ -534,17 +598,9 @@ export function resolveLocalAnnouncementScriptText(mp3Url: string): string | nul
     const ext = path.extname(cleanName.split('?')[0]).toLowerCase();
     if (ext !== '.txt' && ext !== '.md') return null;
 
-    if (path.isAbsolute(cleanName) && fs.existsSync(cleanName) && fs.statSync(cleanName).isFile()) {
-      return fs.readFileSync(cleanName, 'utf-8');
-    }
-
     const announcementsDir = getAmpMediaAnnouncementsDir(currentSettings);
     if (announcementsDir && fs.existsSync(announcementsDir)) {
-      const directCandidate = path.join(announcementsDir, path.basename(cleanName));
-      if (fs.existsSync(directCandidate) && fs.statSync(directCandidate).isFile()) {
-        return fs.readFileSync(directCandidate, 'utf-8');
-      }
-      const resolved = findAnnouncementSourceFile(announcementsDir, cleanName);
+      const resolved = findAnnouncementSourceFile(announcementsDir, cleanName, { bucket: 'active' });
       if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
         return fs.readFileSync(resolved, 'utf-8');
       }
@@ -559,12 +615,12 @@ export function sleepMs(ms: number): Promise<void> {
 
 /**
  * Stepped cloud-drive hydration catch-up reader for JSON schedule/log files (#62).
- * Gives online-only or actively syncing files on Google Drive / OneDrive a chance
- * to hydrate before falling back to the local backup file.
+ * Retries transient online-only / syncing locks on the primary file, then fails
+ * loudly without silently hydrating stale backup data.
  */
 export async function readJsonFileWithCloudCatchUp(
   primaryPath: string | null,
-  backupPath?: string | null,
+  _backupPath?: string | null,
   delaysMs: number[] = [250, 600, 1200]
 ): Promise<{ parsed: any; recoveredFromBackup: boolean; fileExists: boolean }> {
   if (!primaryPath) {
@@ -572,42 +628,25 @@ export async function readJsonFileWithCloudCatchUp(
   }
 
   const primaryExists = fs.existsSync(primaryPath);
-  const backupExists = Boolean(backupPath && fs.existsSync(backupPath));
-
-  if (!primaryExists && !backupExists) {
+  if (!primaryExists) {
     return { parsed: null, recoveredFromBackup: false, fileExists: false };
   }
 
   let lastError: any = null;
 
-  if (primaryExists) {
-    for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
-      try {
-        const raw = fs.readFileSync(primaryPath, 'utf-8');
-        if (!raw || !raw.trim()) {
-          throw new Error('File is momentarily empty during cloud hydration or write');
-        }
-        const parsed = JSON.parse(raw);
-        return { parsed, recoveredFromBackup: false, fileExists: true };
-      } catch (err: any) {
-        lastError = err;
-        if (attempt < delaysMs.length) {
-          await sleepMs(delaysMs[attempt]);
-        }
-      }
-    }
-  }
-
-  if (backupPath && fs.existsSync(backupPath)) {
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     try {
-      const backupRaw = fs.readFileSync(backupPath, 'utf-8');
-      if (backupRaw && backupRaw.trim()) {
-        const parsedBackup = JSON.parse(backupRaw);
-        console.warn(`[Cloud Catch-Up] Primary file ${path.basename(primaryPath)} busy/hydrating; recovered from ${path.basename(backupPath)}.`);
-        return { parsed: parsedBackup, recoveredFromBackup: true, fileExists: true };
+      const raw = fs.readFileSync(primaryPath, 'utf-8');
+      if (!raw || !raw.trim()) {
+        throw new Error('File is momentarily empty during cloud hydration or write');
       }
-    } catch (backupErr) {
-      if (!lastError) lastError = backupErr;
+      const parsed = JSON.parse(raw);
+      return { parsed, recoveredFromBackup: false, fileExists: true };
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < delaysMs.length) {
+        await sleepMs(delaysMs[attempt]);
+      }
     }
   }
 
@@ -635,3 +674,133 @@ export async function statFileWithCloudCatchUp(
   return { stats: null, cloudSyncPending: true };
 }
 
+// ============================================================================
+// Filesystem Boundary Guards for Local API Routes (#6)
+// ============================================================================
+
+export const ALLOWED_STREAM_MEDIA_EXTENSIONS = new Set([
+  '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.aiff', '.aif',
+  '.txt', '.md', '.pdf', '.png', '.jpg', '.jpeg', '.webp'
+]);
+
+const activeExternalMediaDirs = new Set<string>();
+
+export function registerActiveExternalMediaDir(dirPath?: string | null): void {
+  if (!dirPath || typeof dirPath !== 'string') return;
+  const trimmed = dirPath.trim();
+  if (!trimmed) return;
+  try {
+    activeExternalMediaDirs.add(path.resolve(trimmed));
+  } catch (_) {}
+}
+
+export function getActiveExternalMediaDirs(): string[] {
+  const dirs = new Set<string>(activeExternalMediaDirs);
+  const ctxPath = getActiveShowContextState()?.externalAbsolutePath;
+  if (ctxPath && typeof ctxPath === 'string' && ctxPath.trim()) {
+    try {
+      dirs.add(path.resolve(ctxPath.trim()));
+    } catch (_) {}
+  }
+  return Array.from(dirs);
+}
+
+export function isPathWithinAnyDir(
+  targetPath: string,
+  allowedDirs: Array<string | null | undefined>
+): boolean {
+  if (!targetPath || typeof targetPath !== 'string') return false;
+  let resolvedTarget: string;
+  try {
+    resolvedTarget = path.resolve(targetPath);
+  } catch (_) {
+    return false;
+  }
+  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+  const normalizedTarget = caseInsensitive ? resolvedTarget.toLowerCase() : resolvedTarget;
+
+  for (const dir of allowedDirs) {
+    if (!dir || typeof dir !== 'string' || !dir.trim()) continue;
+    try {
+      const resolvedBase = path.resolve(dir.trim());
+      const normalizedBase = caseInsensitive ? resolvedBase.toLowerCase() : resolvedBase;
+      const baseWithSep = normalizedBase.endsWith(path.sep) ? normalizedBase : normalizedBase + path.sep;
+      if (normalizedTarget === normalizedBase || normalizedTarget.startsWith(baseWithSep)) {
+        return true;
+      }
+    } catch (_) {}
+  }
+  return false;
+}
+
+export function getConfiguredStationRoots(settings: any = currentSettings): string[] {
+  const candidates = [
+    settings?.localPathAmp,
+    settings?.localPathCalendar,
+    settings?.localPathLogs,
+    settings?.localPathMP3s,
+    settings?.localPathMediaAnnouncements,
+    settings?.localPathMediaEvergreens,
+    settings?.localPathMediaShows,
+    settings?.localPathPlaylists,
+    settings?.localPathExport,
+    getAmpSettingsDir(settings),
+    getAmpLogsDir(settings),
+    getAmpMediaAnnouncementsDir(settings),
+    getAmpMediaEvergreensDir(settings),
+    getAmpMediaShowsDir(settings)
+  ];
+  const unique = new Set<string>();
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) {
+      try {
+        unique.add(path.resolve(c.trim()));
+      } catch (_) {}
+    }
+  }
+  return Array.from(unique);
+}
+
+export function getConfiguredMediaRoots(settings: any = currentSettings): string[] {
+  const candidates = [
+    settings?.localPathMP3s,
+    settings?.localPathMediaAnnouncements,
+    settings?.localPathMediaEvergreens,
+    settings?.localPathMediaShows,
+    settings?.localPathPlaylists,
+    getAmpMediaAnnouncementsDir(settings),
+    getAmpMediaEvergreensDir(settings),
+    getAmpMediaShowsDir(settings)
+  ];
+  const unique = new Set<string>();
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) {
+      try {
+        unique.add(path.resolve(c.trim()));
+      } catch (_) {}
+    }
+  }
+  return Array.from(unique);
+}
+
+export function isPathWithinConfiguredStationDirs(
+  targetPath: string,
+  includeActiveExternal: boolean = false
+): boolean {
+  const allowed = getConfiguredStationRoots(currentSettings);
+  if (includeActiveExternal) {
+    allowed.push(...getActiveExternalMediaDirs());
+  }
+  return isPathWithinAnyDir(targetPath, allowed);
+}
+
+export function isPathWithinConfiguredMediaDirs(
+  targetPath: string,
+  includeActiveExternal: boolean = false
+): boolean {
+  const allowed = getConfiguredMediaRoots(currentSettings);
+  if (includeActiveExternal) {
+    allowed.push(...getActiveExternalMediaDirs());
+  }
+  return isPathWithinAnyDir(targetPath, allowed);
+}

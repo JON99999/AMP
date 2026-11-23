@@ -23,6 +23,7 @@ export function MilitaryTimeInput({
 }: MilitaryTimeInputProps) {
   const [localVal, setLocalVal] = useState(value ? formatTime12(value) : '');
   const isFocusedRef = useRef(false);
+  const debounceTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isFocusedRef.current) {
@@ -30,7 +31,23 @@ export function MilitaryTimeInput({
     }
   }, [value]);
 
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const clearPendingDebounce = () => {
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  };
+
   const commitValue = () => {
+    clearPendingDebounce();
     const trimmed = localVal.trim();
     if (!trimmed) {
       setLocalVal('');
@@ -57,15 +74,19 @@ export function MilitaryTimeInput({
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const nextVal = e.target.value;
     setLocalVal(nextVal);
-    const trimmed = nextVal.trim();
-    if (!trimmed) {
-      onChange('');
-      return;
-    }
-    const parsed24 = parseTo24HourTime(trimmed);
-    if (parsed24) {
-      onChange(parsed24);
-    }
+    clearPendingDebounce();
+    debounceTimerRef.current = window.setTimeout(() => {
+      debounceTimerRef.current = null;
+      const trimmed = nextVal.trim();
+      if (!trimmed) {
+        onChange('');
+        return;
+      }
+      const parsed24 = parseTo24HourTime(trimmed);
+      if (parsed24) {
+        onChange(parsed24);
+      }
+    }, 650);
   };
 
   const handleFocus = () => {

@@ -41,6 +41,10 @@ export interface CalendarDateInputProps {
   }; // Next gate with open start being forward-filled when selecting prior Gate End
   onCalendarConfirm?: (newDate: string, prevDate: string) => void;
   inputDataKey?: string;
+  hardMinDate?: string; // YYYY-MM-DD impossible floor (e.g. last logged play date)
+  hardMinReason?: string;
+  hardMaxDate?: string; // YYYY-MM-DD impossible ceiling (e.g. first logged play date)
+  hardMaxReason?: string;
 }
 
 interface CalendarGridCell {
@@ -142,12 +146,33 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
   splitNextGate,
   onCalendarConfirm,
   inputDataKey,
+  hardMinDate,
+  hardMinReason,
+  hardMaxDate,
+  hardMaxReason,
 }) => {
   const [textValue, setTextValue] = useState(() => formatYmdToDisplay(value));
   const [isEditingText, setIsEditingText] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredYmd, setHoveredYmd] = useState<string | null>(null);
   const [pendingConfirmYmd, setPendingConfirmYmd] = useState<string | null>(null);
+  const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
+
+  const cleanHardMinYmd =
+    hardMinDate && /^\d{4}-\d{2}-\d{2}$/.test(hardMinDate.trim()) ? hardMinDate.trim() : '';
+  const cleanHardMaxYmd =
+    hardMaxDate && /^\d{4}-\d{2}-\d{2}$/.test(hardMaxDate.trim()) ? hardMaxDate.trim() : '';
+
+  const getHardBlockReason = (ymd: string): string | null => {
+    if (!ymd) return null;
+    if (cleanHardMinYmd && ymd < cleanHardMinYmd) {
+      return hardMinReason || `Cannot select a date before ${formatYmdToDisplay(cleanHardMinYmd)}.`;
+    }
+    if (cleanHardMaxYmd && ymd > cleanHardMaxYmd) {
+      return hardMaxReason || `Cannot select a date after ${formatYmdToDisplay(cleanHardMaxYmd)}.`;
+    }
+    return null;
+  };
 
   // Store the initial value when popover opens so Cancel can restore it cleanly
   const initialOpenValueRef = useRef<string>(value);
@@ -197,6 +222,7 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
     if (disabled) return;
     initialOpenValueRef.current = value;
     setPendingConfirmYmd(null);
+    setBlockedNotice(null);
     setHoveredYmd(null);
     const parsed = parseYmd(getDefaultViewYmd());
     if (parsed) {
@@ -205,6 +231,23 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
     }
     setIsOpen(true);
   };
+
+  const openPopoverRef = useRef(openPopover);
+  openPopoverRef.current = openPopover;
+
+  useEffect(() => {
+    if (!inputDataKey || typeof window === 'undefined') return;
+    const handleProgrammaticOpen = (evt: Event) => {
+      const detail = (evt as CustomEvent<{ key?: string }>).detail;
+      if (detail?.key === inputDataKey) {
+        openPopoverRef.current();
+      }
+    };
+    window.addEventListener('amp-open-calendar-input', handleProgrammaticOpen);
+    return () => {
+      window.removeEventListener('amp-open-calendar-input', handleProgrammaticOpen);
+    };
+  }, [inputDataKey]);
 
   const updatePopoverPosition = () => {
     if (!containerRef.current) return;
@@ -293,6 +336,13 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
   };
 
   const handleSelectCell = (cell: CalendarGridCell) => {
+    const blockReason = getHardBlockReason(cell.ymd);
+    if (blockReason) {
+      setPendingConfirmYmd(null);
+      setBlockedNotice(blockReason);
+      return;
+    }
+    setBlockedNotice(null);
     setPendingConfirmYmd(cell.ymd);
   };
 
@@ -305,12 +355,20 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
       setViewYear(parsedToday.year);
       setViewMonth(parsedToday.month);
     }
+    const blockReason = getHardBlockReason(todayYmd);
+    if (blockReason) {
+      setPendingConfirmYmd(null);
+      setBlockedNotice(blockReason);
+      return;
+    }
+    setBlockedNotice(null);
     setPendingConfirmYmd(todayYmd);
   };
 
   const handleClear = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    setBlockedNotice(null);
     setPendingConfirmYmd('');
   };
 
@@ -326,6 +384,7 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
     }
     setTextValue(formatYmdToDisplay(nextVal));
     setPendingConfirmYmd(null);
+    setBlockedNotice(null);
     setHoveredYmd(null);
     setIsOpen(false);
   };
@@ -334,12 +393,14 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setPendingConfirmYmd(null);
+    setBlockedNotice(null);
   };
 
   const handleCancel = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setPendingConfirmYmd(null);
+    setBlockedNotice(null);
     setHoveredYmd(null);
     if (value !== initialOpenValueRef.current) {
       onChange(initialOpenValueRef.current);
@@ -738,6 +799,9 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
                       (isInvertedPairOverlap && isInActiveSpan)
                   );
 
+                  const cellHardBlockReason = getHardBlockReason(cellYmd);
+                  const isHardBlockedCell = Boolean(cellHardBlockReason);
+
                   const isOutsideAnnouncementBounds = Boolean(
                     (cleanAnnStartYmd && cellYmd < cleanAnnStartYmd) ||
                       (cleanAnnEndYmd && cellYmd > cleanAnnEndYmd)
@@ -750,6 +814,9 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
                   );
 
                   const cellTooltipParts: string[] = [];
+                  if (cellHardBlockReason) {
+                    cellTooltipParts.push(cellHardBlockReason);
+                  }
                   if (isAnnouncementStartBoundary) {
                     cellTooltipParts.push(
                       `Announcement Start (${formatYmdToDisplay(cleanAnnStartYmd)})`
@@ -805,21 +872,28 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
                     <button
                       key={cellYmd}
                       type="button"
-                      onMouseEnter={() => setHoveredYmd(cellYmd)}
+                      onMouseEnter={() => {
+                        if (!isHardBlockedCell) {
+                          setHoveredYmd(cellYmd);
+                        }
+                      }}
                       onClick={() => handleSelectCell(cell)}
                       title={cellTooltipParts.length > 0 ? cellTooltipParts.join(' • ') : undefined}
                       className={cn(
-                        'h-6 text-xs tabular-nums flex items-center justify-center cursor-pointer transition-colors relative overflow-visible',
+                        'h-6 text-xs tabular-nums flex items-center justify-center transition-colors relative overflow-visible',
+                        isHardBlockedCell ? 'cursor-not-allowed' : 'cursor-pointer',
                         !hasAnyBlob && 'rounded',
-                        isOutsideAnnouncementBounds && !hasAnyBlob
-                          ? 'bg-slate-100/80 text-slate-400 font-normal opacity-55 hover:bg-slate-200/70'
-                          : cell.isOutsideMonth && !hasAnyBlob
-                            ? 'text-slate-400 font-normal hover:bg-slate-100'
-                            : !hasAnyBlob && isToday
-                              ? 'bg-blue-50 text-blue-700 border border-blue-300 font-black hover:bg-blue-100'
-                              : !hasAnyBlob && !isToday
-                                ? 'text-slate-700 font-normal hover:bg-slate-100'
-                                : ''
+                        isHardBlockedCell && !hasAnyBlob
+                          ? 'bg-red-50/75 text-red-400 line-through font-normal hover:bg-red-100/75'
+                          : isOutsideAnnouncementBounds && !hasAnyBlob
+                            ? 'bg-slate-100/80 text-slate-400 font-normal opacity-55 hover:bg-slate-200/70'
+                            : cell.isOutsideMonth && !hasAnyBlob
+                              ? 'text-slate-400 font-normal hover:bg-slate-100'
+                              : !hasAnyBlob && isToday
+                                ? 'bg-blue-50 text-blue-700 border border-blue-300 font-black hover:bg-blue-100'
+                                : !hasAnyBlob && !isToday
+                                  ? 'text-slate-700 font-normal hover:bg-slate-100'
+                                  : ''
                       )}
                     >
                       {/* Vertical Spacer Indicator on Left Edge for Announcement Start Date */}
@@ -884,19 +958,21 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
                       <span
                         className={cn(
                           'relative z-[4]',
-                          isOverlapCell
-                            ? isBoldEndpointOrAnchor
-                              ? 'text-red-950 font-black'
-                              : 'text-red-800 font-normal'
-                            : isBoldEndpointOrAnchor
-                              ? 'text-slate-950 font-black'
-                              : isOutsideAnnouncementBounds || cell.isOutsideMonth
-                                ? 'text-slate-400 font-normal'
-                                : isInActiveSpan || hasConjoinedSplitSpan
-                                  ? 'text-sky-900 font-normal'
-                                  : matchingOtherGates.length > 0
-                                    ? 'text-slate-700 font-normal'
-                                    : ''
+                          isHardBlockedCell
+                            ? 'text-red-400 line-through font-normal'
+                            : isOverlapCell
+                              ? isBoldEndpointOrAnchor
+                                ? 'text-red-950 font-black'
+                                : 'text-red-800 font-normal'
+                              : isBoldEndpointOrAnchor
+                                ? 'text-slate-950 font-black'
+                                : isOutsideAnnouncementBounds || cell.isOutsideMonth
+                                  ? 'text-slate-400 font-normal'
+                                  : isInActiveSpan || hasConjoinedSplitSpan
+                                    ? 'text-sky-900 font-normal'
+                                    : matchingOtherGates.length > 0
+                                      ? 'text-slate-700 font-normal'
+                                      : ''
                         )}
                       >
                         {cell.day}
@@ -906,6 +982,48 @@ export const CalendarDateInput: React.FC<CalendarDateInputProps> = ({
                 })}
               </div>
             </div>
+
+            {/* Upfront Notice Strip: Hard-blocked impossible date OR grace-allowed temporary conflict warning */}
+            {(() => {
+              let upfrontNotice: { text: string; isHard: boolean } | null = null;
+              if (blockedNotice) {
+                upfrontNotice = { text: blockedNotice, isHard: true };
+              } else if (pendingConfirmYmd !== null) {
+                if (pendingConfirmYmd === '' && role === 'start') {
+                  upfrontNotice = {
+                    text: 'Start date is required — save will be blocked until set.',
+                    isHard: false,
+                  };
+                } else if (isInvertedPairOverlap) {
+                  upfrontNotice = {
+                    text: 'Start is after End — save will be blocked until fixed.',
+                    isHard: false,
+                  };
+                } else if (
+                  !isParentAnnouncementPicker &&
+                  activeSpanStartIso &&
+                  activeSpanEndIso &&
+                  otherGateSpans.some(
+                    g =>
+                      activeSpanStartIso < g.resolvedEndIso &&
+                      g.resolvedStartIso < activeSpanEndIso &&
+                      !isContiguousMidnightTransition(activeSpanEndIso, g.resolvedStartIso) &&
+                      !isContiguousMidnightTransition(g.resolvedEndIso, activeSpanStartIso)
+                  )
+                ) {
+                  upfrontNotice = {
+                    text: 'Overlaps another gate — save will be blocked until resolved.',
+                    isHard: false,
+                  };
+                }
+              }
+              if (!upfrontNotice) return null;
+              return (
+                <div className="mt-2 px-2 py-1 rounded border border-red-200 bg-red-50 text-[10px] font-bold text-red-800 leading-snug">
+                  {upfrontNotice.text}
+                </div>
+              );
+            })()}
 
             {/* Footer Area: Shows START:/END: Date + OK/Cancel when a selection is pending; Cancel undoes selection and reveals Clear, Today, Cancel */}
             <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between gap-1 min-h-[28px]">

@@ -7,10 +7,13 @@ import {
   Copy,
   Check,
   Loader2,
+  Info,
+  AlertTriangle,
 } from 'lucide-react';
-import { Announcement, Show, TimeGatedMp3 } from '../types';
+import { AdminMessage, Announcement, Show, TimeGatedMp3 } from '../types';
 import { cn } from '../lib/utils';
 import { getStorageApiHeaders } from '../lib/driveService';
+import { formatShowMessagesForExportPlan } from '../lib/adminMessages';
 import {
   stripFormattingMarkers,
   renderFormattedTxtContent,
@@ -79,6 +82,7 @@ interface PrerecordExportPopupProps {
   breakItems: PrerecordExportBreakItem[];
   playlistSequence?: PrerecordExportTrackEntry[];
   exportItems?: PrerecordExportSequenceItem[];
+  showMessages?: AdminMessage[];
   hasUnloggedBreaks: boolean;
   isExporting: boolean;
   isLoggingExports?: boolean;
@@ -95,6 +99,7 @@ export default function PrerecordExportPopup({
   breakItems,
   playlistSequence,
   exportItems,
+  showMessages = [],
   hasUnloggedBreaks,
   isExporting,
   isLoggingExports = false,
@@ -159,7 +164,11 @@ export default function PrerecordExportPopup({
   const subheaderLabel = `${showTitle} · ${format(timeframeStart, 'EEE, MMM dd')} (${format(timeframeStart, 'h:mm a')}–${format(timeframeEnd, 'h:mm a')})`;
 
   const planCopyText = useMemo(() => {
-    const header = `${showTitle} — Broadcast Plan\n${format(timeframeStart, 'EEE, MMM dd, yyyy')} · ${format(timeframeStart, 'h:mm a')} – ${format(timeframeEnd, 'h:mm a')}\n${'-'.repeat(44)}`;
+    const messagesPrefix =
+      showMessages && showMessages.length > 0
+        ? formatShowMessagesForExportPlan(showMessages)
+        : '';
+    const header = `${messagesPrefix}${showTitle} — Broadcast Plan\n${format(timeframeStart, 'EEE, MMM dd, yyyy')} · ${format(timeframeStart, 'h:mm a')} – ${format(timeframeEnd, 'h:mm a')}\n${'-'.repeat(44)}`;
     if (exportItems && exportItems.length > 0) {
       const lines = exportItems.map((item) => {
         if (item.isEvergreen) {
@@ -204,7 +213,7 @@ export default function PrerecordExportPopup({
       return `${String(idx + 1).padStart(2, '0')}. ${format(b.slot, 'h:mm a')} [${tag}] ${b.announcement.name} (${b.durationLabel})`;
     });
     return `${header}\n${lines.join('\n')}`;
-  }, [showTitle, timeframeStart, timeframeEnd, breakItems, playlistSequence, exportItems]);
+  }, [showTitle, timeframeStart, timeframeEnd, breakItems, playlistSequence, exportItems, showMessages]);
 
   const m3uEntries = useMemo(() => {
     const entries: { extinfSeconds: number; extinfTitle: string; filename: string }[] = [];
@@ -573,6 +582,41 @@ export default function PrerecordExportPopup({
           <div className="p-1.5 overflow-y-auto flex-1 min-h-0 text-left">
             {previewMode === 'plan' && (
               <div className="space-y-1 font-mono text-[10px] text-slate-700 leading-snug">
+                {showMessages && showMessages.length > 0 && (
+                  <div className="space-y-1">
+                    {showMessages.map((msg) => {
+                      const isAlert = msg.severity === 'alert';
+                      return (
+                        <div
+                          key={`export-msg-${msg.id}`}
+                          className={cn(
+                            'p-1.5 rounded border-l-4 border font-sans space-y-0.5',
+                            isAlert
+                              ? 'bg-amber-50 border-amber-300 border-l-amber-600 text-amber-950'
+                              : 'bg-teal-50 border-teal-300 border-l-teal-700 text-teal-950'
+                          )}
+                        >
+                          <div className="flex items-center gap-1 text-xs font-black uppercase tracking-tight text-red-700">
+                            {isAlert ? (
+                              <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                            ) : (
+                              <Info className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                            )}
+                            <span>OFF-AIR SHOW MESSAGE — DO NOT READ ON AIR</span>
+                          </div>
+                          <div className="text-xs font-black text-slate-900 break-words">
+                            {msg.title}
+                          </div>
+                          {msg.body && (
+                            <div className="text-xs text-slate-700 whitespace-pre-wrap break-words leading-snug">
+                              {stripFormattingMarkers(msg.body).trim()}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="p-1.5 rounded bg-slate-50 border border-slate-200 font-sans">
                   <div className="font-black text-slate-900 text-[10px] uppercase">
                     {showTitle} — Broadcast Plan

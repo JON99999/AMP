@@ -9,6 +9,7 @@ import {
   setCurrentSettings,
   DEFAULT_SERVER_SETTINGS,
   SETTINGS_FILE,
+  serializeSettingsForDisk,
   BASE_DIR,
   IS_PORTABLE,
   _appDirname,
@@ -21,7 +22,8 @@ import {
   getAmpMediaAnnouncementsDir,
   getAmpMediaEvergreensDir,
   getAmpMediaShowsDir,
-  atomicWriteFileSync
+  atomicWriteFileSync,
+  isPathWithinConfiguredStationDirs
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -61,7 +63,7 @@ export function registerSettingsRoutes(app: express.Express): void {
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WIPE Sign-In Success</title>
+  <title>AMP Sign-In Success</title>
   <style>
     body {
       background-color: #0f172a; /* Slate 900 */
@@ -184,7 +186,7 @@ export function registerSettingsRoutes(app: express.Express): void {
 </head>
 <body>
   <div class="card">
-    <div class="title">WIPE OAuth</div>
+    <div class="title">AMP OAuth</div>
     <div id="loader-container" style="margin: 16px 0;">
       <div id="loader" class="loader"></div>
     </div>
@@ -197,7 +199,7 @@ export function registerSettingsRoutes(app: express.Express): void {
       <button id="btn-copy" class="btn-copy">Copy to Clipboard</button>
     </div>
 
-    <div class="brand">WIPE</div>
+    <div class="brand">AMP</div>
   </div>
 
   <script>
@@ -212,7 +214,7 @@ export function registerSettingsRoutes(app: express.Express): void {
         const st = document.getElementById('status');
         st.innerText = 'MANUAL TOKEN GENERATED';
         st.className = 'status-text status-success';
-        document.getElementById('message').innerText = 'Please copy the secure access token below and paste it into the WIPE Option: Copy-Paste input field.';
+        document.getElementById('message').innerText = 'Please copy the secure access token below and paste it into the AMP Option: Copy-Paste input field.';
         
         document.getElementById('token-section').style.display = 'block';
         document.getElementById('token-textarea').value = accessToken;
@@ -333,7 +335,7 @@ export function registerSettingsRoutes(app: express.Express): void {
   app.post('/api/settings', (req, res) => {
     try {
       const updated = setCurrentSettings({ ...currentSettings, ...req.body });
-      atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(updated, null, 2));
+      atomicWriteFileSync(SETTINGS_FILE, serializeSettingsForDisk(updated));
       res.json({ success: true, settings: updated });
     } catch (e: any) {
       console.error('Failed to write settings:', e);
@@ -407,7 +409,7 @@ export function registerSettingsRoutes(app: express.Express): void {
           driveFolderShows: currentSettings.driveFolderShows || '',
           googleAuth: currentSettings.googleAuth || null,
         });
-        atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(retained, null, 2));
+        atomicWriteFileSync(SETTINGS_FILE, serializeSettingsForDisk(retained));
         return res.json({ success: true, settings: retained, preservedFolders: true });
       } else {
         // Full factory reset
@@ -449,7 +451,6 @@ export function registerSettingsRoutes(app: express.Express): void {
           userProfile: req.body?.userProfile !== undefined ? req.body.userProfile : existing.userProfile || null,
         };
       }
-      atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2));
       res.json({ success: true, googleAuth: currentSettings.googleAuth });
     } catch (e: any) {
       console.error('Failed to save auth session:', e);
@@ -552,7 +553,6 @@ export function registerSettingsRoutes(app: express.Express): void {
         refreshToken: refreshToken || currentSettings.googleAuth?.refreshToken || null,
         expiresAt
       };
-      atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2));
 
       return res.json({
         success: true,
@@ -639,7 +639,6 @@ export function registerSettingsRoutes(app: express.Express): void {
         refreshToken,
         expiresAt
       };
-      atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2));
 
       return res.json({
         success: true,
@@ -1063,20 +1062,24 @@ export function registerSettingsRoutes(app: express.Express): void {
   app.post('/api/write-file', (req, res) => {
     try {
       const { filePath, content, isBinary } = req.body;
-      if (!filePath) {
+      if (!filePath || typeof filePath !== 'string' || !filePath.trim()) {
         return res.status(400).json({ error: 'filePath is required' });
       }
+      if (!isPathWithinConfiguredStationDirs(filePath)) {
+        return res.status(403).json({ error: 'Target path is outside configured AMP station directories' });
+      }
 
-      const parentDir = path.dirname(filePath);
+      const resolvedPath = path.resolve(filePath);
+      const parentDir = path.dirname(resolvedPath);
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
 
       if (isBinary) {
         const buffer = Buffer.from(content, 'base64');
-        fs.writeFileSync(filePath, buffer);
+        fs.writeFileSync(resolvedPath, buffer);
       } else {
-        fs.writeFileSync(filePath, content, 'utf8');
+        fs.writeFileSync(resolvedPath, content, 'utf8');
       }
 
       res.json({ success: true });

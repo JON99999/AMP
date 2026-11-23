@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2, AlertCircle, RefreshCw, Calendar, User, FileText, Clock } from 'lucide-react';
+import { Trash2, AlertCircle, RefreshCw, Calendar, User, FileText, Clock, Speech, Plus } from 'lucide-react';
 import { Show, Announcement } from '../types';
 import { cn, formatTime12 } from '../lib/utils';
 import { AnnouncementConflict, ShowConflict } from './CalendarTab';
@@ -334,12 +334,18 @@ interface ShowDetailsModalProps {
   show: Show | null;
   onClose: () => void;
   onEditShow: (show: Show) => void;
+  onMessageShow?: (show: Show) => void;
+  onViewMessagesForShow?: (show: Show) => void;
+  activeMessagesCount?: number;
 }
 
 export function ShowDetailsModal({
   show,
   onClose,
   onEditShow,
+  onMessageShow,
+  onViewMessagesForShow,
+  activeMessagesCount = 0,
 }: ShowDetailsModalProps) {
   if (!show) return null;
 
@@ -429,6 +435,37 @@ export function ShowDetailsModal({
           >
             Close
           </button>
+          {onViewMessagesForShow && (
+            <button
+              type="button"
+              onClick={() => {
+                const s = show;
+                onClose();
+                onViewMessagesForShow(s);
+              }}
+              className="px-3 py-1.5 rounded border border-teal-400 bg-white hover:bg-teal-50 text-teal-800 text-xs font-black uppercase tracking-tighter flex items-center gap-1 cursor-pointer"
+              title={`View current & historical messages for ${show.name}`}
+            >
+              <Speech className="w-3.5 h-3.5" />
+              <span>Msgs ({activeMessagesCount})</span>
+            </button>
+          )}
+          {onMessageShow && (
+            <button
+              type="button"
+              onClick={() => {
+                const s = show;
+                onClose();
+                onMessageShow(s);
+              }}
+              className="px-3 py-1.5 rounded bg-teal-700 hover:bg-teal-800 text-white text-xs font-black uppercase tracking-tighter flex items-center gap-1 cursor-pointer"
+              title={`Add off-air message for ${show.name}`}
+            >
+              <Plus className="w-3 h-3 stroke-[3]" />
+              <Speech className="w-3.5 h-3.5" />
+              <span>Add Msg</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {

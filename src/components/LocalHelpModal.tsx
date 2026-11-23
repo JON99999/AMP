@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
   HelpCircle,
@@ -18,6 +18,9 @@ import {
   Loader2,
   Clock,
   Lock,
+  Type,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import {
   STATION_TIMEZONE_OPTIONS,
@@ -36,13 +39,25 @@ import {
   formatLookaroundHhMm,
   parseLookaroundHhMm,
   getLiveReadWpm,
+  LiveReadFontFamily,
+  DEFAULT_LIVE_READ_FONT_SIZE,
+  DEFAULT_LIVE_READ_FONT_FAMILY,
+  LIVE_READ_FONT_FAMILY_OPTIONS,
+  getDefaultLiveReadFontSize,
+  getDefaultLiveReadFontFamily,
+  getLiveReadFontFamilyOption,
+  getLiveReadFontFamilyCss,
 } from '../lib/compatibility';
 import { clearAudioCache } from '../lib/driveService';
+import { Show } from '../types';
+import { MachinePersonaSection } from './MachinePersonaSection';
+import { BackupRecoverySection, BackupTargetKey } from './BackupRecoverySection';
 
 interface LocalHelpModalProps {
   isOpen: boolean;
   onClose: () => void;
   isAdmin?: boolean;
+  shows?: Show[];
   stationTimezone?: string;
   onSaveStationTimezone?: (newTimezone: string) => Promise<boolean | void> | void;
   adminContactInfo?: string;
@@ -51,12 +66,16 @@ interface LocalHelpModalProps {
   onSaveUpNextPromoConfig?: (newConfig: UpNextPromoSettings) => Promise<boolean | void> | void;
   scheduleWindowConfig?: ScheduleWindowConfig;
   onSaveScheduleWindowConfig?: (newConfig: ScheduleWindowConfig) => Promise<boolean | void> | void;
+  autoOpenBackupTarget?: BackupTargetKey | null;
+  onClearAutoOpenBackupTarget?: () => void;
+  onBackupRestored?: () => Promise<void> | void;
 }
 
 export default function LocalHelpModal({
   isOpen,
   onClose,
   isAdmin = false,
+  shows = [],
   stationTimezone,
   onSaveStationTimezone,
   adminContactInfo,
@@ -65,6 +84,9 @@ export default function LocalHelpModal({
   onSaveUpNextPromoConfig,
   scheduleWindowConfig,
   onSaveScheduleWindowConfig,
+  autoOpenBackupTarget = null,
+  onClearAutoOpenBackupTarget,
+  onBackupRestored,
 }: LocalHelpModalProps) {
   const [confirmAction, setConfirmAction] = useState<'keep_folders' | 'full' | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -114,6 +136,39 @@ export default function LocalHelpModal({
   const [isSavingWpm, setIsSavingWpm] = useState(false);
   const [wpmStatusMessage, setWpmStatusMessage] = useState<string | null>(null);
 
+  const [fontEditStage, setFontEditStage] = useState<'locked' | 'editing'>('locked');
+  const [draftLiveReadFontSize, setDraftLiveReadFontSize] = useState<number>(() =>
+    getDefaultLiveReadFontSize(scheduleWindowConfig || getScheduleWindowConfig())
+  );
+  const [draftLiveReadFontSizeText, setDraftLiveReadFontSizeText] = useState<string>(() =>
+    String(getDefaultLiveReadFontSize(scheduleWindowConfig || getScheduleWindowConfig()))
+  );
+  const [draftLiveReadFontFamily, setDraftLiveReadFontFamily] = useState<LiveReadFontFamily>(() =>
+    getDefaultLiveReadFontFamily(scheduleWindowConfig || getScheduleWindowConfig())
+  );
+  const [isSavingFont, setIsSavingFont] = useState(false);
+  const [fontStatusMessage, setFontStatusMessage] = useState<string | null>(null);
+  const fontSampleRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !isAdmin || !autoOpenBackupTarget) return;
+    const timer = window.setTimeout(() => {
+      const el = document.getElementById('backup-recovery');
+      if (el) {
+        el.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, isAdmin, autoOpenBackupTarget]);
+
+  useEffect(() => {
+    if (fontEditStage === 'editing') {
+      requestAnimationFrame(() => {
+        fontSampleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+    }
+  }, [fontEditStage]);
+
   if (!isOpen) return null;
 
   const activeTz = stationTimezone || getStationTimezone();
@@ -123,6 +178,12 @@ export default function LocalHelpModal({
   const activeUpNext = upNextPromoConfig || getUpNextPromoConfig();
   const activeScheduleWindow = scheduleWindowConfig || getScheduleWindowConfig();
   const activeLiveReadWpm = getLiveReadWpm(activeScheduleWindow);
+  const activeLiveReadFontSize = getDefaultLiveReadFontSize(activeScheduleWindow);
+  const activeLiveReadFontFamily = getDefaultLiveReadFontFamily(activeScheduleWindow);
+  const activeLiveReadFontOption = getLiveReadFontFamilyOption(activeLiveReadFontFamily);
+  const previewFontSize = fontEditStage === 'editing' ? draftLiveReadFontSize : activeLiveReadFontSize;
+  const previewFontFamily = fontEditStage === 'editing' ? draftLiveReadFontFamily : activeLiveReadFontFamily;
+  const previewFontOption = getLiveReadFontFamilyOption(previewFontFamily);
 
   const handleExecuteReset = async (keepFolders: boolean) => {
     setIsProcessing(true);
@@ -426,8 +487,11 @@ export default function LocalHelpModal({
               <span>System Maintenance &amp; Reset</span>
             </h3>
             <p className="text-slate-600">
-              Manage station-wide broadcast timezone settings, restore default interface configurations, or perform a clean-slate reset:
+              Manage this computer&apos;s logging persona, station-wide broadcast settings, or perform a clean-slate reset:
             </p>
+
+            {/* This Computer (Logging Persona) — Editable by All Users */}
+            <MachinePersonaSection shows={shows} />
 
             {/* Station Timezone Maintenance Card (Admin Only) */}
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-left space-y-3">
@@ -1183,6 +1247,243 @@ export default function LocalHelpModal({
               )}
             </div>
 
+            {/* Default Live Read Font & Size (#110) */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-left">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Type className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span className="text-xs font-black uppercase tracking-wider text-slate-900">
+                    Default Live Read Font &amp; Size
+                  </span>
+                </div>
+                <span className="px-2 py-0.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800">
+                  {activeLiveReadFontSize}px &middot; {activeLiveReadFontOption.shortLabel}
+                </span>
+              </div>
+
+              {fontStatusMessage && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{fontStatusMessage}</span>
+                </div>
+              )}
+
+              {!isAdmin ? (
+                <div className="p-2.5 bg-white border border-slate-200 rounded-lg flex items-center gap-2 text-xs text-slate-600">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>
+                    Default Live Read Font &amp; Size is read-only in Live / Non-Admin mode (currently{' '}
+                    <strong className="text-slate-900">
+                      {activeLiveReadFontSize}px &middot; {activeLiveReadFontOption.label}
+                    </strong>
+                    ; station default is <code className="font-mono font-bold">20px</code> &middot;{' '}
+                    <code className="font-mono font-bold">Inter / System Sans</code>). Switch to{' '}
+                    <strong className="text-slate-800">Admin Mode</strong> to edit default Live Read typography.
+                  </span>
+                </div>
+              ) : fontEditStage === 'locked' ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-lg">
+                  <div className="space-y-0.5 min-w-0">
+                    <span className="text-xs text-slate-600 leading-relaxed block">
+                      Sets the initial script font size and built-in typeface when opening the Live Read reader window. DJs can still zoom in or out per read (<code className="font-mono font-bold">14px</code>&ndash;<code className="font-mono font-bold">40px</code>) or click the pixel badge to reset.
+                    </span>
+                    <span className="text-[11px] text-slate-500 block">
+                      Default: <code className="font-mono font-bold">{DEFAULT_LIVE_READ_FONT_SIZE}px</code> &middot;{' '}
+                      <code className="font-mono font-bold">Inter / System Sans (Default)</code>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftLiveReadFontSize(activeLiveReadFontSize);
+                      setDraftLiveReadFontSizeText(String(activeLiveReadFontSize));
+                      setDraftLiveReadFontFamily(activeLiveReadFontFamily);
+                      setFontStatusMessage(null);
+                      setFontEditStage('editing');
+                    }}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+                  >
+                    Edit Font &amp; Size...
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3.5 bg-white border border-purple-200 rounded-lg space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                        Built-In Font Family
+                      </label>
+                      <select
+                        value={draftLiveReadFontFamily}
+                        onChange={(e) => setDraftLiveReadFontFamily(e.target.value as LiveReadFontFamily)}
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer"
+                      >
+                        {LIVE_READ_FONT_FAMILY_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-slate-500">
+                        Default: <code className="font-mono font-bold">Inter / System Sans (Default)</code>
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                        Default Font Size (14px&ndash;40px)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <div className="inline-flex items-center rounded-lg border border-slate-300 bg-slate-50 overflow-hidden">
+                          <button
+                            type="button"
+                            disabled={draftLiveReadFontSize <= 14}
+                            onClick={() => {
+                              const next = Math.max(14, draftLiveReadFontSize - 2);
+                              setDraftLiveReadFontSize(next);
+                              setDraftLiveReadFontSizeText(String(next));
+                            }}
+                            className="p-1.5 hover:bg-slate-200 text-slate-700 disabled:opacity-30 cursor-pointer transition-colors"
+                            title="Decrease font size by 2px"
+                          >
+                            <ZoomOut className="w-3.5 h-3.5" />
+                          </button>
+                          <input
+                            type="number"
+                            min={14}
+                            max={40}
+                            value={draftLiveReadFontSizeText}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setDraftLiveReadFontSizeText(raw);
+                              const val = parseInt(raw, 10);
+                              if (!isNaN(val)) {
+                                setDraftLiveReadFontSize(Math.max(14, Math.min(40, val)));
+                              }
+                            }}
+                            onBlur={() => {
+                              const parsed = parseInt(draftLiveReadFontSizeText, 10);
+                              const clamped = isNaN(parsed)
+                                ? DEFAULT_LIVE_READ_FONT_SIZE
+                                : Math.max(14, Math.min(40, Math.round(parsed)));
+                              setDraftLiveReadFontSize(clamped);
+                              setDraftLiveReadFontSizeText(String(clamped));
+                            }}
+                            className="w-16 px-1.5 py-1 bg-white border-x border-slate-300 text-xs font-mono font-bold text-slate-900 text-center outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={draftLiveReadFontSize >= 40}
+                            onClick={() => {
+                              const next = Math.min(40, draftLiveReadFontSize + 2);
+                              setDraftLiveReadFontSize(next);
+                              setDraftLiveReadFontSizeText(String(next));
+                            }}
+                            className="p-1.5 hover:bg-slate-200 text-slate-700 disabled:opacity-30 cursor-pointer transition-colors"
+                            title="Increase font size by 2px"
+                          >
+                            <ZoomIn className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <span className="text-xs font-mono font-bold text-slate-600">px</span>
+                        {(draftLiveReadFontSize !== DEFAULT_LIVE_READ_FONT_SIZE ||
+                          draftLiveReadFontFamily !== DEFAULT_LIVE_READ_FONT_FAMILY) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDraftLiveReadFontSize(DEFAULT_LIVE_READ_FONT_SIZE);
+                              setDraftLiveReadFontSizeText(String(DEFAULT_LIVE_READ_FONT_SIZE));
+                              setDraftLiveReadFontFamily(DEFAULT_LIVE_READ_FONT_FAMILY);
+                            }}
+                            className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded text-[11px] font-bold cursor-pointer transition-colors"
+                            title="Reset to 20px Inter / System Sans"
+                          >
+                            Reset Default
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Default: <code className="font-mono font-bold">{DEFAULT_LIVE_READ_FONT_SIZE}px</code> (range{' '}
+                        <code className="font-mono font-bold">14px</code>&ndash;<code className="font-mono font-bold">40px</code>)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isSavingFont}
+                      onClick={() => setFontEditStage('locked')}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingFont}
+                      onClick={async () => {
+                        setIsSavingFont(true);
+                        try {
+                          const parsed = parseInt(draftLiveReadFontSizeText, 10);
+                          const clampedSize = isNaN(parsed)
+                            ? Math.max(14, Math.min(40, Math.round(draftLiveReadFontSize || DEFAULT_LIVE_READ_FONT_SIZE)))
+                            : Math.max(14, Math.min(40, Math.round(parsed)));
+                          setDraftLiveReadFontSize(clampedSize);
+                          setDraftLiveReadFontSizeText(String(clampedSize));
+                          const updated = setScheduleWindowConfig({
+                            defaultLiveReadFontSize: clampedSize,
+                            defaultLiveReadFontFamily: draftLiveReadFontFamily,
+                          });
+                          if (onSaveScheduleWindowConfig) {
+                            await onSaveScheduleWindowConfig(updated);
+                          }
+                          setFontEditStage('locked');
+                          const savedFontOpt = getLiveReadFontFamilyOption(updated.defaultLiveReadFontFamily);
+                          setFontStatusMessage(
+                            `Default Live Read typography saved (${updated.defaultLiveReadFontSize}px · ${savedFontOpt.shortLabel}).`
+                          );
+                        } finally {
+                          setIsSavingFont(false);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {isSavingFont ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <span>Save Font &amp; Size</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Live Read Text Sample Preview */}
+              <div ref={fontSampleRef} className="p-3 bg-white border border-slate-200 rounded-lg space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-1.5">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">
+                    Live Read Text Sample ({previewFontSize}px &middot; {previewFontOption.shortLabel})
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    Default: {DEFAULT_LIVE_READ_FONT_SIZE}px &middot; Inter / System Sans
+                  </span>
+                </div>
+                <div
+                  className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 shadow-inner leading-relaxed select-text"
+                  style={{
+                    fontSize: `${previewFontSize}px`,
+                    fontFamily: getLiveReadFontFamilyCss(previewFontFamily),
+                    lineHeight: 1.6,
+                  }}
+                >
+                  You are listening to <strong className="font-black text-slate-900">Community Radio</strong> <strong className="font-black italic text-slate-900">(RAY-dee-oh)</strong>. Coming up at the top of the hour, join <em className="italic text-slate-700">Host 1</em> for <u className="underline decoration-2 underline-offset-4">local arts and community updates</u>.
+                </div>
+              </div>
+            </div>
+
             {/* In-Modal Confirmation Panel */}
             {confirmAction && (
               <div
@@ -1343,6 +1644,15 @@ export default function LocalHelpModal({
                   Open Diagnostic Console
                 </button>
               </div>
+            )}
+
+            {/* Buried Admin Backup Recovery (Placed below Reset Preferences & Full Factory Reset) */}
+            {isAdmin && (
+              <BackupRecoverySection
+                autoOpenTarget={autoOpenBackupTarget}
+                onAutoOpenHandled={onClearAutoOpenBackupTarget}
+                onBackupRestored={onBackupRestored}
+              />
             )}
           </div>
 

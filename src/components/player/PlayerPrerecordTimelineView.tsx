@@ -1,10 +1,12 @@
 import React from 'react';
 import { format, isSameMinute } from 'date-fns';
 import { Clock, CassetteTape } from 'lucide-react';
-import { Announcement, LogEntry, Show } from '../../types';
+import { AdminMessage, Announcement, LogEntry, Show } from '../../types';
 import { isTimeInShow, getSortedShows, getShowShade } from '../../lib/utils';
 import { isLogForStationSlot } from '../../lib/compatibility';
+import { getAdminMessagesForShowOccurrence } from '../../lib/adminMessages';
 import { PrerecordAnnouncementCard } from './PlayerAnnouncementCard';
+import { PlayerAdminMessageCard } from './PlayerAdminMessageCard';
 
 interface PlayerPrerecordTimelineViewProps {
   playMode: string;
@@ -13,6 +15,7 @@ interface PlayerPrerecordTimelineViewProps {
   effectiveShow: Show | null;
   logs: LogEntry[];
   now: Date;
+  prerecordDate?: Date | null;
   playingStates: Record<string, { currentTime: number; duration: number }>;
   isAudioPlaying: (key: string) => boolean;
   resolvedAdminContact: string;
@@ -23,6 +26,14 @@ interface PlayerPrerecordTimelineViewProps {
   scrollToNow: () => void;
   onPlay: (s: Announcement, slot: Date) => void;
   onOpenHelpPopup: (card: { name: string; timeLabel: string; errorLabel: string }) => void;
+  adminMessages?: AdminMessage[];
+  onOpenAdminMessage?: (
+    message: AdminMessage,
+    show: Show | null,
+    acknowledged: boolean,
+    acknowledgedAt?: string,
+    airDate?: Date
+  ) => void;
 }
 
 export function PlayerPrerecordTimelineView({
@@ -32,6 +43,7 @@ export function PlayerPrerecordTimelineView({
   effectiveShow,
   logs,
   now,
+  prerecordDate = null,
   playingStates,
   isAudioPlaying,
   resolvedAdminContact,
@@ -42,6 +54,8 @@ export function PlayerPrerecordTimelineView({
   scrollToNow,
   onPlay,
   onOpenHelpPopup,
+  adminMessages = [],
+  onOpenAdminMessage,
 }: PlayerPrerecordTimelineViewProps) {
   const sortedShows = getSortedShows(shows);
   const daysOrder = [
@@ -57,6 +71,43 @@ export function PlayerPrerecordTimelineView({
   if (playMode === 'Prerecord') {
     const pastElements: React.ReactNode[] = [];
     const nextElements: React.ReactNode[] = [];
+
+    const prerecordTargetDate = prerecordDate || timeline[0] || now;
+    const prerecordDefaultShade = effectiveShow
+      ? getShowShade(effectiveShow, sortedShows)
+      : {
+          bg: 'var(--show-shade-none-bg, #f1f5f9)',
+          border: 'var(--show-shade-none-border, #cbd5e1)',
+        };
+
+    const prerecordShowMessages = getAdminMessagesForShowOccurrence(
+      adminMessages,
+      effectiveShow,
+      prerecordTargetDate,
+      logs
+    );
+
+    prerecordShowMessages.forEach((item) => {
+      const cardNode = (
+        <PlayerAdminMessageCard
+          key={`prerecord-msg-${item.message.id}`}
+          message={item.message}
+          show={effectiveShow}
+          acknowledged={item.acknowledged}
+          acknowledgedAt={item.ackRecord?.acknowledgedAt}
+          zone={item.acknowledged ? 'past' : 'prerecord'}
+          shadeBg={prerecordDefaultShade.bg}
+          onOpen={(msg, sh, ack, ackAt) =>
+            onOpenAdminMessage?.(msg, sh, ack, ackAt, prerecordTargetDate)
+          }
+        />
+      );
+      if (item.acknowledged) {
+        pastElements.push(cardNode);
+      } else {
+        nextElements.push(cardNode);
+      }
+    });
 
     timeline.forEach((slot, index) => {
       const sForSlot = getAnnouncementsForSlot(slot);
@@ -124,6 +175,29 @@ export function PlayerPrerecordTimelineView({
             </div>
           </div>
         );
+        if (!effectiveShow || show.id !== effectiveShow.id) {
+          const midShowMsgs = getAdminMessagesForShowOccurrence(
+            adminMessages,
+            show,
+            slot,
+            logs
+          ).filter((m) => !m.acknowledged);
+          midShowMsgs.forEach((item) => {
+            nextElements.push(
+              <PlayerAdminMessageCard
+                key={`prerecord-mid-msg-${show.id}-${item.message.id}`}
+                message={item.message}
+                show={show}
+                acknowledged={false}
+                zone="prerecord"
+                shadeBg={shade.bg}
+                onOpen={(msg, sh, ack, ackAt) =>
+                  onOpenAdminMessage?.(msg, sh, ack, ackAt, slot)
+                }
+              />
+            );
+          });
+        }
       });
 
       continuingShows.forEach((show) => {
@@ -188,13 +262,6 @@ export function PlayerPrerecordTimelineView({
         }
       });
     });
-
-    const prerecordDefaultShade = effectiveShow
-      ? getShowShade(effectiveShow, sortedShows)
-      : {
-          bg: 'var(--show-shade-none-bg, #f1f5f9)',
-          border: 'var(--show-shade-none-border, #cbd5e1)',
-        };
 
     return (
       <div className="py-2 px-0.5 space-y-2">

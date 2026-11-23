@@ -2010,13 +2010,19 @@ export const saveDriveAnnouncementScript = async (
 export const copyDriveAnnouncementFile = async (
   sourceFileName: string,
   targetFileName: string,
-  allowOverwrite: boolean = false
+  allowOverwrite: boolean = false,
+  sourceBucket?: 'active' | 'archived' | 'deleted'
 ): Promise<{ name: string; id: string; size: string }> => {
   const headers = await getStorageApiHeaders({ 'Content-Type': 'application/json' }, 'Drive');
   const res = await fetch('/api/live-read/copy-file', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ sourceFileName, targetFileName, allowOverwrite })
+    body: JSON.stringify({
+      sourceFileName,
+      targetFileName,
+      allowOverwrite,
+      ...(sourceBucket && sourceBucket !== 'active' ? { sourceBucket } : {})
+    })
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 409 && data.exists) {

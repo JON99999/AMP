@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, Fragment } from 'react';
 import { format, addMinutes, subMinutes, subDays, isSameMinute, isBefore, isAfter, startOfMinute, differenceInSeconds, parseISO } from 'date-fns';
 import { Play, Pause, Square, CheckCircle, AlertCircle, RefreshCw, Clock, X, Copy, RadioTower, CassetteTape, ListOrdered, Download, Ear, FileText, Volume2, ListMusic, ChevronUp, ChevronDown, RotateCcw, Music, Flag, ListPlus, HelpCircle } from 'lucide-react';
-import { Announcement, AnnouncementType, LogEntry, Show } from '../types';
+import { AdminMessage, Announcement, AnnouncementType, LogEntry, Show } from '../types';
 import { useAudioEngine } from '../hooks/useAudioEngine';
 import { cn, getMP3Status, parseCustomTimeText, getParsedCustomTimeISO, isTimeInShow, getActualShowStart, getSortedShows, getShowShade, readMp3ID3Metadata, Mp3ID3Metadata, formatDuration, formatTotalTrackTime, getActiveMp3ForSlot, getGatedAssetType, formatExportTimeAmPm, isAudioFile, isUpNextPromoUrl, decodeUpNextPromoText, getGateMediaItems, formatRotatedAnnouncementName, getAnnouncementsForSlot as getScheduledAnnouncementsForSlot } from '../lib/utils';
 import { stationSlotDateToUtcIso, isLogForStationSlot, getStationNow, getAdminContactInfo, ScheduleWindowConfig, getScheduleWindowConfig } from '../lib/compatibility';
+import { getAdminMessagesForShowOccurrence } from '../lib/adminMessages';
 import LiveReadPopout from './LiveReadPopout';
+import AdminMessageReaderModal from './AdminMessageReaderModal';
 import { WaveformVisualizer } from './WaveformVisualizer';
 import { getPlayableUrl, updateAudioCache, getAccessToken, formatShowPlaylistLogFileName, getSavedSettings, getStorageApiHeaders } from '../lib/driveService';
 import { mp3BlobCache, mp3DurationCache, availableFilesCache, driveFileNameCache } from '../lib/audioCache';
@@ -29,10 +31,19 @@ interface PlayerTabProps {
   prerecordDate?: Date | null;
   prerecordLengthMinutes?: number;
   onConfigureTimeframe?: () => void;
-  onExecuteExport?: (items?: any[], txtSummary?: string) => void;
+  onExecuteExport?: (items?: any[], txtSummary?: string, showMessages?: AdminMessage[]) => void;
   isAdmin?: boolean;
   onRefresh?: () => Promise<any> | void;
   shows?: Show[];
+  adminMessages?: AdminMessage[];
+  onAcknowledgeAdminMessage?: (
+    message: AdminMessage,
+    context?: {
+      show?: Show | null;
+      airDate?: Date;
+      playMode?: 'Live' | 'Prerecord' | 'Export' | 'Playlist';
+    }
+  ) => Promise<boolean> | void;
   onTriggerCaching?: (targetMode: 'Live' | 'Prerecord' | 'Playlist', additionalUrls?: string[]) => void;
   isFolderChooserOpen?: boolean;
   onCloseFolderChooser?: () => void;
@@ -61,6 +72,8 @@ export default function PlayerTab({
   isAdmin = false,
   onRefresh,
   shows = [],
+  adminMessages = [],
+  onAcknowledgeAdminMessage,
   onTriggerCaching,
   isFolderChooserOpen,
   onCloseFolderChooser,
@@ -76,6 +89,14 @@ export default function PlayerTab({
     name: string;
     timeLabel: string;
     errorLabel: string;
+  } | null>(null);
+  const [activeAdminMessageModal, setActiveAdminMessageModal] = useState<{
+    message: AdminMessage;
+    show: Show | null;
+    acknowledged: boolean;
+    acknowledgedAt?: string;
+    airDate: Date;
+    confirmBeforeAck?: boolean;
   } | null>(null);
   const resolvedAdminContact = (adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo()).trim() || 'No admin contact info configured yet (set in Admin Mode > Folders > Help).';
   const {
@@ -2795,6 +2816,9 @@ export default function PlayerTab({
           initialShowName={activeLiveReadOverlay.showName}
           initialHostName={activeLiveReadOverlay.hostName}
           initialShowDateTime={activeLiveReadOverlay.showDateTime}
+          initialGateId={activeLiveReadOverlay.gateId}
+          initialRotationIndex={activeLiveReadOverlay.rotationIndex}
+          initialRotationTotal={activeLiveReadOverlay.rotationTotal}
           backupMp3Url={activeLiveReadOverlay.backupMp3Url}
           playMode={playMode}
           isOverlay={true}
@@ -2919,7 +2943,10 @@ export default function PlayerTab({
         showId: activeShow?.id || '',
         showName: activeShow?.name || '',
         hostName: activeShow?.host || '',
-        showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : slotISO
+        showDateTime: showStart ? stationSlotDateToUtcIso(showStart) : slotISO,
+        gateId: activeMp3?.gateId || activeMp3?.id || '',
+        rotationIndex: activeMp3?.rotationIndex,
+        rotationTotal: activeMp3?.rotationTotal
       };
 
       if (window.electronAPI && window.electronAPI.spawnLiveRead) {
@@ -2968,6 +2995,9 @@ export default function PlayerTab({
         playMode: playMode,
         logTimeStamp: playedAt,
         assetType: 'audio',
+        ...((activeMp3?.gateId || activeMp3?.id) ? { gateId: activeMp3.gateId || activeMp3.id } : {}),
+        ...(typeof activeMp3?.rotationIndex === 'number' && activeMp3.rotationIndex > 0 ? { rotationIndex: activeMp3.rotationIndex } : {}),
+        ...(typeof activeMp3?.rotationTotal === 'number' && activeMp3.rotationTotal > 0 ? { rotationTotal: activeMp3.rotationTotal } : {}),
         ...(activeShow ? {
           showId: activeShow.id,
           showName: activeShow.name,
@@ -3012,6 +3042,9 @@ export default function PlayerTab({
         playMode: playMode,
         logTimeStamp: failedAt,
         assetType: 'audio',
+        ...((activeMp3?.gateId || activeMp3?.id) ? { gateId: activeMp3.gateId || activeMp3.id } : {}),
+        ...(typeof activeMp3?.rotationIndex === 'number' && activeMp3.rotationIndex > 0 ? { rotationIndex: activeMp3.rotationIndex } : {}),
+        ...(typeof activeMp3?.rotationTotal === 'number' && activeMp3.rotationTotal > 0 ? { rotationTotal: activeMp3.rotationTotal } : {}),
         ...(activeShow ? {
           showId: activeShow.id,
           showName: activeShow.name,
@@ -3044,6 +3077,9 @@ export default function PlayerTab({
           playMode: playMode,
           logTimeStamp: playedAt,
           assetType: 'audio',
+          ...((activeMp3?.gateId || activeMp3?.id) ? { gateId: activeMp3.gateId || activeMp3.id } : {}),
+          ...(typeof activeMp3?.rotationIndex === 'number' && activeMp3.rotationIndex > 0 ? { rotationIndex: activeMp3.rotationIndex } : {}),
+          ...(typeof activeMp3?.rotationTotal === 'number' && activeMp3.rotationTotal > 0 ? { rotationTotal: activeMp3.rotationTotal } : {}),
           ...(activeShow ? {
             showId: activeShow.id,
             showName: activeShow.name,
@@ -3415,6 +3451,9 @@ export default function PlayerTab({
           artist: item.artist,
           albumArtist: item.albumArtist,
           album: item.album,
+          ...((activeMp3ForExportLog?.gateId || activeMp3ForExportLog?.id) ? { gateId: activeMp3ForExportLog.gateId || activeMp3ForExportLog.id } : {}),
+          ...(typeof activeMp3ForExportLog?.rotationIndex === 'number' && activeMp3ForExportLog.rotationIndex > 0 ? { rotationIndex: activeMp3ForExportLog.rotationIndex } : {}),
+          ...(typeof activeMp3ForExportLog?.rotationTotal === 'number' && activeMp3ForExportLog.rotationTotal > 0 ? { rotationTotal: activeMp3ForExportLog.rotationTotal } : {}),
           ...(activeShow ? {
             showId: activeShow.id,
             showName: activeShow.name,
@@ -3772,6 +3811,17 @@ export default function PlayerTab({
                 scrollToNow={scrollToNow}
                 onPlay={handlePlay}
                 onOpenHelpPopup={setHelpPopupCard}
+                adminMessages={adminMessages}
+                onOpenAdminMessage={(message, show, acknowledged, acknowledgedAt, airDate, confirmBeforeAck) =>
+                  setActiveAdminMessageModal({
+                    message,
+                    show,
+                    acknowledged,
+                    acknowledgedAt,
+                    airDate: airDate || nowClock || now,
+                    confirmBeforeAck: Boolean(confirmBeforeAck),
+                  })
+                }
               />
             );
           }
@@ -3784,6 +3834,7 @@ export default function PlayerTab({
               effectiveShow={effectiveShow}
               logs={logs}
               now={now}
+              prerecordDate={prerecordDate}
               playingStates={playingStates}
               isAudioPlaying={isAudioPlaying}
               resolvedAdminContact={resolvedAdminContact}
@@ -3794,6 +3845,16 @@ export default function PlayerTab({
               scrollToNow={scrollToNow}
               onPlay={handlePlay}
               onOpenHelpPopup={setHelpPopupCard}
+              adminMessages={adminMessages}
+              onOpenAdminMessage={(message, show, acknowledged, acknowledgedAt, airDate) =>
+                setActiveAdminMessageModal({
+                  message,
+                  show,
+                  acknowledged,
+                  acknowledgedAt,
+                  airDate: airDate || prerecordDate || now,
+                })
+              }
             />
           );
         })()}
@@ -3810,27 +3871,37 @@ export default function PlayerTab({
       </div>
 
       {/* Combined Prerecord + Export In-Window 250px Pop-Up Overlay */}
-      {playMode === 'Prerecord' && prerecordDate && (
-        <PrerecordExportPopup
-          isOpen={Boolean(isExportPopupOpen)}
-          onClose={() => onCloseExportPopup && onCloseExportPopup()}
-          show={exportActiveShow || effectiveShow}
-          timeframeStart={prerecordDate}
-          timeframeEnd={addMinutes(prerecordDate, prerecordLengthMinutes)}
-          breakItems={prerecordExportBreakItems}
-          playlistSequence={prerecordExportPlaylistSequence}
-          exportItems={itemsToExport}
-          hasUnloggedBreaks={hasUnlogged}
-          isExporting={false}
-          isLoggingExports={isLoggingExports}
-          onExecuteExport={() => {
-            if (onExecuteExport) {
-              onExecuteExport(itemsToExport, previewText);
-            }
-          }}
-          onMarkAllAsLogged={handleLogExportAsPlayed}
-        />
-      )}
+      {playMode === 'Prerecord' && prerecordDate && (() => {
+        const prerecordExportShowMessages = getAdminMessagesForShowOccurrence(
+          adminMessages,
+          exportActiveShow || effectiveShow,
+          prerecordDate,
+          logs
+        ).map((item) => item.message);
+
+        return (
+          <PrerecordExportPopup
+            isOpen={Boolean(isExportPopupOpen)}
+            onClose={() => onCloseExportPopup && onCloseExportPopup()}
+            show={exportActiveShow || effectiveShow}
+            timeframeStart={prerecordDate}
+            timeframeEnd={addMinutes(prerecordDate, prerecordLengthMinutes)}
+            breakItems={prerecordExportBreakItems}
+            playlistSequence={prerecordExportPlaylistSequence}
+            exportItems={itemsToExport}
+            showMessages={prerecordExportShowMessages}
+            hasUnloggedBreaks={hasUnlogged}
+            isExporting={false}
+            isLoggingExports={isLoggingExports}
+            onExecuteExport={() => {
+              if (onExecuteExport) {
+                onExecuteExport(itemsToExport, previewText, prerecordExportShowMessages);
+              }
+            }}
+            onMarkAllAsLogged={handleLogExportAsPlayed}
+          />
+        );
+      })()}
 
       {helpPopupCard && (
         <div
@@ -3881,6 +3952,26 @@ export default function PlayerTab({
           </div>
         </div>
       )}
+
+      <AdminMessageReaderModal
+        isOpen={Boolean(activeAdminMessageModal)}
+        message={activeAdminMessageModal?.message || null}
+        show={activeAdminMessageModal?.show || null}
+        acknowledged={Boolean(activeAdminMessageModal?.acknowledged)}
+        acknowledgedAt={activeAdminMessageModal?.acknowledgedAt}
+        confirmBeforeAck={Boolean(activeAdminMessageModal?.confirmBeforeAck)}
+        onClose={() => setActiveAdminMessageModal(null)}
+        onAcknowledge={async (msg) => {
+          if (onAcknowledgeAdminMessage) {
+            await onAcknowledgeAdminMessage(msg, {
+              show: activeAdminMessageModal?.show || effectiveShow,
+              airDate: activeAdminMessageModal?.airDate || nowClock || now,
+              playMode,
+            });
+          }
+          setActiveAdminMessageModal(null);
+        }}
+      />
 
       {renderLiveReadOverlay()}
       {renderFolderChooserModal()}

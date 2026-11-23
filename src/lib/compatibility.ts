@@ -1,10 +1,11 @@
 /**
  * AMP Data Schema & Version Compatibility Governance Engine
  */
+import type { AdminMessage } from '../types';
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.7";
+export const CURRENT_APP_VERSION = "0.20.8";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 
@@ -90,15 +91,19 @@ export function getStationTimezone(): string {
   return _activeStationTimezone || detectSystemStationTimezone();
 }
 
+export function normalizeStationTimezone(tz?: string | null): string {
+  const candidate = (tz || '').trim() || DEFAULT_STATION_TIMEZONE;
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch (_) {
+    return DEFAULT_STATION_TIMEZONE;
+  }
+}
+
 export function setStationTimezone(tz?: string | null): string {
   const candidate = (tz || '').trim() || detectSystemStationTimezone();
-  try {
-    // Verify valid IANA timezone
-    Intl.DateTimeFormat('en-US', { timeZone: candidate });
-    _activeStationTimezone = candidate;
-  } catch (_) {
-    _activeStationTimezone = DEFAULT_STATION_TIMEZONE;
-  }
+  _activeStationTimezone = normalizeStationTimezone(candidate);
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       window.localStorage.setItem('amp_station_timezone', _activeStationTimezone);
@@ -168,6 +173,19 @@ export function getUpNextPromoConfig(): UpNextPromoSettings {
   return { ..._activeUpNextPromoConfig };
 }
 
+export function normalizeUpNextPromoConfig(cfg?: Partial<UpNextPromoSettings> | null): UpNextPromoSettings {
+  if (!cfg || typeof cfg !== 'object') {
+    return { ...DEFAULT_UP_NEXT_PROMO_CONFIG };
+  }
+  return {
+    enabled: typeof cfg.enabled === 'boolean' ? cfg.enabled : DEFAULT_UP_NEXT_PROMO_CONFIG.enabled,
+    minutesBefore:
+      typeof cfg.minutesBefore === 'number' && !isNaN(cfg.minutesBefore)
+        ? Math.max(1, Math.min(120, Math.round(cfg.minutesBefore)))
+        : DEFAULT_UP_NEXT_PROMO_CONFIG.minutesBefore
+  };
+}
+
 export function setUpNextPromoConfig(cfg?: Partial<UpNextPromoSettings> | null): UpNextPromoSettings {
   if (cfg && typeof cfg === 'object') {
     _activeUpNextPromoConfig = {
@@ -186,12 +204,90 @@ export function setUpNextPromoConfig(cfg?: Partial<UpNextPromoSettings> | null):
   return { ..._activeUpNextPromoConfig };
 }
 
+let _activeAdminMessages: AdminMessage[] = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const saved = window.localStorage.getItem('amp_admin_messages');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    }
+  } catch (_) {}
+  return [];
+})();
+
+export function getAdminMessages(): AdminMessage[] {
+  return Array.isArray(_activeAdminMessages) ? [..._activeAdminMessages] : [];
+}
+
+export function setAdminMessages(msgs?: AdminMessage[] | null): AdminMessage[] {
+  if (Array.isArray(msgs)) {
+    _activeAdminMessages = msgs.filter((m) => m && typeof m === 'object');
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('amp_admin_messages', JSON.stringify(_activeAdminMessages));
+      }
+    } catch (_) {}
+  }
+  return [..._activeAdminMessages];
+}
+
+export type LiveReadFontFamily = 'sans' | 'verdana' | 'arial' | 'serif' | 'mono';
+
+export interface LiveReadFontFamilyOption {
+  value: LiveReadFontFamily;
+  label: string;
+  shortLabel: string;
+  cssFamily: string;
+  isDefault?: boolean;
+}
+
+export const DEFAULT_LIVE_READ_FONT_SIZE = 20;
+export const DEFAULT_LIVE_READ_FONT_FAMILY: LiveReadFontFamily = 'sans';
+
+export const LIVE_READ_FONT_FAMILY_OPTIONS: LiveReadFontFamilyOption[] = [
+  {
+    value: 'sans',
+    label: 'Inter / System Sans (Default)',
+    shortLabel: 'Inter / System Sans',
+    cssFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    isDefault: true
+  },
+  {
+    value: 'verdana',
+    label: 'Verdana (Wide Broadcast Sans)',
+    shortLabel: 'Verdana',
+    cssFamily: 'Verdana, Geneva, Tahoma, sans-serif'
+  },
+  {
+    value: 'arial',
+    label: 'Arial / Helvetica',
+    shortLabel: 'Arial / Helvetica',
+    cssFamily: 'Arial, Helvetica, "Helvetica Neue", sans-serif'
+  },
+  {
+    value: 'serif',
+    label: 'Georgia / Broadcast Serif',
+    shortLabel: 'Georgia / Serif',
+    cssFamily: 'ui-serif, Georgia, Cambria, "Times New Roman", Times, serif'
+  },
+  {
+    value: 'mono',
+    label: 'Studio Monospace (Courier / Menlo / Consolas)',
+    shortLabel: 'Studio Monospace',
+    cssFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'
+  }
+];
+
 export const DEFAULT_SCHEDULE_WINDOW_CONFIG: ScheduleWindowConfig = {
   windowBeforeMinutes: 5,
   windowAfterMinutes: 5,
   showLookaroundHours: 1,
   showLookaroundMinutes: 60,
-  liveReadWpm: 150
+  liveReadWpm: 150,
+  defaultLiveReadFontSize: DEFAULT_LIVE_READ_FONT_SIZE,
+  defaultLiveReadFontFamily: DEFAULT_LIVE_READ_FONT_FAMILY
 };
 
 export function getShowLookaroundMinutes(cfg?: Partial<ScheduleWindowConfig> | null): number {
@@ -261,7 +357,16 @@ let _activeScheduleWindowConfig: ScheduleWindowConfig = (() => {
             liveReadWpm:
               typeof parsed.liveReadWpm === 'number' && !isNaN(parsed.liveReadWpm)
                 ? Math.max(50, Math.min(300, Math.round(parsed.liveReadWpm)))
-                : 150
+                : 150,
+            defaultLiveReadFontSize:
+              typeof parsed.defaultLiveReadFontSize === 'number' && !isNaN(parsed.defaultLiveReadFontSize)
+                ? Math.max(14, Math.min(40, Math.round(parsed.defaultLiveReadFontSize)))
+                : DEFAULT_LIVE_READ_FONT_SIZE,
+            defaultLiveReadFontFamily:
+              typeof parsed.defaultLiveReadFontFamily === 'string' &&
+              LIVE_READ_FONT_FAMILY_OPTIONS.some(o => o.value === parsed.defaultLiveReadFontFamily)
+                ? (parsed.defaultLiveReadFontFamily as LiveReadFontFamily)
+                : DEFAULT_LIVE_READ_FONT_FAMILY
           };
         }
       }
@@ -281,8 +386,82 @@ export function getLiveReadWpm(cfg?: Partial<ScheduleWindowConfig> | null): numb
   return Math.max(50, Math.min(300, Math.round(raw)));
 }
 
+export function getDefaultLiveReadFontSize(cfg?: Partial<ScheduleWindowConfig> | null): number {
+  const raw =
+    cfg &&
+    typeof cfg === 'object' &&
+    typeof cfg.defaultLiveReadFontSize === 'number' &&
+    !isNaN(cfg.defaultLiveReadFontSize)
+      ? cfg.defaultLiveReadFontSize
+      : typeof _activeScheduleWindowConfig?.defaultLiveReadFontSize === 'number' &&
+          !isNaN(_activeScheduleWindowConfig.defaultLiveReadFontSize)
+        ? _activeScheduleWindowConfig.defaultLiveReadFontSize
+        : DEFAULT_LIVE_READ_FONT_SIZE;
+  return Math.max(14, Math.min(40, Math.round(raw)));
+}
+
+export function getDefaultLiveReadFontFamily(cfg?: Partial<ScheduleWindowConfig> | null): LiveReadFontFamily {
+  const candidate =
+    cfg && typeof cfg === 'object' && typeof cfg.defaultLiveReadFontFamily === 'string'
+      ? cfg.defaultLiveReadFontFamily
+      : _activeScheduleWindowConfig?.defaultLiveReadFontFamily;
+  const found = LIVE_READ_FONT_FAMILY_OPTIONS.find(o => o.value === candidate);
+  return found ? found.value : DEFAULT_LIVE_READ_FONT_FAMILY;
+}
+
+export function getLiveReadFontFamilyOption(
+  family?: LiveReadFontFamily | string | null
+): LiveReadFontFamilyOption {
+  const found = LIVE_READ_FONT_FAMILY_OPTIONS.find(o => o.value === family);
+  return found || LIVE_READ_FONT_FAMILY_OPTIONS[0];
+}
+
+export function getLiveReadFontFamilyCss(
+  family?: LiveReadFontFamily | string | null
+): string {
+  return getLiveReadFontFamilyOption(family).cssFamily;
+}
+
 export function getScheduleWindowConfig(): ScheduleWindowConfig {
   return { ..._activeScheduleWindowConfig };
+}
+
+export function normalizeScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | null): ScheduleWindowConfig {
+  if (!cfg || typeof cfg !== 'object') {
+    return { ...DEFAULT_SCHEDULE_WINDOW_CONFIG };
+  }
+  const resolvedLookaroundMins =
+    cfg.showLookaroundMinutes !== undefined || cfg.showLookaroundHours !== undefined
+      ? getShowLookaroundMinutes(cfg)
+      : DEFAULT_SCHEDULE_WINDOW_CONFIG.showLookaroundMinutes!;
+  const resolvedLiveReadWpm =
+    typeof cfg.liveReadWpm === 'number' && !isNaN(cfg.liveReadWpm)
+      ? Math.max(50, Math.min(300, Math.round(cfg.liveReadWpm)))
+      : DEFAULT_SCHEDULE_WINDOW_CONFIG.liveReadWpm!;
+  const resolvedFontSize =
+    typeof cfg.defaultLiveReadFontSize === 'number' && !isNaN(cfg.defaultLiveReadFontSize)
+      ? Math.max(14, Math.min(40, Math.round(cfg.defaultLiveReadFontSize)))
+      : DEFAULT_LIVE_READ_FONT_SIZE;
+  const resolvedFontFamily =
+    typeof cfg.defaultLiveReadFontFamily === 'string' &&
+    LIVE_READ_FONT_FAMILY_OPTIONS.some(o => o.value === cfg.defaultLiveReadFontFamily)
+      ? (cfg.defaultLiveReadFontFamily as LiveReadFontFamily)
+      : DEFAULT_LIVE_READ_FONT_FAMILY;
+  return {
+    windowBeforeMinutes:
+      typeof cfg.windowBeforeMinutes === 'number' && !isNaN(cfg.windowBeforeMinutes)
+        ? Math.max(1, Math.min(60, Math.round(cfg.windowBeforeMinutes)))
+        : DEFAULT_SCHEDULE_WINDOW_CONFIG.windowBeforeMinutes,
+    windowAfterMinutes:
+      typeof cfg.windowAfterMinutes === 'number' && !isNaN(cfg.windowAfterMinutes)
+        ? Math.max(1, Math.min(60, Math.round(cfg.windowAfterMinutes)))
+        : DEFAULT_SCHEDULE_WINDOW_CONFIG.windowAfterMinutes,
+    showLookaroundHours: Number((resolvedLookaroundMins / 60).toFixed(4)),
+    showLookaroundMinutes: resolvedLookaroundMins,
+    liveReadWpm: resolvedLiveReadWpm,
+    defaultLiveReadFontSize: resolvedFontSize,
+    defaultLiveReadFontFamily: resolvedFontFamily
+  };
 }
 
 export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | null): ScheduleWindowConfig {
@@ -295,6 +474,15 @@ export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | nu
       typeof cfg.liveReadWpm === 'number' && !isNaN(cfg.liveReadWpm)
         ? Math.max(50, Math.min(300, Math.round(cfg.liveReadWpm)))
         : getLiveReadWpm(_activeScheduleWindowConfig);
+    const resolvedFontSize =
+      typeof cfg.defaultLiveReadFontSize === 'number' && !isNaN(cfg.defaultLiveReadFontSize)
+        ? Math.max(14, Math.min(40, Math.round(cfg.defaultLiveReadFontSize)))
+        : getDefaultLiveReadFontSize(_activeScheduleWindowConfig);
+    const resolvedFontFamily =
+      typeof cfg.defaultLiveReadFontFamily === 'string' &&
+      LIVE_READ_FONT_FAMILY_OPTIONS.some(o => o.value === cfg.defaultLiveReadFontFamily)
+        ? (cfg.defaultLiveReadFontFamily as LiveReadFontFamily)
+        : getDefaultLiveReadFontFamily(_activeScheduleWindowConfig);
     _activeScheduleWindowConfig = {
       windowBeforeMinutes:
         typeof cfg.windowBeforeMinutes === 'number' && !isNaN(cfg.windowBeforeMinutes)
@@ -306,7 +494,9 @@ export function setScheduleWindowConfig(cfg?: Partial<ScheduleWindowConfig> | nu
           : _activeScheduleWindowConfig.windowAfterMinutes,
       showLookaroundHours: Number((resolvedLookaroundMins / 60).toFixed(4)),
       showLookaroundMinutes: resolvedLookaroundMins,
-      liveReadWpm: resolvedLiveReadWpm
+      liveReadWpm: resolvedLiveReadWpm,
+      defaultLiveReadFontSize: resolvedFontSize,
+      defaultLiveReadFontFamily: resolvedFontFamily
     };
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
@@ -540,17 +730,21 @@ export interface ScheduleWindowConfig {
   showLookaroundHours: number; // default 1 hour (supports fractional hours from hh:mm)
   showLookaroundMinutes?: number; // default 60 minutes (01:00)
   liveReadWpm?: number; // default 150 words per minute (50–300)
+  defaultLiveReadFontSize?: number; // default 20px (14–40)
+  defaultLiveReadFontFamily?: LiveReadFontFamily; // default 'sans' (Inter / System Sans)
 }
 
 export interface DataMetaHeader {
   schemaVersion: number;
   minAppVersion: string;
   lastModifiedBy: string;
+  highestAppVersion?: string;
   lastModifiedAt: string;
   stationTimezone?: string;
   adminContactInfo?: string;
   upNextPromo?: UpNextPromoSettings;
   scheduleWindow?: ScheduleWindowConfig;
+  adminMessages?: AdminMessage[];
 }
 
 export interface DataEnvelope<T> {
@@ -559,6 +753,7 @@ export interface DataEnvelope<T> {
   adminContactInfo?: string;
   upNextPromo?: UpNextPromoSettings;
   scheduleWindow?: ScheduleWindowConfig;
+  adminMessages?: AdminMessage[];
   AnnouncementsBackupCounter?: number;
   ShowsBackupCounter?: number;
   LogsBackupCounter?: number;
@@ -572,6 +767,7 @@ export interface CompatibilityReport {
   schemaVersion: number;
   minAppVersion: string;
   lastModifiedBy: string;
+  highestAppVersion?: string;
   reason?: string;
 }
 
@@ -589,6 +785,19 @@ export function compareSemver(v1: string, v2: string): number {
 }
 
 /**
+ * Returns the highest valid SemVer string among the provided candidates.
+ */
+export function resolveHighestAppVersion(
+  ...candidates: Array<string | undefined | null>
+): string {
+  const valid = candidates
+    .map((v) => (typeof v === 'string' ? v.trim().replace(/^v/i, '') : ''))
+    .filter((v) => /^\d+\.\d+\.\d+/.test(v));
+  if (valid.length === 0) return CURRENT_APP_VERSION;
+  return valid.reduce((best, cur) => (compareSemver(cur, best) > 0 ? cur : best), valid[0]);
+}
+
+/**
  * Creates a standard metadata envelope header for saved JSON stores
  */
 export function createDataMetaHeader(customWindow?: ScheduleWindowConfig, stationTimezone?: string): DataMetaHeader {
@@ -597,6 +806,7 @@ export function createDataMetaHeader(customWindow?: ScheduleWindowConfig, statio
     schemaVersion: CURRENT_SCHEMA_VERSION,
     minAppVersion: CURRENT_MIN_APP_VERSION,
     lastModifiedBy: CURRENT_APP_VERSION,
+    highestAppVersion: CURRENT_APP_VERSION,
     lastModifiedAt: new Date().toISOString(),
     ...(stationTimezone ? { stationTimezone } : {}),
     scheduleWindow: {
@@ -604,7 +814,9 @@ export function createDataMetaHeader(customWindow?: ScheduleWindowConfig, statio
       windowAfterMinutes: customWindow?.windowAfterMinutes ?? 5,
       showLookaroundHours: customWindow?.showLookaroundHours ?? Number((lookaroundMins / 60).toFixed(4)),
       showLookaroundMinutes: lookaroundMins,
-      liveReadWpm: getLiveReadWpm(customWindow)
+      liveReadWpm: getLiveReadWpm(customWindow),
+      defaultLiveReadFontSize: getDefaultLiveReadFontSize(customWindow),
+      defaultLiveReadFontFamily: getDefaultLiveReadFontFamily(customWindow)
     }
   };
 }
@@ -894,8 +1106,12 @@ export function migrateAnnouncementsPayload(
       ? getLiveReadWpm(rawInput._meta.scheduleWindow)
       : undefined;
 
+  const isServerRuntime = typeof window === 'undefined';
+  const applyWindow = (cfg: Partial<ScheduleWindowConfig>) =>
+    isServerRuntime ? normalizeScheduleWindowConfig(cfg) : setScheduleWindowConfig(cfg);
+
   let existingWindow: ScheduleWindowConfig | undefined = overrideScheduleWindow
-    ? setScheduleWindowConfig(overrideScheduleWindow)
+    ? applyWindow(overrideScheduleWindow)
     : undefined;
   if (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)) {
     rawList = Array.isArray(rawInput.data) ? rawInput.data : [];
@@ -903,7 +1119,7 @@ export function migrateAnnouncementsPayload(
       counter = rawInput.AnnouncementsBackupCounter;
     }
     if (!existingWindow && rawInput._meta?.scheduleWindow) {
-      existingWindow = setScheduleWindowConfig(rawInput._meta.scheduleWindow);
+      existingWindow = applyWindow(rawInput._meta.scheduleWindow);
     }
   } else if (Array.isArray(rawInput)) {
     rawList = rawInput;
@@ -911,21 +1127,28 @@ export function migrateAnnouncementsPayload(
 
   const embeddedStationMeta = rawList.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta;
   if (!existingWindow && embeddedStationMeta?.scheduleWindow) {
-    existingWindow = setScheduleWindowConfig(embeddedStationMeta.scheduleWindow);
+    existingWindow = applyWindow(embeddedStationMeta.scheduleWindow);
   }
-  if (embeddedStationMeta?.stationTimezone && (!rawInput?._meta?.stationTimezone)) {
-    setStationTimezone(embeddedStationMeta.stationTimezone);
-  }
-  if (embeddedStationMeta?.adminContactInfo !== undefined && !getAdminContactInfo()) {
-    setAdminContactInfo(embeddedStationMeta.adminContactInfo);
-  }
-  if (embeddedStationMeta?.upNextPromo) {
-    setUpNextPromoConfig(embeddedStationMeta.upNextPromo);
+  let tz: string;
+  if (isServerRuntime) {
+    tz = normalizeStationTimezone(
+      rawInput?._meta?.stationTimezone || embeddedStationMeta?.stationTimezone || DEFAULT_STATION_TIMEZONE
+    );
+  } else {
+    if (embeddedStationMeta?.stationTimezone && (!rawInput?._meta?.stationTimezone)) {
+      setStationTimezone(embeddedStationMeta.stationTimezone);
+    }
+    if (embeddedStationMeta?.adminContactInfo !== undefined && !getAdminContactInfo()) {
+      setAdminContactInfo(embeddedStationMeta.adminContactInfo);
+    }
+    if (embeddedStationMeta?.upNextPromo) {
+      setUpNextPromoConfig(embeddedStationMeta.upNextPromo);
+    }
+    tz = getStationTimezone();
   }
 
-  const effectiveWpm = getLiveReadWpm(existingWindow);
+  const effectiveWpm = getLiveReadWpm(existingWindow || DEFAULT_SCHEDULE_WINDOW_CONFIG);
   const isoNow = new Date().toISOString();
-  const tz = getStationTimezone();
   const persistedRawList = rawList.filter(
     (item: any) => item && item.isUpNextPromo !== true && !String(item.id || '').startsWith('up-next-promo-')
   );
@@ -935,7 +1158,6 @@ export function migrateAnnouncementsPayload(
     const isScriptExt = typeof rawUrl === 'string' && /\.(txt|pdf|docx?|rtf|png|jpg|jpeg|webp|md)$/i.test(rawUrl);
     const hasInlineText = Boolean(
       (typeof mItem?.text === 'string' && mItem.text.trim()) ||
-      (typeof mItem?.content === 'string' && mItem.text?.trim?.()) ||
       (typeof mItem?.content === 'string' && mItem.content.trim()) ||
       (typeof mItem?.scriptText === 'string' && mItem.scriptText.trim()) ||
       (typeof mItem?.liveReadText === 'string' && mItem.liveReadText.trim()) ||
@@ -1038,16 +1260,18 @@ export function migrateAnnouncementsPayload(
       : [tItem];
 
     // If a v0.15.4/0.15.5 workstation edited the flat gate fields while preserving mediaItems on disk,
-    // reconcile mediaItems[0] with the updated flat gate fields.
+    // reconcile the primary active media item (not an inactivated historical item at index 0) with the updated flat gate fields.
+    const primaryRawIdx = rawMediaItems.findIndex((mi: any) => !mi?.inactivated);
+    const reconcileIdx = primaryRawIdx >= 0 ? primaryRawIdx : 0;
     if (
       isLegacy015Item &&
       Array.isArray(tItem?.mediaItems) &&
       tItem.mediaItems.length > 0 &&
       typeof tItem.mp3Url === 'string' &&
-      tItem.mp3Url !== tItem.mediaItems[0]?.mp3Url
+      tItem.mp3Url !== tItem.mediaItems[reconcileIdx]?.mp3Url
     ) {
-      rawMediaItems[0] = {
-        ...rawMediaItems[0],
+      rawMediaItems[reconcileIdx] = {
+        ...rawMediaItems[reconcileIdx],
         mp3Url: tItem.mp3Url,
         ...(tItem.assetType !== undefined ? { assetType: tItem.assetType } : {}),
         ...(tItem.backupMp3Url !== undefined ? { backupMp3Url: tItem.backupMp3Url } : {}),
@@ -1154,14 +1378,33 @@ export function migrateAnnouncementsPayload(
     return backfillLegacyAnnouncementRevisions(cleanItem, rawLogs, tz);
   });
 
+  const highestAppVersion = resolveHighestAppVersion(
+    rawInput?._meta?.highestAppVersion,
+    rawInput?._meta?.lastModifiedBy,
+    embeddedStationMeta?.highestAppVersion,
+    lastModifiedBy,
+    CURRENT_APP_VERSION
+  );
+
   if (migrated.length > 0) {
+    const stationMetaContact = isServerRuntime
+      ? (typeof embeddedStationMeta?.adminContactInfo === 'string' ? embeddedStationMeta.adminContactInfo.trim() : '')
+      : getAdminContactInfo();
+    const stationMetaUpNext = isServerRuntime
+      ? normalizeUpNextPromoConfig(embeddedStationMeta?.upNextPromo)
+      : getUpNextPromoConfig();
+    const stationMetaWindow = existingWindow || (isServerRuntime
+      ? normalizeScheduleWindowConfig(embeddedStationMeta?.scheduleWindow)
+      : getScheduleWindowConfig());
     migrated[0] = {
       ...migrated[0],
       _stationMeta: {
         stationTimezone: tz,
-        adminContactInfo: getAdminContactInfo(),
-        upNextPromo: getUpNextPromoConfig(),
-        scheduleWindow: existingWindow || getScheduleWindowConfig()
+        adminContactInfo: stationMetaContact,
+        upNextPromo: stationMetaUpNext,
+        scheduleWindow: stationMetaWindow,
+        ...(Array.isArray(embeddedStationMeta?.adminMessages) ? { adminMessages: embeddedStationMeta.adminMessages } : {}),
+        highestAppVersion
       }
     };
   }
@@ -1172,6 +1415,7 @@ export function migrateAnnouncementsPayload(
       schemaVersion: CURRENT_SCHEMA_VERSION,
       minAppVersion: CURRENT_MIN_APP_VERSION,
       lastModifiedBy: lastModifiedBy,
+      highestAppVersion,
       lastModifiedAt: isoNow,
       ...(existingWindow ? { scheduleWindow: existingWindow } : {})
     },
@@ -1193,7 +1437,8 @@ export function migrateShowsPayload(
   explicitStationTimezone?: string,
   explicitAdminContactInfo?: string,
   explicitUpNextPromo?: Partial<UpNextPromoSettings>,
-  explicitScheduleWindow?: Partial<ScheduleWindowConfig>
+  explicitScheduleWindow?: Partial<ScheduleWindowConfig>,
+  explicitAdminMessages?: AdminMessage[]
 ): { envelope: DataEnvelope<any[]>; data: any[] } {
   let rawList: any[] = [];
   let counter = existingCounter;
@@ -1201,6 +1446,7 @@ export function migrateShowsPayload(
   let resolvedTimezone: string | undefined = explicitStationTimezone;
   let resolvedAdminContact: string | undefined = explicitAdminContactInfo;
   let resolvedUpNextPromo: Partial<UpNextPromoSettings> | undefined = explicitUpNextPromo;
+  let resolvedAdminMessages: AdminMessage[] | undefined = explicitAdminMessages;
   if (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)) {
     rawList = Array.isArray(rawInput.data) ? rawInput.data : [];
     if (typeof rawInput.ShowsBackupCounter === 'number') {
@@ -1221,6 +1467,13 @@ export function migrateShowsPayload(
     if (!resolvedUpNextPromo) {
       resolvedUpNextPromo = rawInput.upNextPromo || rawInput._meta?.upNextPromo;
     }
+    if (resolvedAdminMessages === undefined) {
+      if (Array.isArray(rawInput.adminMessages)) {
+        resolvedAdminMessages = rawInput.adminMessages;
+      } else if (Array.isArray(rawInput._meta?.adminMessages)) {
+        resolvedAdminMessages = rawInput._meta.adminMessages;
+      }
+    }
   } else if (Array.isArray(rawInput)) {
     rawList = rawInput;
   }
@@ -1240,17 +1493,36 @@ export function migrateShowsPayload(
     if (!resolvedScheduleWindow && embeddedShowMeta.scheduleWindow) {
       resolvedScheduleWindow = embeddedShowMeta.scheduleWindow;
     }
+    if (resolvedAdminMessages === undefined && Array.isArray(embeddedShowMeta.adminMessages)) {
+      resolvedAdminMessages = embeddedShowMeta.adminMessages;
+    }
   }
 
-  const finalTimezone = setStationTimezone(resolvedTimezone || getStationTimezone());
-  const finalAdminContact =
-    resolvedAdminContact !== undefined ? setAdminContactInfo(resolvedAdminContact) : getAdminContactInfo();
-  const finalUpNextPromo =
-    resolvedUpNextPromo !== undefined ? setUpNextPromoConfig(resolvedUpNextPromo) : getUpNextPromoConfig();
-  const finalScheduleWindow =
-    resolvedScheduleWindow !== undefined ? setScheduleWindowConfig(resolvedScheduleWindow) : getScheduleWindowConfig();
+  const isServerRuntime = typeof window === 'undefined';
+  const finalTimezone = isServerRuntime
+    ? normalizeStationTimezone(resolvedTimezone)
+    : setStationTimezone(resolvedTimezone || getStationTimezone());
+  const finalAdminContact = isServerRuntime
+    ? (resolvedAdminContact !== undefined && resolvedAdminContact !== null ? String(resolvedAdminContact).trim() : '')
+    : (resolvedAdminContact !== undefined ? setAdminContactInfo(resolvedAdminContact) : getAdminContactInfo());
+  const finalUpNextPromo = isServerRuntime
+    ? normalizeUpNextPromoConfig(resolvedUpNextPromo)
+    : (resolvedUpNextPromo !== undefined ? setUpNextPromoConfig(resolvedUpNextPromo) : getUpNextPromoConfig());
+  const finalScheduleWindow = isServerRuntime
+    ? normalizeScheduleWindowConfig(resolvedScheduleWindow)
+    : (resolvedScheduleWindow !== undefined ? setScheduleWindowConfig(resolvedScheduleWindow) : getScheduleWindowConfig());
+  const finalAdminMessages = isServerRuntime
+    ? (Array.isArray(resolvedAdminMessages) ? resolvedAdminMessages.filter((m) => m && typeof m === 'object') : [])
+    : (resolvedAdminMessages !== undefined ? setAdminMessages(resolvedAdminMessages) : getAdminMessages());
 
   const isoNow = new Date().toISOString();
+  const highestAppVersion = resolveHighestAppVersion(
+    rawInput?._meta?.highestAppVersion,
+    rawInput?._meta?.lastModifiedBy,
+    embeddedShowMeta?.highestAppVersion,
+    lastModifiedBy,
+    CURRENT_APP_VERSION
+  );
   const migrated = rawList.map((item: any, idx: number) => {
     const rawName = item.name || `Show ${idx + 1}`;
     const cleanShort = item.nameShort || rawName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 16) || `Show_${idx + 1}`;
@@ -1282,7 +1554,9 @@ export function migrateShowsPayload(
               stationTimezone: finalTimezone,
               adminContactInfo: finalAdminContact,
               upNextPromo: finalUpNextPromo,
-              scheduleWindow: finalScheduleWindow
+              scheduleWindow: finalScheduleWindow,
+              adminMessages: finalAdminMessages,
+              highestAppVersion
             }
           }
         : {})
@@ -1295,16 +1569,19 @@ export function migrateShowsPayload(
       schemaVersion: CURRENT_SCHEMA_VERSION,
       minAppVersion: CURRENT_MIN_APP_VERSION,
       lastModifiedBy: lastModifiedBy,
+      highestAppVersion,
       lastModifiedAt: isoNow,
       stationTimezone: finalTimezone,
       ...(finalAdminContact ? { adminContactInfo: finalAdminContact } : {}),
       upNextPromo: finalUpNextPromo,
-      scheduleWindow: finalScheduleWindow
+      scheduleWindow: finalScheduleWindow,
+      adminMessages: finalAdminMessages
     },
     stationTimezone: finalTimezone,
     ...(finalAdminContact ? { adminContactInfo: finalAdminContact } : {}),
     upNextPromo: finalUpNextPromo,
     scheduleWindow: finalScheduleWindow,
+    adminMessages: finalAdminMessages,
     ShowsBackupCounter: counter,
     data: migrated
   };
@@ -1324,7 +1601,13 @@ export function seedLogEntrySiblings(entry: any): any {
   const scheduledIso = entry.announcementTime || entry.scheduledFor || entry.timestamp || executedIso;
   const timestampIso = entry.timestamp || scheduledIso;
   const fn = String(entry.mp3Name || '').toLowerCase();
-  const derivedAssetType = entry.assetType || ((fn.endsWith('.txt') || fn.endsWith('.pdf') || fn.endsWith('.png') || fn.endsWith('.jpg') || fn.endsWith('.jpeg') || fn.endsWith('.webp') || fn.endsWith('.md')) ? 'script' : 'audio');
+  const derivedAssetType =
+    entry.assetType ||
+    (entry.status === 'acknowledged'
+      ? 'message'
+      : (fn.endsWith('.txt') || fn.endsWith('.pdf') || fn.endsWith('.png') || fn.endsWith('.jpg') || fn.endsWith('.jpeg') || fn.endsWith('.webp') || fn.endsWith('.md'))
+        ? 'script'
+        : 'audio');
 
   return {
     ...entry,
@@ -1362,11 +1645,18 @@ export function migrateLogsPayload(
   const migrated = rawList.map(item => seedLogEntrySiblings(item));
   counter += 1;
 
+  const highestAppVersion = resolveHighestAppVersion(
+    rawInput?._meta?.highestAppVersion,
+    rawInput?._meta?.lastModifiedBy,
+    lastModifiedBy,
+    CURRENT_APP_VERSION
+  );
   const envelope: DataEnvelope<any[]> = {
     _meta: {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       minAppVersion: CURRENT_MIN_APP_VERSION,
       lastModifiedBy: lastModifiedBy,
+      highestAppVersion,
       lastModifiedAt: isoNow
     },
     LogsBackupCounter: counter,
@@ -1383,14 +1673,23 @@ export function assessDataCompatibility(meta?: Partial<DataMetaHeader> | null): 
   const schemaVersion = meta?.schemaVersion !== undefined ? meta.schemaVersion : 0;
   const minAppVersion = meta?.minAppVersion || "0.16.0";
   const lastModifiedBy = meta?.lastModifiedBy || "0.15.0";
+  const highestAppVersion = resolveHighestAppVersion(
+    meta?.highestAppVersion,
+    meta?.lastModifiedBy,
+    minAppVersion
+  );
 
   // Check 1: Forward Incompatibility (File was written by a newer version requiring newer minimum app)
-  if (meta?.minAppVersion && compareSemver(meta.minAppVersion, CURRENT_APP_VERSION) > 0) {
+  if (
+    (meta?.minAppVersion && compareSemver(meta.minAppVersion, CURRENT_APP_VERSION) > 0) ||
+    schemaVersion > CURRENT_SCHEMA_VERSION
+  ) {
     return {
       status: 'NEWER_VERSION_DETECTED',
       schemaVersion,
       minAppVersion,
       lastModifiedBy,
+      highestAppVersion,
       reason: `Data requires minimum AMP version v${minAppVersion}, but current application is v${CURRENT_APP_VERSION}.`
     };
   }
@@ -1402,6 +1701,7 @@ export function assessDataCompatibility(meta?: Partial<DataMetaHeader> | null): 
       schemaVersion,
       minAppVersion,
       lastModifiedBy,
+      highestAppVersion,
       reason: `Data schema (v${schemaVersion}) is older than current AMP native schema (v${CURRENT_SCHEMA_VERSION}).`
     };
   }
@@ -1410,6 +1710,7 @@ export function assessDataCompatibility(meta?: Partial<DataMetaHeader> | null): 
     status: 'COMPATIBLE',
     schemaVersion,
     minAppVersion,
-    lastModifiedBy
+    lastModifiedBy,
+    highestAppVersion
   };
 }

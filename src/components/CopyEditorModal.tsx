@@ -33,7 +33,12 @@ import {
   editableHtmlToMarkdownTxt,
   sanitizeClipboardToEditableHtml
 } from '../lib/liveReadFormatting';
-import { getLiveReadWpm } from '../lib/compatibility';
+import {
+  getLiveReadWpm,
+  getDefaultLiveReadFontSize,
+  getDefaultLiveReadFontFamily,
+  getLiveReadFontFamilyCss
+} from '../lib/compatibility';
 import {
   uploadAnnouncementMediaFile,
   renameOrCopyAnnouncementMediaFile,
@@ -55,6 +60,7 @@ export interface CopyEditorModalProps {
   isOpen: boolean;
   initialFileName?: string;
   sourceFileToCopy?: string;
+  sourceBucket?: 'active' | 'archived' | 'deleted';
   initialReadTime?: string;
   initialIsAutoReadTime?: boolean;
   initialBackupMp3Url?: string;
@@ -146,6 +152,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   isOpen,
   initialFileName,
   sourceFileToCopy,
+  sourceBucket,
   initialReadTime,
   initialIsAutoReadTime,
   initialBackupMp3Url,
@@ -495,13 +502,16 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       setManualReadTime(cleanInitRead);
       setAutoApplyReadTime(initialIsAutoReadTimeRef.current !== false);
 
+      const bucketQuery =
+        sourceBucket && sourceBucket !== 'active' ? `&bucket=${encodeURIComponent(sourceBucket)}` : '';
+
       if (isNonTextCopyMode) {
         setLoadingContent(true);
         let cancelled = false;
         (async () => {
           try {
             const headers = await getStorageApiHeaders();
-            const r = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, {
+            const r = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}${bucketQuery}`, {
               headers,
               cache: 'no-store'
             });
@@ -510,11 +520,17 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             if (data && data.url) {
               setNonTextPreviewUrl(data.url);
             } else {
-              setNonTextPreviewUrl(getPlayableUrl(fileToLoad) || `/api/media/stream?path=${encodeURIComponent(fileToLoad)}`);
+              setNonTextPreviewUrl(
+                (bucketQuery ? '' : getPlayableUrl(fileToLoad)) ||
+                  `/api/media/stream?path=${encodeURIComponent(fileToLoad)}${bucketQuery}`
+              );
             }
           } catch {
             if (!cancelled) {
-              setNonTextPreviewUrl(getPlayableUrl(fileToLoad) || `/api/media/stream?path=${encodeURIComponent(fileToLoad)}`);
+              setNonTextPreviewUrl(
+                (bucketQuery ? '' : getPlayableUrl(fileToLoad)) ||
+                  `/api/media/stream?path=${encodeURIComponent(fileToLoad)}${bucketQuery}`
+              );
             }
           } finally {
             if (!cancelled) {
@@ -533,7 +549,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
         setLoadingContent(true);
         try {
           const headers = await getStorageApiHeaders();
-          const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}`, {
+          const res = await fetch(`/api/live-read/content?file=${encodeURIComponent(fileToLoad)}${bucketQuery}`, {
             headers,
             cache: 'no-store'
           });
@@ -1789,9 +1805,13 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
                           updateLightweightWordStats();
                         }
                       }}
-                      style={{ height: `${availableEditBoxHeight}px` }}
+                      style={{
+                        height: `${availableEditBoxHeight}px`,
+                        fontSize: `${getDefaultLiveReadFontSize()}px`,
+                        fontFamily: getLiveReadFontFamilyCss(getDefaultLiveReadFontFamily()),
+                      }}
                       data-placeholder="Type or paste live read copy here... Highlight text and use Bold, Italic, Underline, or Insert Pronunciation Block above."
-                      className="w-full p-6 overflow-y-auto font-sans text-xl leading-relaxed text-slate-800 bg-white outline-none whitespace-pre-wrap empty:before:content-[attr(data-placeholder)] empty:before:text-slate-400 empty:before:italic empty:before:text-base"
+                      className="w-full p-6 overflow-y-auto leading-relaxed text-slate-800 bg-white outline-none whitespace-pre-wrap empty:before:content-[attr(data-placeholder)] empty:before:text-slate-400 empty:before:italic empty:before:text-base"
                     />
                   </div>
 

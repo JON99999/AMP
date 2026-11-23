@@ -1,21 +1,27 @@
 import React from 'react';
-import { Calendar, Clock, Volume2, FileText, BookOpen, FolderOpen, Search } from 'lucide-react';
+import { Calendar, Clock, Volume2, FileText, BookOpen, FolderOpen, Search, MessageSquare } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { getStationTimezone, getStationTimezoneOption } from '../../lib/compatibility';
 
 export interface CalendarHeaderBarProps {
   headerContainerRef: React.RefObject<HTMLDivElement | null>;
-  viewMode: 'list' | 'calendar' | 'shows' | 'files';
-  setViewMode: (mode: 'list' | 'calendar' | 'shows' | 'files') => void;
+  viewMode: 'list' | 'calendar' | 'shows' | 'files' | 'messages';
+  setViewMode: (mode: 'list' | 'calendar' | 'shows' | 'files' | 'messages') => void;
   stationTimezone?: string;
   announcementFilterQuery: string;
   setAnnouncementFilterQuery: (val: string) => void;
   showFilterQuery: string;
   setShowFilterQuery: (val: string) => void;
+  messageFilterQuery: string;
+  setMessageFilterQuery: (val: string) => void;
+  activeMessagesCount?: number;
   createNew: () => void;
   createNewShow: () => void;
+  createNewMessage: () => void;
   isHeaderStacked: boolean;
   isUltraNarrowHeader: boolean;
+  compactNavBar: boolean;
+  abbreviateAnnouncements: boolean;
   hideCalendarIcon: boolean;
   hideAnnouncementsIcons: boolean;
   hideShowsIcon: boolean;
@@ -41,10 +47,15 @@ export function CalendarHeaderBar({
   setAnnouncementFilterQuery,
   showFilterQuery,
   setShowFilterQuery,
+  messageFilterQuery,
+  setMessageFilterQuery,
   createNew,
   createNewShow,
+  createNewMessage,
   isHeaderStacked,
   isUltraNarrowHeader,
+  compactNavBar,
+  abbreviateAnnouncements,
   hideCalendarIcon,
   hideAnnouncementsIcons,
   hideShowsIcon,
@@ -60,268 +71,240 @@ export function CalendarHeaderBar({
   headerContainerWidth,
   controlsContainerWidth,
 }: CalendarHeaderBarProps) {
+  const navBtnPadding = isUltraNarrowHeader
+    ? 'px-1.5 py-1 gap-1'
+    : compactNavBar
+      ? 'px-2 py-1.5 gap-1'
+      : 'px-2.5 py-1.5 gap-1.5';
+
+  const renderNavButtons = () => (
+    <div className="flex bg-slate-950 p-0.5 rounded border border-slate-900 shrink-0 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.8)] items-center gap-0.5">
+      <button
+        type="button"
+        onClick={() => setViewMode('calendar')}
+        title="Calendar View"
+        className={cn(
+          'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+          navBtnPadding,
+          viewMode === 'calendar'
+            ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+            : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+        )}
+      >
+        <span
+          className={cn(
+            'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+            viewMode === 'calendar'
+              ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+              : 'bg-slate-800'
+          )}
+        />
+        {(!hideCalendarIcon || modeIconsOnly) && (
+          <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        )}
+        {!modeIconsOnly && <span>Calendar</span>}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setViewMode('list')}
+        title="Announcements View"
+        className={cn(
+          'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+          navBtnPadding,
+          viewMode === 'list'
+            ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+            : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+        )}
+      >
+        <span
+          className={cn(
+            'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+            viewMode === 'list'
+              ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+              : 'bg-slate-800'
+          )}
+        />
+        {(!hideAnnouncementsIcons || modeIconsOnly) && (
+          <Volume2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        )}
+        {!modeIconsOnly && <span>{abbreviateAnnouncements ? 'Ann.' : 'Announcements'}</span>}
+        {(!hideAnnouncementsIcons || (modeIconsOnly && !isUltraNarrowHeader)) && (
+          <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        )}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setViewMode('shows')}
+        title="Shows View"
+        className={cn(
+          'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+          navBtnPadding,
+          viewMode === 'shows'
+            ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+            : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+        )}
+      >
+        <span
+          className={cn(
+            'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+            viewMode === 'shows'
+              ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+              : 'bg-slate-800'
+          )}
+        />
+        {(!hideShowsIcon || modeIconsOnly) && (
+          <BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        )}
+        {!modeIconsOnly && <span>Shows</span>}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setViewMode('files')}
+        title="Files View (File Manager)"
+        className={cn(
+          'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+          navBtnPadding,
+          viewMode === 'files'
+            ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+            : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+        )}
+      >
+        <span
+          className={cn(
+            'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+            viewMode === 'files'
+              ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+              : 'bg-slate-800'
+          )}
+        />
+        {(!hideShowsIcon || modeIconsOnly) && (
+          <FolderOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        )}
+        {!modeIconsOnly && <span>Files</span>}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setViewMode('messages')}
+        title="Show Messages & App Launch Notices"
+        className={cn(
+          'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
+          navBtnPadding,
+          viewMode === 'messages'
+            ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
+            : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
+        )}
+      >
+        <span
+          className={cn(
+            'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
+            viewMode === 'messages'
+              ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
+              : 'bg-slate-800'
+          )}
+        />
+        {(!hideShowsIcon || modeIconsOnly) && (
+          <MessageSquare className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+        )}
+        {!modeIconsOnly && <span>Msgs</span>}
+      </button>
+    </div>
+  );
+
+  const renderTimezoneBadge = () => {
+    const activeTzOpt = getStationTimezoneOption(stationTimezone || getStationTimezone());
+    const useShortTz = modeIconsOnly || compactNavBar;
+    return (
+      <div
+        title={`Station Timezone: ${activeTzOpt.label}\nRead-only note. You can edit the station timezone in Admin Mode under Folders > Help > System Maintenance & Reset.`}
+        className={cn(
+          'flex items-center bg-slate-100 border border-slate-250 rounded-lg font-bold text-slate-600 select-none cursor-help min-w-0 truncate shrink-0',
+          isUltraNarrowHeader
+            ? 'gap-1 px-1.5 py-0.5 text-[10px]'
+            : compactNavBar
+              ? 'gap-1 px-2 py-1 text-[11px]'
+              : 'gap-1.5 px-2.5 py-1 text-[11px]'
+        )}
+      >
+        <Clock className="w-3 h-3 text-slate-450 shrink-0" />
+        <span className="truncate">
+          {useShortTz ? activeTzOpt.shortCode : activeTzOpt.commonName}
+        </span>
+      </div>
+    );
+  };
+
+  const renderAddButton = () => (
+    <button
+      onClick={
+        viewMode === 'shows'
+          ? createNewShow
+          : viewMode === 'messages'
+            ? createNewMessage
+            : createNew
+      }
+      className={cn(
+        'bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black tracking-tighter shadow-sm transition-colors uppercase cursor-pointer border border-blue-700 shrink-0 whitespace-nowrap',
+        isUltraNarrowHeader ? 'px-2 py-1 h-7' : addTextIconOnly ? 'px-2.5 py-1 h-8' : 'p-1.5 px-3 h-8'
+      )}
+      title={
+        viewMode === 'shows'
+          ? 'Add Show'
+          : viewMode === 'messages'
+            ? 'Add Show Message'
+            : 'Add Announcement'
+      }
+    >
+      {addTextIconOnly
+        ? '+'
+        : addTextShort
+          ? '+ ADD'
+          : viewMode === 'shows'
+            ? '+ ADD SHOW'
+            : viewMode === 'messages'
+              ? '+ ADD MESSAGE'
+              : '+ ADD ANNOUNCEMENT'}
+    </button>
+  );
+
   return (
     <>
       <div
         ref={headerContainerRef}
         className={cn(
           'mb-3 px-1 shrink-0 overflow-hidden w-full',
-          isHeaderStacked ? 'flex flex-col gap-2' : 'flex items-center justify-between flex-nowrap gap-2'
+          isHeaderStacked
+            ? 'flex flex-col gap-2'
+            : 'flex items-center justify-between flex-nowrap gap-2'
         )}
       >
         {isHeaderStacked ? (
           <div className="flex items-center justify-between w-full gap-1.5 min-w-0">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              <div className="flex bg-slate-950 p-0.5 rounded border border-slate-900 shrink-0 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.8)] items-center gap-0.5">
-                <button
-                  type="button"
-                  onClick={() => setViewMode('calendar')}
-                  title="Calendar View"
-                  className={cn(
-                    'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                    isUltraNarrowHeader ? 'px-2 py-1 gap-1' : 'px-3 py-1.5 gap-1.5',
-                    viewMode === 'calendar'
-                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                      : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                      viewMode === 'calendar'
-                        ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                        : 'bg-slate-800'
-                    )}
-                  />
-                  {(!hideCalendarIcon || modeIconsOnly) && <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                  {!modeIconsOnly && <span>Calendar</span>}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('list')}
-                  title="Announcements View"
-                  className={cn(
-                    'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                    isUltraNarrowHeader ? 'px-2 py-1 gap-1' : 'px-3 py-1.5 gap-1.5',
-                    viewMode === 'list'
-                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                      : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                      viewMode === 'list'
-                        ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                        : 'bg-slate-800'
-                    )}
-                  />
-                  {(!hideAnnouncementsIcons || modeIconsOnly) && <Volume2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                  {!modeIconsOnly && <span>Announcements</span>}
-                  {(!hideAnnouncementsIcons || (modeIconsOnly && !isUltraNarrowHeader)) && (
-                    <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('shows')}
-                  title="Shows View"
-                  className={cn(
-                    'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                    isUltraNarrowHeader ? 'px-2 py-1 gap-1' : 'px-3 py-1.5 gap-1.5',
-                    viewMode === 'shows'
-                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                      : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                      viewMode === 'shows'
-                        ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                        : 'bg-slate-800'
-                    )}
-                  />
-                  {(!hideShowsIcon || modeIconsOnly) && <BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                  {!modeIconsOnly && <span>Shows</span>}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('files')}
-                  title="Files View (File Manager)"
-                  className={cn(
-                    'flex items-center text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                    isUltraNarrowHeader ? 'px-2 py-1 gap-1' : 'px-3 py-1.5 gap-1.5',
-                    viewMode === 'files'
-                      ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                      : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                      viewMode === 'files'
-                        ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                        : 'bg-slate-800'
-                    )}
-                  />
-                  {(!hideShowsIcon || modeIconsOnly) && <FolderOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                  {!modeIconsOnly && <span>Files</span>}
-                </button>
-              </div>
-
-              {(() => {
-                const activeTzOpt = getStationTimezoneOption(stationTimezone || getStationTimezone());
-                return (
-                  <div
-                    title={`Station Timezone: ${activeTzOpt.label}\nRead-only note. You can edit the station timezone in Admin Mode under Folders > Help > System Maintenance & Reset.`}
-                    className={cn(
-                      'flex items-center bg-slate-100 border border-slate-250 rounded font-bold text-slate-600 select-none cursor-help min-w-0 truncate',
-                      isUltraNarrowHeader ? 'gap-1 px-1.5 py-0.5 text-[10px]' : 'gap-1 px-2 py-1 text-[11px]'
-                    )}
-                  >
-                    <Clock className="w-3 h-3 text-slate-450 shrink-0" />
-                    <span className="truncate">
-                      {modeIconsOnly ? activeTzOpt.shortCode : activeTzOpt.commonName}
-                    </span>
-                  </div>
-                );
-              })()}
+              {renderNavButtons()}
+              {renderTimezoneBadge()}
             </div>
-
-            {viewMode !== 'files' && (
-              <button
-                onClick={viewMode === 'shows' ? createNewShow : createNew}
-                className={cn(
-                  'bg-blue-600 text-white rounded text-xs font-black tracking-tighter shadow-sm hover:bg-blue-700 transition-colors uppercase cursor-pointer border border-blue-700 shrink-0 whitespace-nowrap',
-                  isUltraNarrowHeader ? 'px-2 py-1 h-7' : 'p-1.5 px-3 h-8'
-                )}
-                title={viewMode === 'shows' ? 'Add Show' : 'Add Announcement'}
-              >
-                {addTextIconOnly
-                  ? '+'
-                  : addTextShort
-                    ? '+ ADD'
-                    : viewMode === 'shows'
-                      ? '+ ADD SHOW'
-                      : '+ ADD ANNOUNCEMENT'}
-              </button>
-            )}
+            {viewMode !== 'files' && renderAddButton()}
           </div>
         ) : (
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <div className="flex bg-slate-950 p-0.5 rounded border border-slate-900 shrink-0 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.8)] items-center gap-0.5">
-              <button
-                type="button"
-                onClick={() => setViewMode('calendar')}
-                className={cn(
-                  'px-3 py-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                  viewMode === 'calendar'
-                    ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                    : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                )}
-              >
-                <span
-                  className={cn(
-                    'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                    viewMode === 'calendar'
-                      ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                      : 'bg-slate-800'
-                  )}
-                />
-                {(!hideCalendarIcon || modeIconsOnly) && <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                {!modeIconsOnly && <span>Calendar</span>}
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('list')}
-                className={cn(
-                  'px-3 py-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                  viewMode === 'list'
-                    ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                    : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                )}
-              >
-                <span
-                  className={cn(
-                    'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                    viewMode === 'list'
-                      ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                      : 'bg-slate-800'
-                  )}
-                />
-                {(!hideAnnouncementsIcons || modeIconsOnly) && <Volume2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                {!modeIconsOnly && <span>Announcements</span>}
-                {(!hideAnnouncementsIcons || modeIconsOnly) && <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('shows')}
-                className={cn(
-                  'px-3 py-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                  viewMode === 'shows'
-                    ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                    : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                )}
-              >
-                <span
-                  className={cn(
-                    'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                    viewMode === 'shows'
-                      ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                      : 'bg-slate-800'
-                  )}
-                />
-                {(!hideShowsIcon || modeIconsOnly) && <BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                {!modeIconsOnly && <span>Shows</span>}
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('files')}
-                title="Files View (File Manager)"
-                className={cn(
-                  'px-3 py-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wider rounded transition-all cursor-pointer border shrink-0',
-                  viewMode === 'files'
-                    ? 'bg-gradient-to-b from-blue-500 to-blue-600 border-t-blue-400 border-b-blue-800 text-white shadow-[inset_0_1.5px_2px_rgba(0,0,0,0.4)] border-blue-500'
-                    : 'bg-transparent border-transparent text-slate-400 hover:text-slate-300'
-                )}
-              >
-                <span
-                  className={cn(
-                    'w-1.5 h-1.5 rounded-full transition-all duration-300 shrink-0',
-                    viewMode === 'files'
-                      ? 'bg-red-500 shadow-[0_0_8px_#EF4444,0_0_3px_#EF4444]'
-                      : 'bg-slate-800'
-                  )}
-                />
-                {(!hideShowsIcon || modeIconsOnly) && <FolderOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
-                {!modeIconsOnly && <span>Files</span>}
-              </button>
-            </div>
-
-            {(() => {
-              const activeTzOpt = getStationTimezoneOption(stationTimezone || getStationTimezone());
-              return (
-                <div
-                  title={`Station Timezone: ${activeTzOpt.label}\nRead-only note. You can edit the station timezone in Admin Mode under Folders > Help > System Maintenance & Reset.`}
-                  className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 border border-slate-250 rounded-lg text-[11px] font-bold text-slate-600 select-none cursor-help min-w-0 truncate"
-                >
-                  <Clock className="w-3 h-3 text-slate-450 shrink-0" />
-                  <span className="truncate">
-                    {modeIconsOnly ? activeTzOpt.shortCode : activeTzOpt.commonName}
-                  </span>
-                </div>
-              );
-            })()}
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            {renderNavButtons()}
+            {renderTimezoneBadge()}
           </div>
         )}
 
         {viewMode !== 'files' && (
           <div
             className={cn(
-              'flex gap-2 items-center shrink-0 min-w-0',
+              'flex gap-1.5 items-center shrink-0 min-w-0',
               isHeaderStacked ? 'w-full' : 'flex-nowrap',
-              isHeaderStacked && isUltraNarrowHeader && viewMode === 'calendar' && 'flex-col items-stretch gap-1.5'
+              isHeaderStacked &&
+                isUltraNarrowHeader &&
+                viewMode === 'calendar' &&
+                'flex-col items-stretch gap-1.5'
             )}
           >
             {!(isHeaderStacked && isUltraNarrowHeader && viewMode === 'calendar') && (
@@ -332,14 +315,18 @@ export function CalendarHeaderBar({
                 <div
                   className={cn(
                     'relative transition-all min-w-0',
-                    isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-24 shrink-0' : 'w-36 sm:w-44 shrink-0'
+                    isHeaderStacked
+                      ? 'flex-1 w-full'
+                      : halfFilter
+                        ? 'w-24 shrink-0'
+                        : 'w-32 sm:w-40 shrink-0'
                   )}
                 >
                   <input
                     type="text"
-                    placeholder={halfFilter ? 'Announcements...' : 'Filter announcements...'}
+                    placeholder={halfFilter ? 'Ann...' : 'Filter announcements...'}
                     value={announcementFilterQuery}
-                    onChange={e => setAnnouncementFilterQuery(e.target.value)}
+                    onChange={(e) => setAnnouncementFilterQuery(e.target.value)}
                     className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
                   />
                   {announcementFilterQuery && (
@@ -356,14 +343,18 @@ export function CalendarHeaderBar({
                 <div
                   className={cn(
                     'relative transition-all min-w-0',
-                    isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-24 shrink-0' : 'w-36 sm:w-44 shrink-0'
+                    isHeaderStacked
+                      ? 'flex-1 w-full'
+                      : halfFilter
+                        ? 'w-24 shrink-0'
+                        : 'w-32 sm:w-40 shrink-0'
                   )}
                 >
                   <input
                     type="text"
                     placeholder={halfFilter ? 'Shows...' : 'Filter shows...'}
                     value={showFilterQuery}
-                    onChange={e => setShowFilterQuery(e.target.value)}
+                    onChange={(e) => setShowFilterQuery(e.target.value)}
                     className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
                   />
                   {showFilterQuery && (
@@ -381,7 +372,11 @@ export function CalendarHeaderBar({
               <div
                 className={cn(
                   'relative transition-all min-w-0',
-                  isHeaderStacked ? 'flex-1 w-full' : halfFilter ? 'w-28 shrink-0' : 'w-48 sm:w-56 shrink-0'
+                  isHeaderStacked
+                    ? 'flex-1 w-full'
+                    : halfFilter
+                      ? 'w-28 shrink-0'
+                      : 'w-44 sm:w-52 shrink-0'
                 )}
               >
                 <input
@@ -391,21 +386,38 @@ export function CalendarHeaderBar({
                       ? 'Filter'
                       : viewMode === 'shows'
                         ? 'Filter shows...'
-                        : 'Filter announcements...'
+                        : viewMode === 'messages'
+                          ? 'Filter messages...'
+                          : 'Filter announcements...'
                   }
-                  value={viewMode === 'shows' ? showFilterQuery : announcementFilterQuery}
-                  onChange={e =>
+                  value={
+                    viewMode === 'shows'
+                      ? showFilterQuery
+                      : viewMode === 'messages'
+                        ? messageFilterQuery
+                        : announcementFilterQuery
+                  }
+                  onChange={(e) =>
                     viewMode === 'shows'
                       ? setShowFilterQuery(e.target.value)
-                      : setAnnouncementFilterQuery(e.target.value)
+                      : viewMode === 'messages'
+                        ? setMessageFilterQuery(e.target.value)
+                        : setAnnouncementFilterQuery(e.target.value)
                   }
                   className="w-full min-w-0 px-2.5 pr-6 py-1 bg-white border border-slate-350 rounded-lg text-xs font-bold outline-none focus:ring-1 focus:ring-blue-500 transition-all font-sans text-slate-850 placeholder-slate-450 h-8"
                 />
                 {((viewMode === 'shows' && showFilterQuery) ||
-                  (viewMode !== 'shows' && announcementFilterQuery)) && (
+                  (viewMode === 'messages' && messageFilterQuery) ||
+                  (viewMode !== 'shows' &&
+                    viewMode !== 'messages' &&
+                    announcementFilterQuery)) && (
                   <button
                     onClick={() =>
-                      viewMode === 'shows' ? setShowFilterQuery('') : setAnnouncementFilterQuery('')
+                      viewMode === 'shows'
+                        ? setShowFilterQuery('')
+                        : viewMode === 'messages'
+                          ? setMessageFilterQuery('')
+                          : setAnnouncementFilterQuery('')
                     }
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs font-bold cursor-pointer"
                     title="Clear filter"
@@ -416,20 +428,7 @@ export function CalendarHeaderBar({
               </div>
             )}
 
-            {!isHeaderStacked && (
-              <button
-                onClick={viewMode === 'shows' ? createNewShow : createNew}
-                className="p-1.5 px-3 bg-blue-600 text-white rounded text-xs font-black tracking-tighter shadow-sm hover:bg-blue-700 transition-colors uppercase cursor-pointer h-8 border border-blue-700 shrink-0 whitespace-nowrap"
-              >
-                {addTextIconOnly
-                  ? '+'
-                  : addTextShort
-                    ? '+ ADD'
-                    : viewMode === 'shows'
-                      ? '+ ADD SHOW'
-                      : '+ ADD ANNOUNCEMENT'}
-              </button>
-            )}
+            {!isHeaderStacked && renderAddButton()}
           </div>
         )}
       </div>
@@ -448,7 +447,7 @@ export function CalendarHeaderBar({
                     : isCell3Below
                       ? 'Cell 3 Below <560'
                       : isHeaderStacked
-                        ? 'Header Stacked <640/540'
+                        ? 'Header Stacked <700/600'
                         : isFilterModeSplit
                           ? 'Filter/Mode Split <860'
                           : 'Single-Row Toolbar ≥860'}
@@ -457,13 +456,17 @@ export function CalendarHeaderBar({
             </span>
             <span>
               Trigger Value:{' '}
-              <span className="text-cyan-300 font-extrabold text-xs">{Math.round(activeTriggerWidth)}px</span>
+              <span className="text-cyan-300 font-extrabold text-xs">
+                {Math.round(activeTriggerWidth)}px
+              </span>
             </span>
           </div>
           <div className="relative h-8 bg-slate-800/80 rounded border border-slate-700/80 overflow-x-auto overflow-y-hidden">
             <div
               className="absolute inset-y-0 left-0 flex items-center"
-              style={{ width: `${Math.max(headerContainerWidth, controlsContainerWidth, 1360)}px` }}
+              style={{
+                width: `${Math.max(headerContainerWidth, controlsContainerWidth, 1360)}px`,
+              }}
             >
               {[
                 320, 360, 390, 420, 460, 480, 520, 560, 640, 720, 760, 800, 860, 920,

@@ -6,6 +6,9 @@ import {
   CURRENT_APP_VERSION,
   CURRENT_SCHEMA_VERSION,
   CURRENT_MIN_APP_VERSION,
+  DEFAULT_SCHEDULE_WINDOW_CONFIG,
+  compareSemver,
+  resolveHighestAppVersion,
   seedLogEntrySiblings,
   migrateAnnouncementsPayload,
   migrateShowsPayload,
@@ -14,6 +17,7 @@ import {
 import {
   currentSettings,
   getAmpSettingsDir,
+  getAmpLogsDir,
   getCalendarFilePath,
   getCalendarBackupPath,
   getShowsFilePath,
@@ -25,7 +29,8 @@ import {
   resolveLocalAnnouncementScriptText,
   readStationSettingsSidecar,
   writeStationSettingsSidecar,
-  readJsonFileWithCloudCatchUp
+  readJsonFileWithCloudCatchUp,
+  isPathWithinAnyDir
 } from '../state';
 import {
   isServerDriveStorageRequest,
@@ -41,6 +46,61 @@ import {
 } from '../storage/driveProvider';
 
 export function registerScheduleRoutes(app: express.Express): void {
+  const resolveShowsMetadataWithSidecarFallback = (parsed: any, sidecar: any) => {
+    const isObj = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+    const embeddedMeta = Array.isArray(parsed?.data)
+      ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
+      : undefined;
+    const stationTimezone =
+      (isObj && (parsed.stationTimezone || parsed._meta?.stationTimezone)) ||
+      embeddedMeta?.stationTimezone ||
+      sidecar?.stationTimezone;
+    const adminContactInfo =
+      isObj && parsed.adminContactInfo !== undefined
+        ? parsed.adminContactInfo
+        : isObj && parsed._meta?.adminContactInfo !== undefined
+          ? parsed._meta.adminContactInfo
+          : embeddedMeta?.adminContactInfo !== undefined
+            ? embeddedMeta.adminContactInfo
+            : sidecar?.adminContactInfo;
+    const upNextPromo =
+      (isObj && (parsed.upNextPromo || parsed._meta?.upNextPromo)) ||
+      embeddedMeta?.upNextPromo ||
+      sidecar?.upNextPromo;
+    const scheduleWindow =
+      (isObj && (parsed.scheduleWindow || parsed._meta?.scheduleWindow)) ||
+      embeddedMeta?.scheduleWindow ||
+      sidecar?.scheduleWindow;
+    const adminMessages =
+      isObj && Array.isArray(parsed.adminMessages)
+        ? parsed.adminMessages
+        : isObj && Array.isArray(parsed._meta?.adminMessages)
+          ? parsed._meta.adminMessages
+          : Array.isArray(embeddedMeta?.adminMessages)
+            ? embeddedMeta.adminMessages
+            : sidecar?.adminMessages;
+    return {
+      embeddedMeta,
+      stationTimezone,
+      adminContactInfo,
+      upNextPromo,
+      scheduleWindow,
+      adminMessages
+    };
+  };
+
+  const resolveAnnScheduleWindowWithSidecarFallback = (parsed: any, sidecar: any) => {
+    const isObj = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+    const embeddedAnnMeta = Array.isArray(parsed?.data)
+      ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
+      : undefined;
+    return (
+      (isObj && (parsed._meta?.scheduleWindow || parsed.scheduleWindow)) ||
+      embeddedAnnMeta?.scheduleWindow ||
+      sidecar?.scheduleWindow
+    );
+  };
+
   // API - Announcements (Unified Local + Google Drive Provider)
   app.get('/api/announcements', async (req, res) => {
     try {
@@ -74,13 +134,14 @@ export function registerScheduleRoutes(app: express.Express): void {
       const lastMod = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed._meta?.lastModifiedBy)
         ? parsed._meta.lastModifiedBy
         : CURRENT_APP_VERSION;
+      const resolvedAnnWindow = resolveAnnScheduleWindowWithSidecarFallback(parsed, sidecar);
       const migrated = migrateAnnouncementsPayload(
         parsed,
         lastMod,
         0,
         rawLogs,
         resolveLocalAnnouncementScriptText,
-        sidecar?.scheduleWindow
+        resolvedAnnWindow
       );
       const seeded = migrated.data;
       if (withEnvelope) {
@@ -93,7 +154,11 @@ export function registerScheduleRoutes(app: express.Express): void {
       res.json(seeded);
     } catch (e: any) {
       console.error('Failed to read schedules:', e);
-      res.status(500).json(isServerDriveStorageRequest(req) ? { error: e?.message || 'Failed to read schedules' } : []);
+      const backupPath = !isServerDriveStorageRequest(req) ? getCalendarBackupPath() : null;
+      res.status(500).json({
+        error: e?.message || 'Failed to read schedules',
+        backupAvailable: Boolean(backupPath && fs.existsSync(backupPath))
+      });
     }
   });
 
@@ -139,6 +204,17 @@ export function registerScheduleRoutes(app: express.Express): void {
         effectiveScheduleWindow
       );
       const updatedObj = migrated.envelope;
+      if (sidecar && updatedObj.data.length > 0 && updatedObj.data[0] && typeof updatedObj.data[0] === 'object') {
+        updatedObj.data[0]._stationMeta = {
+          ...(updatedObj.data[0]._stationMeta || {}),
+          ...(sidecar.stationTimezone ? { stationTimezone: sidecar.stationTimezone } : {}),
+          ...(sidecar.adminContactInfo !== undefined ? { adminContactInfo: sidecar.adminContactInfo } : {}),
+          ...(sidecar.upNextPromo ? { upNextPromo: sidecar.upNextPromo } : {}),
+          ...(effectiveScheduleWindow ? { scheduleWindow: effectiveScheduleWindow } : sidecar.scheduleWindow ? { scheduleWindow: sidecar.scheduleWindow } : {}),
+          ...(Array.isArray(sidecar.adminMessages) ? { adminMessages: sidecar.adminMessages } : {}),
+          ...(updatedObj._meta?.highestAppVersion ? { highestAppVersion: updatedObj._meta.highestAppVersion } : {})
+        };
+      }
       atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
       if (updatedObj._meta?.scheduleWindow) {
         writeStationSettingsSidecar({ scheduleWindow: updatedObj._meta.scheduleWindow });
@@ -187,7 +263,8 @@ export function registerScheduleRoutes(app: express.Express): void {
             adminContactInfo: '',
             hasSavedAdminContact: false,
             upNextPromo: { enabled: true, minutesBefore: 20 },
-            scheduleWindow: { windowBeforeMinutes: 5, windowAfterMinutes: 5, showLookaroundHours: 1 },
+            scheduleWindow: { ...DEFAULT_SCHEDULE_WINDOW_CONFIG },
+            adminMessages: [],
             ShowsBackupCounter: 0,
             data: []
           });
@@ -195,9 +272,8 @@ export function registerScheduleRoutes(app: express.Express): void {
         return res.json([]);
       }
       const sidecar = readStationSettingsSidecar();
-      const embeddedMeta = Array.isArray(parsed?.data)
-        ? parsed.data.find((it: any) => it && typeof it._stationMeta === 'object')?._stationMeta
-        : undefined;
+      const resolvedShowsMeta = resolveShowsMetadataWithSidecarFallback(parsed, sidecar);
+      const embeddedMeta = resolvedShowsMeta.embeddedMeta;
       const hasSavedTimezone = Boolean(
         (parsed &&
           typeof parsed === 'object' &&
@@ -221,10 +297,11 @@ export function registerScheduleRoutes(app: express.Express): void {
         parsed,
         lastMod,
         0,
-        sidecar?.stationTimezone,
-        sidecar?.adminContactInfo,
-        sidecar?.upNextPromo,
-        sidecar?.scheduleWindow
+        resolvedShowsMeta.stationTimezone,
+        resolvedShowsMeta.adminContactInfo,
+        resolvedShowsMeta.upNextPromo,
+        resolvedShowsMeta.scheduleWindow,
+        resolvedShowsMeta.adminMessages
       );
       const seeded = seededResult.data;
       if (withEnvelope) {
@@ -235,7 +312,8 @@ export function registerScheduleRoutes(app: express.Express): void {
           adminContactInfo: seededResult.envelope.adminContactInfo || '',
           hasSavedAdminContact,
           upNextPromo: seededResult.envelope.upNextPromo || { enabled: true, minutesBefore: 20 },
-          scheduleWindow: seededResult.envelope.scheduleWindow || seededResult.envelope._meta?.scheduleWindow || { windowBeforeMinutes: 5, windowAfterMinutes: 5, showLookaroundHours: 1, showLookaroundMinutes: 60 },
+          scheduleWindow: seededResult.envelope.scheduleWindow || seededResult.envelope._meta?.scheduleWindow || { ...DEFAULT_SCHEDULE_WINDOW_CONFIG },
+          adminMessages: Array.isArray(seededResult.envelope.adminMessages) ? seededResult.envelope.adminMessages : [],
           ShowsBackupCounter: parsed?.ShowsBackupCounter || 0,
           data: seeded
         });
@@ -243,7 +321,11 @@ export function registerScheduleRoutes(app: express.Express): void {
       res.json(seeded);
     } catch (e: any) {
       console.error('Failed to read shows:', e);
-      res.status(500).json(isServerDriveStorageRequest(req) ? { error: e?.message || 'Failed to read shows' } : []);
+      const backupPath = !isServerDriveStorageRequest(req) ? getShowsBackupPath() : null;
+      res.status(500).json({
+        error: e?.message || 'Failed to read shows',
+        backupAvailable: Boolean(backupPath && fs.existsSync(backupPath))
+      });
     }
   });
 
@@ -273,40 +355,47 @@ export function registerScheduleRoutes(app: express.Express): void {
         !Array.isArray(rawPayload) && rawPayload && typeof rawPayload === 'object'
           ? (rawPayload.scheduleWindow || rawPayload._meta?.scheduleWindow)
           : undefined;
+      const explicitAdminMessages =
+        !Array.isArray(rawPayload) && rawPayload && typeof rawPayload === 'object'
+          ? (Array.isArray(rawPayload.adminMessages)
+              ? rawPayload.adminMessages
+              : Array.isArray(rawPayload._meta?.adminMessages)
+                ? rawPayload._meta.adminMessages
+                : undefined)
+          : undefined;
       let counter = 0;
       let existingMeta: any = null;
-      let existingAdminContact: string | undefined = undefined;
-      let existingUpNextPromo: any = undefined;
-      let existingScheduleWindow: any = undefined;
+      let existingParsed: any = null;
       if (fs.existsSync(filePath)) {
         const data = fs.readFileSync(filePath, 'utf-8');
         try {
           const parsed = JSON.parse(data || '{}');
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            existingParsed = parsed;
             counter = parsed.ShowsBackupCounter || 0;
             existingMeta = parsed._meta || null;
-            existingAdminContact = parsed.adminContactInfo !== undefined ? parsed.adminContactInfo : parsed._meta?.adminContactInfo;
-            existingUpNextPromo = parsed.upNextPromo || parsed._meta?.upNextPromo;
-            existingScheduleWindow = parsed.scheduleWindow || parsed._meta?.scheduleWindow;
           }
         } catch (pe) {}
       }
       const sidecar = readStationSettingsSidecar();
+      const existingResolved = resolveShowsMetadataWithSidecarFallback(existingParsed, sidecar);
       const migrated = migrateShowsPayload(
         {
           _meta: rawPayload?._meta || existingMeta,
           ShowsBackupCounter: counter,
           data: shows,
-          ...((existingAdminContact ?? sidecar?.adminContactInfo) !== undefined ? { adminContactInfo: existingAdminContact ?? sidecar?.adminContactInfo } : {}),
-          ...((existingUpNextPromo ?? sidecar?.upNextPromo) !== undefined ? { upNextPromo: existingUpNextPromo ?? sidecar?.upNextPromo } : {}),
-          ...((existingScheduleWindow ?? sidecar?.scheduleWindow) !== undefined ? { scheduleWindow: existingScheduleWindow ?? sidecar?.scheduleWindow } : {})
+          ...(existingResolved.adminContactInfo !== undefined ? { adminContactInfo: existingResolved.adminContactInfo } : {}),
+          ...(existingResolved.upNextPromo !== undefined ? { upNextPromo: existingResolved.upNextPromo } : {}),
+          ...(existingResolved.scheduleWindow !== undefined ? { scheduleWindow: existingResolved.scheduleWindow } : {}),
+          ...(existingResolved.adminMessages !== undefined ? { adminMessages: existingResolved.adminMessages } : {})
         },
         CURRENT_APP_VERSION,
         counter,
-        explicitTz ?? sidecar?.stationTimezone,
+        explicitTz ?? existingResolved.stationTimezone,
         explicitAdminContact,
         explicitUpNextPromo,
-        explicitScheduleWindow
+        explicitScheduleWindow,
+        explicitAdminMessages
       );
       const updatedObj = migrated.envelope;
       atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
@@ -314,7 +403,8 @@ export function registerScheduleRoutes(app: express.Express): void {
         stationTimezone: updatedObj.stationTimezone,
         adminContactInfo: updatedObj.adminContactInfo ?? '',
         upNextPromo: updatedObj.upNextPromo,
-        scheduleWindow: updatedObj.scheduleWindow
+        scheduleWindow: updatedObj.scheduleWindow,
+        adminMessages: updatedObj.adminMessages ?? []
       });
 
       // Keep announcements.json _meta.scheduleWindow, data[0]._stationMeta, and Auto Live Read WPM estimates synchronized with station settings (#77)
@@ -342,7 +432,9 @@ export function registerScheduleRoutes(app: express.Express): void {
                 stationTimezone: updatedObj.stationTimezone,
                 adminContactInfo: updatedObj.adminContactInfo ?? '',
                 upNextPromo: updatedObj.upNextPromo,
-                scheduleWindow: updatedObj.scheduleWindow
+                scheduleWindow: updatedObj.scheduleWindow,
+                adminMessages: updatedObj.adminMessages ?? [],
+                ...(updatedObj._meta?.highestAppVersion ? { highestAppVersion: updatedObj._meta.highestAppVersion } : {})
               };
             }
             atomicWriteFileSync(calPath, JSON.stringify(migratedCal.envelope, null, 2));
@@ -398,21 +490,41 @@ export function registerScheduleRoutes(app: express.Express): void {
         } catch (_) {}
       }
 
-      const sidecar = readStationSettingsSidecar();
+      const ensureFirstTouchPreUpgradeBackup = (storeName: 'announcements' | 'shows' | 'logs', sourceFilePath: string) => {
+        try {
+          const settingsDir = getAmpSettingsDir(currentSettings);
+          if (!settingsDir || !sourceFilePath || !fs.existsSync(sourceFilePath)) return;
+          const backupsDir = path.join(settingsDir, 'backups');
+          if (!fs.existsSync(backupsDir)) {
+            fs.mkdirSync(backupsDir, { recursive: true });
+          }
+          const prefix = `${storeName}.backup-pre-upgrade-`;
+          const alreadyHasPreUpgrade = fs.readdirSync(backupsDir).some((f) => f.toLowerCase().startsWith(prefix));
+          if (!alreadyHasPreUpgrade) {
+            const ts = new Date().toISOString().replace(/[:.]/g, '-');
+            fs.copyFileSync(sourceFilePath, path.join(backupsDir, `${prefix}${ts}.json`));
+          }
+        } catch (_) {}
+      };
+
+      let activeSidecar = readStationSettingsSidecar();
       if (showsPath && fs.existsSync(showsPath)) {
         try {
           const parsed = JSON.parse(fs.readFileSync(showsPath, 'utf-8') || '{}');
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.data)) {
+            const resolvedInspectMeta = resolveShowsMetadataWithSidecarFallback(parsed, activeSidecar);
             if (!parsed._meta) {
+              ensureFirstTouchPreUpgradeBackup('shows', showsPath);
               const counter = typeof parsed.ShowsBackupCounter === 'number' ? Math.max(0, parsed.ShowsBackupCounter - 1) : 0;
               const seeded = migrateShowsPayload(
                 parsed,
                 CURRENT_APP_VERSION,
                 counter,
-                sidecar?.stationTimezone,
-                sidecar?.adminContactInfo,
-                sidecar?.upNextPromo,
-                sidecar?.scheduleWindow
+                resolvedInspectMeta.stationTimezone,
+                resolvedInspectMeta.adminContactInfo,
+                resolvedInspectMeta.upNextPromo,
+                resolvedInspectMeta.scheduleWindow,
+                resolvedInspectMeta.adminMessages
               );
               atomicWriteFileSync(showsPath, JSON.stringify(seeded.envelope, null, 2));
               showsMeta = seeded.envelope._meta;
@@ -420,25 +532,50 @@ export function registerScheduleRoutes(app: express.Express): void {
                 stationTimezone: seeded.envelope.stationTimezone,
                 adminContactInfo: seeded.envelope.adminContactInfo ?? '',
                 upNextPromo: seeded.envelope.upNextPromo,
-                scheduleWindow: seeded.envelope.scheduleWindow
+                scheduleWindow: seeded.envelope.scheduleWindow,
+                adminMessages: seeded.envelope.adminMessages ?? []
               });
+              activeSidecar = readStationSettingsSidecar();
             } else {
               const seeded = migrateShowsPayload(
                 parsed,
                 parsed._meta?.lastModifiedBy || CURRENT_APP_VERSION,
                 0,
-                sidecar?.stationTimezone,
-                sidecar?.adminContactInfo,
-                sidecar?.upNextPromo,
-                sidecar?.scheduleWindow
+                resolvedInspectMeta.stationTimezone,
+                resolvedInspectMeta.adminContactInfo,
+                resolvedInspectMeta.upNextPromo,
+                resolvedInspectMeta.scheduleWindow,
+                resolvedInspectMeta.adminMessages
               );
+              const recordedHighest = resolveHighestAppVersion(
+                parsed._meta?.highestAppVersion,
+                parsed._meta?.lastModifiedBy
+              );
+              const isCompatibleShowsMeta =
+                (parsed._meta?.schemaVersion ?? 0) >= CURRENT_SCHEMA_VERSION &&
+                compareSemver(parsed._meta?.minAppVersion || '0.0.0', CURRENT_APP_VERSION) <= 0;
+              if (
+                isCompatibleShowsMeta &&
+                (!parsed._meta?.highestAppVersion ||
+                  compareSemver(CURRENT_APP_VERSION, recordedHighest) > 0)
+              ) {
+                parsed._meta.highestAppVersion = resolveHighestAppVersion(
+                  recordedHighest,
+                  CURRENT_APP_VERSION
+                );
+                try {
+                  atomicWriteFileSync(showsPath, JSON.stringify(parsed, null, 2));
+                } catch (_) {}
+              }
               showsMeta = parsed._meta;
               writeStationSettingsSidecar({
                 stationTimezone: seeded.envelope.stationTimezone,
                 adminContactInfo: seeded.envelope.adminContactInfo ?? '',
                 upNextPromo: seeded.envelope.upNextPromo,
-                scheduleWindow: seeded.envelope.scheduleWindow
+                scheduleWindow: seeded.envelope.scheduleWindow,
+                adminMessages: seeded.envelope.adminMessages ?? []
               });
+              activeSidecar = readStationSettingsSidecar();
             }
           } else {
             showsMeta = { schemaVersion: 0, minAppVersion: '0.15.0', lastModifiedBy: '0.15.0' };
@@ -465,7 +602,11 @@ export function registerScheduleRoutes(app: express.Express): void {
                 );
               })
             );
+            const resolvedAnnWindow = resolveAnnScheduleWindowWithSidecarFallback(parsed, activeSidecar);
             if (!parsed._meta || hasUnseededReadTime) {
+              if (!parsed._meta) {
+                ensureFirstTouchPreUpgradeBackup('announcements', calPath);
+              }
               const counter = typeof parsed.AnnouncementsBackupCounter === 'number' ? Math.max(0, parsed.AnnouncementsBackupCounter - 1) : 0;
               const seeded = migrateAnnouncementsPayload(
                 parsed,
@@ -473,13 +614,24 @@ export function registerScheduleRoutes(app: express.Express): void {
                 counter,
                 parsedLogsForBackfill,
                 resolveLocalAnnouncementScriptText,
-                sidecar?.scheduleWindow
+                resolvedAnnWindow
               );
+              if (activeSidecar && seeded.envelope.data.length > 0 && seeded.envelope.data[0] && typeof seeded.envelope.data[0] === 'object') {
+                seeded.envelope.data[0]._stationMeta = {
+                  ...(seeded.envelope.data[0]._stationMeta || {}),
+                  ...(activeSidecar.stationTimezone ? { stationTimezone: activeSidecar.stationTimezone } : {}),
+                  ...(activeSidecar.adminContactInfo !== undefined ? { adminContactInfo: activeSidecar.adminContactInfo } : {}),
+                  ...(activeSidecar.upNextPromo ? { upNextPromo: activeSidecar.upNextPromo } : {}),
+                  ...(resolvedAnnWindow ? { scheduleWindow: resolvedAnnWindow } : activeSidecar.scheduleWindow ? { scheduleWindow: activeSidecar.scheduleWindow } : {}),
+                  ...(Array.isArray(activeSidecar.adminMessages) ? { adminMessages: activeSidecar.adminMessages } : {}),
+                  ...(seeded.envelope._meta?.highestAppVersion ? { highestAppVersion: seeded.envelope._meta.highestAppVersion } : {})
+                };
+              }
               atomicWriteFileSync(calPath, JSON.stringify(seeded.envelope, null, 2));
               announcementsMeta = seeded.envelope._meta;
             } else {
-              if (sidecar?.scheduleWindow) {
-                parsed._meta.scheduleWindow = sidecar.scheduleWindow;
+              if (resolvedAnnWindow) {
+                parsed._meta.scheduleWindow = resolvedAnnWindow;
               }
               announcementsMeta = parsed._meta;
             }
@@ -493,6 +645,7 @@ export function registerScheduleRoutes(app: express.Express): void {
         try {
           const parsed = parsedLogsForBackfill || JSON.parse(fs.readFileSync(logPath, 'utf-8') || '{}');
           if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.data) && !parsed._meta) {
+            ensureFirstTouchPreUpgradeBackup('logs', logPath);
             const counter = typeof parsed.LogsBackupCounter === 'number' ? Math.max(0, parsed.LogsBackupCounter - 1) : 0;
             const seeded = migrateLogsPayload(parsed, CURRENT_APP_VERSION, counter);
             atomicWriteFileSync(logPath, JSON.stringify(seeded.envelope, null, 2));
@@ -500,7 +653,30 @@ export function registerScheduleRoutes(app: express.Express): void {
         } catch (_) {}
       }
 
-      const activeMeta = announcementsMeta || showsMeta || { schemaVersion: CURRENT_SCHEMA_VERSION, minAppVersion: CURRENT_MIN_APP_VERSION, lastModifiedBy: CURRENT_APP_VERSION };
+      const logsMeta =
+        parsedLogsForBackfill &&
+        typeof parsedLogsForBackfill === 'object' &&
+        !Array.isArray(parsedLogsForBackfill)
+          ? parsedLogsForBackfill._meta
+          : null;
+      const baseMeta = announcementsMeta || showsMeta || {
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        minAppVersion: CURRENT_MIN_APP_VERSION,
+        lastModifiedBy: CURRENT_APP_VERSION
+      };
+      const highestAppVersion = resolveHighestAppVersion(
+        announcementsMeta?.highestAppVersion,
+        announcementsMeta?.lastModifiedBy,
+        showsMeta?.highestAppVersion,
+        showsMeta?.lastModifiedBy,
+        logsMeta?.highestAppVersion,
+        logsMeta?.lastModifiedBy,
+        CURRENT_APP_VERSION
+      );
+      const activeMeta = {
+        ...baseMeta,
+        highestAppVersion
+      };
       res.json({ success: true, meta: activeMeta, announcementsMeta, showsMeta });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
@@ -592,14 +768,16 @@ export function registerScheduleRoutes(app: express.Express): void {
         try {
           const rawShows = fs.readFileSync(showsPath, 'utf-8');
           const parsed = JSON.parse(rawShows || '[]');
+          const resolvedUpgradeShows = resolveShowsMetadataWithSidecarFallback(parsed, upgradeSidecar);
           showsMigrationResult = migrateShowsPayload(
             parsed,
             CURRENT_APP_VERSION,
             0,
-            upgradeSidecar?.stationTimezone,
-            upgradeSidecar?.adminContactInfo,
-            upgradeSidecar?.upNextPromo,
-            upgradeSidecar?.scheduleWindow
+            resolvedUpgradeShows.stationTimezone,
+            resolvedUpgradeShows.adminContactInfo,
+            resolvedUpgradeShows.upNextPromo,
+            resolvedUpgradeShows.scheduleWindow,
+            resolvedUpgradeShows.adminMessages
           );
         } catch (err: any) {
           console.error('Error parsing shows during upgrade:', err);
@@ -625,13 +803,16 @@ export function registerScheduleRoutes(app: express.Express): void {
         try {
           const rawCal = fs.readFileSync(calPath, 'utf-8');
           const parsed = JSON.parse(rawCal || '[]');
+          const resolvedUpgradeAnnWindow =
+            showsMigrationResult?.envelope?.scheduleWindow ||
+            resolveAnnScheduleWindowWithSidecarFallback(parsed, upgradeSidecar);
           annMigrationResult = migrateAnnouncementsPayload(
             parsed,
             CURRENT_APP_VERSION,
             0,
             rawLogsParsed,
             resolveLocalAnnouncementScriptText,
-            upgradeSidecar?.scheduleWindow
+            resolvedUpgradeAnnWindow
           );
         } catch (err: any) {
           console.error('Error parsing announcements during upgrade:', err);
@@ -665,6 +846,13 @@ export function registerScheduleRoutes(app: express.Express): void {
         }
         if (showsTmp && showsPath && showsMigrationResult) {
           fs.renameSync(showsTmp, showsPath);
+          writeStationSettingsSidecar({
+            stationTimezone: showsMigrationResult.envelope.stationTimezone,
+            adminContactInfo: showsMigrationResult.envelope.adminContactInfo ?? '',
+            upNextPromo: showsMigrationResult.envelope.upNextPromo,
+            scheduleWindow: showsMigrationResult.envelope.scheduleWindow,
+            adminMessages: showsMigrationResult.envelope.adminMessages ?? []
+          });
           const showsBackup = getShowsBackupPath();
           if (showsBackup) {
             try { atomicWriteFileSync(showsBackup, JSON.stringify(showsMigrationResult.envelope, null, 2)); } catch (_) {}
@@ -689,6 +877,12 @@ export function registerScheduleRoutes(app: express.Express): void {
         schemaVersion: CURRENT_SCHEMA_VERSION,
         minAppVersion: CURRENT_MIN_APP_VERSION,
         lastModifiedBy: CURRENT_APP_VERSION,
+        highestAppVersion: resolveHighestAppVersion(
+          annMigrationResult?.envelope?._meta?.highestAppVersion,
+          showsMigrationResult?.envelope?._meta?.highestAppVersion,
+          logsMigrationResult?.envelope?._meta?.highestAppVersion,
+          CURRENT_APP_VERSION
+        ),
         lastModifiedAt: isoNow
       };
 
@@ -698,6 +892,13 @@ export function registerScheduleRoutes(app: express.Express): void {
         announcements: annMigrationResult ? annMigrationResult.data : [],
         shows: showsMigrationResult ? showsMigrationResult.data : [],
         logs: logsMigrationResult ? logsMigrationResult.data : undefined,
+        ...(showsMigrationResult ? {
+          stationTimezone: showsMigrationResult.envelope.stationTimezone,
+          adminContactInfo: showsMigrationResult.envelope.adminContactInfo ?? '',
+          upNextPromo: showsMigrationResult.envelope.upNextPromo,
+          scheduleWindow: showsMigrationResult.envelope.scheduleWindow,
+          adminMessages: Array.isArray(showsMigrationResult.envelope.adminMessages) ? showsMigrationResult.envelope.adminMessages : []
+        } : {}),
         backupsCreated
       });
     } catch (e: any) {
@@ -726,7 +927,11 @@ export function registerScheduleRoutes(app: express.Express): void {
       res.json(rawLogs.map((entry: any) => seedLogEntrySiblings(entry)));
     } catch (e: any) {
       console.error('Failed to read logs from endpoint:', e);
-      res.status(500).json(isServerDriveStorageRequest(req) ? { error: e?.message || 'Failed to read logs' } : []);
+      const backupPath = !isServerDriveStorageRequest(req) ? getLogBackupPath() : null;
+      res.status(500).json({
+        error: e?.message || 'Failed to read logs',
+        backupAvailable: Boolean(backupPath && fs.existsSync(backupPath))
+      });
     }
   });
 
@@ -749,34 +954,44 @@ export function registerScheduleRoutes(app: express.Express): void {
 
       let logs = [];
       let counter = 0;
+      let existingMeta: any = null;
       if (fs.existsSync(filePath)) {
         const data = fs.readFileSync(filePath, 'utf-8');
+        if (!data || !data.trim()) {
+          return res.status(500).json({
+            error: 'Existing logs.json is empty and cannot be appended safely.'
+          });
+        }
+        let parsed: any;
         try {
-          const parsed = JSON.parse(data || '[]');
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            logs = Array.isArray(parsed.data) ? parsed.data : [];
-            counter = parsed.LogsBackupCounter || 0;
-          } else {
-            logs = Array.isArray(parsed) ? parsed : [];
-          }
-        } catch (pe) {
-          logs = [];
+          parsed = JSON.parse(data);
+        } catch (pe: any) {
+          console.error('Refusing to append to malformed logs.json:', pe);
+          return res.status(500).json({
+            error: `Existing logs.json is malformed and cannot be appended safely: ${pe?.message || 'parse failed'}`
+          });
+        }
+        if (Array.isArray(parsed)) {
+          logs = parsed;
+        } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.data)) {
+          logs = parsed.data;
+          counter = parsed.LogsBackupCounter || 0;
+          existingMeta = parsed._meta || null;
+        } else {
+          return res.status(500).json({
+            error: 'Existing logs.json has an invalid data structure and cannot be appended safely.'
+          });
         }
       }
       logs = logs.map((item: any) => seedLogEntrySiblings(item));
       logs.push(entry);
 
-      counter += 1; // Increment on every backup / save operation
-      const updatedObj = {
-        _meta: {
-          schemaVersion: CURRENT_SCHEMA_VERSION,
-          minAppVersion: CURRENT_MIN_APP_VERSION,
-          lastModifiedBy: CURRENT_APP_VERSION,
-          lastModifiedAt: new Date().toISOString()
-        },
-        LogsBackupCounter: counter,
-        data: logs
-      };
+      const migratedLogs = migrateLogsPayload(
+        { _meta: existingMeta, LogsBackupCounter: counter, data: logs },
+        CURRENT_APP_VERSION,
+        counter
+      );
+      const updatedObj = migratedLogs.envelope;
       // Save main log as object structure atomically
       atomicWriteFileSync(filePath, JSON.stringify(updatedObj, null, 2));
 
@@ -815,6 +1030,32 @@ export function registerScheduleRoutes(app: express.Express): void {
       }
 
       const backupSidecar = readStationSettingsSidecar();
+      const failedStores: string[] = [];
+
+      const parseExistingStoreOrRecordFailure = (storeName: string, targetPath: string): any | null => {
+        const raw = fs.readFileSync(targetPath, 'utf-8');
+        if (!raw || !raw.trim()) {
+          console.error(`Skipping backup for empty ${storeName}.json to prevent data wipe.`);
+          failedStores.push(`${storeName}.json`);
+          return null;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          const hasValidArray =
+            Array.isArray(parsed) ||
+            (parsed && typeof parsed === 'object' && Array.isArray(parsed.data));
+          if (!hasValidArray) {
+            console.error(`Skipping backup for structurally invalid ${storeName}.json to prevent data wipe.`);
+            failedStores.push(`${storeName}.json`);
+            return null;
+          }
+          return parsed;
+        } catch (pe) {
+          console.error(`Skipping backup for malformed ${storeName}.json to prevent data wipe:`, pe);
+          failedStores.push(`${storeName}.json`);
+          return null;
+        }
+      };
 
       // Backup schedules (preserving _meta and sibling fields)
       if (calendarPath) {
@@ -831,40 +1072,47 @@ export function registerScheduleRoutes(app: express.Express): void {
         }
 
         if (fs.existsSync(calendarPath)) {
-          const data = fs.readFileSync(calendarPath, 'utf-8');
-          let parsed: any;
-          try {
-            parsed = JSON.parse(data || '[]');
-          } catch {
-            parsed = [];
-          }
-
-          const existingCounter = Array.isArray(parsed) ? 0 : (parsed.AnnouncementsBackupCounter || 0);
-          const migratedAnn = migrateAnnouncementsPayload(
-            parsed,
-            parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
-            existingCounter,
-            undefined,
-            resolveLocalAnnouncementScriptText,
-            backupSidecar?.scheduleWindow
-          );
-          const updatedStr = JSON.stringify(migratedAnn.envelope, null, 2);
-          atomicWriteFileSync(calendarPath, updatedStr);
-
-          const backupFileName = generateBackupFilename('announcements', req.body?.workstationMode);
-
-          const calendarDir = path.dirname(calendarPath);
-          const calendarBackupDir = path.join(calendarDir, 'backups');
-          atomicWriteFileSync(path.join(calendarBackupDir, backupFileName), updatedStr);
-
-          // Also save to schedules_backup.json
-          try {
-            const backupPath = getCalendarBackupPath();
-            if (backupPath) {
-              atomicWriteFileSync(backupPath, updatedStr);
+          const parsed = parseExistingStoreOrRecordFailure('announcements', calendarPath);
+          if (parsed !== null) {
+            const existingCounter = Array.isArray(parsed) ? 0 : (parsed.AnnouncementsBackupCounter || 0);
+            const resolvedAnnWindow = resolveAnnScheduleWindowWithSidecarFallback(parsed, backupSidecar);
+            const migratedAnn = migrateAnnouncementsPayload(
+              parsed,
+              parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+              existingCounter,
+              undefined,
+              resolveLocalAnnouncementScriptText,
+              resolvedAnnWindow
+            );
+            if (backupSidecar && migratedAnn.envelope.data.length > 0 && migratedAnn.envelope.data[0] && typeof migratedAnn.envelope.data[0] === 'object') {
+              migratedAnn.envelope.data[0]._stationMeta = {
+                ...(migratedAnn.envelope.data[0]._stationMeta || {}),
+                ...(backupSidecar.stationTimezone ? { stationTimezone: backupSidecar.stationTimezone } : {}),
+                ...(backupSidecar.adminContactInfo !== undefined ? { adminContactInfo: backupSidecar.adminContactInfo } : {}),
+                ...(backupSidecar.upNextPromo ? { upNextPromo: backupSidecar.upNextPromo } : {}),
+                ...(resolvedAnnWindow ? { scheduleWindow: resolvedAnnWindow } : backupSidecar.scheduleWindow ? { scheduleWindow: backupSidecar.scheduleWindow } : {}),
+                ...(Array.isArray(backupSidecar.adminMessages) ? { adminMessages: backupSidecar.adminMessages } : {}),
+                ...(migratedAnn.envelope._meta?.highestAppVersion ? { highestAppVersion: migratedAnn.envelope._meta.highestAppVersion } : {})
+              };
             }
-          } catch (e) {
-            console.error('Schedules trigger backup failed to copy:', e);
+            const updatedStr = JSON.stringify(migratedAnn.envelope, null, 2);
+            atomicWriteFileSync(calendarPath, updatedStr);
+
+            const backupFileName = generateBackupFilename('announcements', req.body?.workstationMode);
+
+            const calendarDir = path.dirname(calendarPath);
+            const calendarBackupDir = path.join(calendarDir, 'backups');
+            atomicWriteFileSync(path.join(calendarBackupDir, backupFileName), updatedStr);
+
+            // Also save to schedules_backup.json
+            try {
+              const backupPath = getCalendarBackupPath();
+              if (backupPath) {
+                atomicWriteFileSync(backupPath, updatedStr);
+              }
+            } catch (e) {
+              console.error('Schedules trigger backup failed to copy:', e);
+            }
           }
         }
       }
@@ -877,33 +1125,28 @@ export function registerScheduleRoutes(app: express.Express): void {
         }
 
         if (fs.existsSync(logPath)) {
-          const data = fs.readFileSync(logPath, 'utf-8');
-          let parsed: any;
-          try {
-            parsed = JSON.parse(data || '[]');
-          } catch (pe) {
-            parsed = [];
-          }
+          const parsed = parseExistingStoreOrRecordFailure('logs', logPath);
+          if (parsed !== null) {
+            const existingCounter = Array.isArray(parsed) ? 0 : (parsed.LogsBackupCounter || 0);
+            const migratedLogs = migrateLogsPayload(parsed, parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION, existingCounter);
+            const updatedStr = JSON.stringify(migratedLogs.envelope, null, 2);
+            atomicWriteFileSync(logPath, updatedStr);
 
-          const existingCounter = Array.isArray(parsed) ? 0 : (parsed.LogsBackupCounter || 0);
-          const migratedLogs = migrateLogsPayload(parsed, parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION, existingCounter);
-          const updatedStr = JSON.stringify(migratedLogs.envelope, null, 2);
-          atomicWriteFileSync(logPath, updatedStr);
+            const backupFileName = generateBackupFilename('logs', req.body?.workstationMode);
 
-          const backupFileName = generateBackupFilename('logs', req.body?.workstationMode);
+            const logDir = path.dirname(logPath);
+            const logBackupDir = path.join(logDir, 'backups');
+            atomicWriteFileSync(path.join(logBackupDir, backupFileName), updatedStr);
 
-          const logDir = path.dirname(logPath);
-          const logBackupDir = path.join(logDir, 'backups');
-          atomicWriteFileSync(path.join(logBackupDir, backupFileName), updatedStr);
-
-          // Also save to logs_backup.json
-          try {
-            const backupPath = getLogBackupPath();
-            if (backupPath) {
-              atomicWriteFileSync(backupPath, updatedStr);
+            // Also save to logs_backup.json
+            try {
+              const backupPath = getLogBackupPath();
+              if (backupPath) {
+                atomicWriteFileSync(backupPath, updatedStr);
+              }
+            } catch (e) {
+              console.error('Logs trigger backup failed to copy:', e);
             }
-          } catch (e) {
-            console.error('Logs trigger backup failed to copy:', e);
           }
         }
       }
@@ -916,49 +1159,450 @@ export function registerScheduleRoutes(app: express.Express): void {
         }
 
         if (fs.existsSync(showsPath)) {
-          const data = fs.readFileSync(showsPath, 'utf-8');
-          let parsed: any;
-          try {
-            parsed = JSON.parse(data || '[]');
-          } catch (pe) {
-            parsed = [];
-          }
+          const parsed = parseExistingStoreOrRecordFailure('shows', showsPath);
+          if (parsed !== null) {
+            const existingCounter = Array.isArray(parsed) ? 0 : (parsed.ShowsBackupCounter || 0);
+            const resolvedBackupShows = resolveShowsMetadataWithSidecarFallback(parsed, backupSidecar);
+            const migratedShows = migrateShowsPayload(
+              parsed,
+              parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+              existingCounter,
+              resolvedBackupShows.stationTimezone,
+              resolvedBackupShows.adminContactInfo,
+              resolvedBackupShows.upNextPromo,
+              resolvedBackupShows.scheduleWindow,
+              resolvedBackupShows.adminMessages
+            );
+            const updatedStr = JSON.stringify(migratedShows.envelope, null, 2);
+            atomicWriteFileSync(showsPath, updatedStr);
 
-          const existingCounter = Array.isArray(parsed) ? 0 : (parsed.ShowsBackupCounter || 0);
-          const migratedShows = migrateShowsPayload(
-            parsed,
-            parsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
-            existingCounter,
-            backupSidecar?.stationTimezone,
-            backupSidecar?.adminContactInfo,
-            backupSidecar?.upNextPromo,
-            backupSidecar?.scheduleWindow
-          );
-          const updatedStr = JSON.stringify(migratedShows.envelope, null, 2);
-          atomicWriteFileSync(showsPath, updatedStr);
+            const backupFileName = generateBackupFilename('shows', req.body?.workstationMode);
 
-          const backupFileName = generateBackupFilename('shows', req.body?.workstationMode);
+            const showsDir = path.dirname(showsPath);
+            const showsBackupDir = path.join(showsDir, 'backups');
+            atomicWriteFileSync(path.join(showsBackupDir, backupFileName), updatedStr);
 
-          const showsDir = path.dirname(showsPath);
-          const showsBackupDir = path.join(showsDir, 'backups');
-          atomicWriteFileSync(path.join(showsBackupDir, backupFileName), updatedStr);
-
-          // Also save to shows_backup.json
-          try {
-            const backupPath = getShowsBackupPath();
-            if (backupPath) {
-              atomicWriteFileSync(backupPath, updatedStr);
+            // Also save to shows_backup.json
+            try {
+              const backupPath = getShowsBackupPath();
+              if (backupPath) {
+                atomicWriteFileSync(backupPath, updatedStr);
+              }
+            } catch (e) {
+              console.error('Shows trigger backup failed to copy:', e);
             }
-          } catch (e) {
-            console.error('Shows trigger backup failed to copy:', e);
           }
         }
+      }
+
+      if (failedStores.length > 0) {
+        return res.status(500).json({
+          success: false,
+          error: `Backup skipped for malformed file(s): ${failedStores.join(', ')}`,
+          failedStores
+        });
       }
 
       res.json({ success: true });
     } catch (e: any) {
       console.error('Local backup trigger failed:', e);
       res.status(500).json({ error: 'Archiving failed: ' + e.message });
+    }
+  });
+
+  // ============================================================================
+  // Local Data Health Diagnosis & Admin Backup Recovery
+  // ============================================================================
+  type BackupTargetKey = 'announcements' | 'shows' | 'logs';
+
+  const validateParsedDataPayload = (
+    target: BackupTargetKey,
+    rawText: string
+  ): { valid: boolean; recordCount: number; error?: string } => {
+    if (!rawText || !rawText.trim()) {
+      return { valid: false, recordCount: 0, error: 'File is empty' };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (err: any) {
+      return { valid: false, recordCount: 0, error: `Invalid JSON: ${err?.message || 'parse failed'}` };
+    }
+    let records: any[] | null = null;
+    if (Array.isArray(parsed)) {
+      records = parsed;
+    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.data)) {
+      records = parsed.data;
+    }
+    if (!records) {
+      return { valid: false, recordCount: 0, error: 'Missing expected data array structure' };
+    }
+    for (const item of records) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return { valid: false, recordCount: 0, error: `Invalid entry inside ${target} data array` };
+      }
+    }
+    return { valid: true, recordCount: records.length };
+  };
+
+  const matchesBackupTargetFilename = (target: BackupTargetKey, fileName: string): boolean => {
+    const lower = fileName.toLowerCase();
+    if (!lower.endsWith('.json')) return false;
+    if (target === 'announcements') {
+      return (
+        lower === 'announcements_backup.json' ||
+        lower === 'schedules_backup.json' ||
+        lower.startsWith('announcements_') ||
+        lower.startsWith('announcements.backup') ||
+        lower.startsWith('schedules_') ||
+        lower.startsWith('schedules.backup')
+      );
+    }
+    if (target === 'shows') {
+      return (
+        lower === 'shows_backup.json' ||
+        lower.startsWith('shows_') ||
+        lower.startsWith('shows.backup')
+      );
+    }
+    return (
+      lower === 'logs_backup.json' ||
+      lower.startsWith('logs_') ||
+      lower.startsWith('logs.backup')
+    );
+  };
+
+  const getBackupSearchDirsForTarget = (
+    target: BackupTargetKey
+  ): Array<{ dir: string; sourceDir: 'settings/backups' | 'logs/backups' }> => {
+    const dirs: Array<{ dir: string; sourceDir: 'settings/backups' | 'logs/backups' }> = [];
+    const settingsDir = getAmpSettingsDir();
+    const logsDir = getAmpLogsDir();
+    if (target === 'logs') {
+      if (logsDir) dirs.push({ dir: path.join(logsDir, 'backups'), sourceDir: 'logs/backups' });
+      if (settingsDir) dirs.push({ dir: path.join(settingsDir, 'backups'), sourceDir: 'settings/backups' });
+    } else if (settingsDir) {
+      dirs.push({ dir: path.join(settingsDir, 'backups'), sourceDir: 'settings/backups' });
+    }
+    return dirs;
+  };
+
+  const listAndValidateBackupCandidates = (target: BackupTargetKey) => {
+    const searchDirs = getBackupSearchDirsForTarget(target);
+    const seenKeys = new Set<string>();
+    const candidates: Array<{
+      fileName: string;
+      sourceDir: 'settings/backups' | 'logs/backups';
+      mtimeMs: number;
+      modifiedIso: string;
+      sizeBytes: number;
+      valid: boolean;
+      recordCount: number;
+      validationError?: string;
+    }> = [];
+
+    for (const { dir, sourceDir } of searchDirs) {
+      if (!dir || !fs.existsSync(dir)) continue;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (_) {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        if (!matchesBackupTargetFilename(target, entry.name)) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (!isPathWithinAnyDir(fullPath, [dir])) continue;
+        const dedupeKey = `${sourceDir}:${entry.name.toLowerCase()}`;
+        if (seenKeys.has(dedupeKey)) continue;
+        seenKeys.add(dedupeKey);
+
+        let mtimeMs = 0;
+        let sizeBytes = 0;
+        try {
+          const st = fs.statSync(fullPath);
+          mtimeMs = st.mtimeMs;
+          sizeBytes = st.size;
+        } catch (_) {
+          continue;
+        }
+
+        let valid = false;
+        let recordCount = 0;
+        let validationError: string | undefined;
+        try {
+          const raw = fs.readFileSync(fullPath, 'utf-8');
+          const check = validateParsedDataPayload(target, raw);
+          valid = check.valid;
+          recordCount = check.recordCount;
+          validationError = check.error;
+        } catch (readErr: any) {
+          valid = false;
+          validationError = readErr?.message || 'Unable to read backup file';
+        }
+
+        candidates.push({
+          fileName: entry.name,
+          sourceDir,
+          mtimeMs,
+          modifiedIso: new Date(mtimeMs || Date.now()).toISOString(),
+          sizeBytes,
+          valid,
+          recordCount,
+          ...(validationError ? { validationError } : {})
+        });
+      }
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return candidates;
+  };
+
+  const inspectTargetHealth = (target: BackupTargetKey) => {
+    const label =
+      target === 'announcements' ? 'Announcements (announcements.json)' :
+      target === 'shows' ? 'Shows (shows.json)' :
+      'Play Logs (logs.json)';
+
+    const baseDir = target === 'logs' ? getAmpLogsDir() : getAmpSettingsDir();
+    const primaryPath =
+      target === 'announcements' ? getCalendarFilePath() :
+      target === 'shows' ? getShowsFilePath() :
+      getLogFilePath();
+
+    if (!baseDir || !primaryPath) {
+      return {
+        key: target,
+        label,
+        primaryName: `${target}.json`,
+        status: 'error' as const,
+        cause: 'connection_lost' as const,
+        error: 'Configured folder path is missing or offline.',
+        backupCount: 0
+      };
+    }
+
+    try {
+      if (!fs.existsSync(baseDir)) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'connection_lost' as const,
+          error: 'Target folder cannot be reached on disk.',
+          backupCount: 0
+        };
+      }
+      fs.accessSync(baseDir, fs.constants.R_OK);
+    } catch (accessErr: any) {
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'error' as const,
+        cause: 'connection_lost' as const,
+        error: accessErr?.message || 'Folder is not readable.',
+        backupCount: 0
+      };
+    }
+
+    const backups = listAndValidateBackupCandidates(target);
+    const backupCount = backups.length;
+
+    if (!fs.existsSync(primaryPath)) {
+      if (backupCount > 0) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'missing_file' as const,
+          error: `${path.basename(primaryPath)} is missing, but ${backupCount} backup file${backupCount === 1 ? '' : 's'} exist.`,
+          backupCount
+        };
+      }
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'ok' as const,
+        cause: 'ok' as const,
+        backupCount: 0
+      };
+    }
+
+    try {
+      const raw = fs.readFileSync(primaryPath, 'utf-8');
+      const check = validateParsedDataPayload(target, raw);
+      if (!check.valid) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'malformed_file' as const,
+          error: check.error || 'File is malformed or corrupted.',
+          backupCount
+        };
+      }
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'ok' as const,
+        cause: 'ok' as const,
+        backupCount
+      };
+    } catch (readErr: any) {
+      const code = String(readErr?.code || '').toUpperCase();
+      const isConnErr = code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || code === 'ENOTCONN' || code === 'EIO';
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'error' as const,
+        cause: (isConnErr ? 'connection_lost' : 'malformed_file') as 'connection_lost' | 'malformed_file',
+        error: readErr?.message || 'Unable to read data file.',
+        backupCount
+      };
+    }
+  };
+
+  app.get('/api/backups/diagnose', (_req, res) => {
+    try {
+      const targets: BackupTargetKey[] = ['announcements', 'shows', 'logs'];
+      const files = targets.map((t) => inspectTargetHealth(t));
+
+      let overallCause: 'ok' | 'connection_lost' | 'malformed_file' | 'missing_file' = 'ok';
+      if (files.some((f) => f.cause === 'connection_lost')) {
+        overallCause = 'connection_lost';
+      } else if (files.some((f) => f.cause === 'malformed_file')) {
+        overallCause = 'malformed_file';
+      } else if (files.some((f) => f.cause === 'missing_file')) {
+        overallCause = 'missing_file';
+      }
+
+      res.json({
+        overallCause,
+        files
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        overallCause: 'connection_lost',
+        error: e?.message || 'Failed to diagnose station data files',
+        files: []
+      });
+    }
+  });
+
+  app.get('/api/backups/candidates', (req, res) => {
+    try {
+      const rawTarget = String(req.query.target || '').trim().toLowerCase();
+      if (rawTarget !== 'announcements' && rawTarget !== 'shows' && rawTarget !== 'logs') {
+        return res.status(400).json({ error: 'Invalid backup target. Expected announcements, shows, or logs.' });
+      }
+      const target = rawTarget as BackupTargetKey;
+      const health = inspectTargetHealth(target);
+      const candidates = health.cause === 'connection_lost' ? [] : listAndValidateBackupCandidates(target);
+      res.json({
+        target,
+        health,
+        candidates
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Failed to inspect backups', candidates: [] });
+    }
+  });
+
+  app.post('/api/backups/restore', (req, res) => {
+    try {
+      const rawTarget = String(req.body?.target || '').trim().toLowerCase();
+      const rawFileName = String(req.body?.fileName || '').trim();
+      const rawSourceDir = String(req.body?.sourceDir || '').trim();
+
+      if (rawTarget !== 'announcements' && rawTarget !== 'shows' && rawTarget !== 'logs') {
+        return res.status(400).json({ error: 'Invalid backup target' });
+      }
+      const target = rawTarget as BackupTargetKey;
+      const cleanName = path.basename(rawFileName);
+      if (!cleanName || cleanName !== rawFileName || !matchesBackupTargetFilename(target, cleanName)) {
+        return res.status(400).json({ error: 'Invalid backup filename' });
+      }
+
+      const searchDirs = getBackupSearchDirsForTarget(target);
+      const preferredDirs = rawSourceDir
+        ? searchDirs.filter((d) => d.sourceDir === rawSourceDir)
+        : searchDirs;
+
+      let resolvedBackupPath: string | null = null;
+      for (const { dir } of preferredDirs.length > 0 ? preferredDirs : searchDirs) {
+        if (!dir || !fs.existsSync(dir)) continue;
+        const candidate = path.join(dir, cleanName);
+        if (isPathWithinAnyDir(candidate, [dir]) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          resolvedBackupPath = candidate;
+          break;
+        }
+      }
+
+      if (!resolvedBackupPath) {
+        return res.status(404).json({ error: `Backup file "${cleanName}" was not found.` });
+      }
+
+      const rawBackupText = fs.readFileSync(resolvedBackupPath, 'utf-8');
+      const validation = validateParsedDataPayload(target, rawBackupText);
+      if (!validation.valid) {
+        return res.status(400).json({
+          error: `Backup file "${cleanName}" failed validation: ${validation.error || 'Malformed JSON'}`
+        });
+      }
+
+      const primaryPath =
+        target === 'announcements' ? getCalendarFilePath() :
+        target === 'shows' ? getShowsFilePath() :
+        getLogFilePath();
+
+      if (!primaryPath) {
+        return res.status(400).json({ error: 'Primary destination folder is not configured or offline.' });
+      }
+
+      const parentDir = path.dirname(primaryPath);
+      if (!fs.existsSync(parentDir)) {
+        return res.status(400).json({ error: 'Primary destination folder is offline.' });
+      }
+
+      atomicWriteFileSync(primaryPath, rawBackupText);
+
+      if (target === 'shows') {
+        try {
+          const restoredParsed = JSON.parse(rawBackupText);
+          const restoredMigrated = migrateShowsPayload(
+            restoredParsed,
+            restoredParsed?._meta?.lastModifiedBy || CURRENT_APP_VERSION,
+            0
+          );
+          writeStationSettingsSidecar({
+            stationTimezone: restoredMigrated.envelope.stationTimezone,
+            adminContactInfo: restoredMigrated.envelope.adminContactInfo ?? '',
+            upNextPromo: restoredMigrated.envelope.upNextPromo,
+            scheduleWindow: restoredMigrated.envelope.scheduleWindow,
+            adminMessages: restoredMigrated.envelope.adminMessages ?? []
+          });
+        } catch (syncErr) {
+          console.error('Failed to re-sync station_settings.json after shows backup restore:', syncErr);
+        }
+      }
+
+      res.json({
+        success: true,
+        target,
+        restoredFrom: cleanName,
+        recordCount: validation.recordCount
+      });
+    } catch (e: any) {
+      console.error('Failed to restore backup:', e);
+      res.status(500).json({ error: e?.message || 'Failed to restore backup file' });
     }
   });
 }

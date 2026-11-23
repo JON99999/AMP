@@ -13,7 +13,6 @@
 2. [Another item...]
    - 2.a. [Optional sub-detail...]
 ```
-
 ---
 
 ## Pending Inbox (To Be Ingested)
@@ -58,4 +57,9 @@
 - **11/17/2026 Direct Chat Prompt (Defer `#83` to `Future / Deferred / Low Priority`)** -> Moved **Item #83** to `Future / Deferred / Low Priority` in `dev/docs/ROADMAP_AND_BACKLOG.md` on 11/17/2026.
 - **11/17/2026 Direct Chat Prompt (Defer `#109` With Open-Ended Caveat Note; Move `#26`, `#78`, and Joined `#43 & #113` to `Current / Next`)** -> Updated `dev/docs/ROADMAP_AND_BACKLOG.md` on 11/17/2026.
 - **11/17/2026 Direct Chat Prompt (`#26` Concept Expansion: `Files` / `File Manager` Sub-Tab, Collapsible `Last Used` Groupings, `Archive` & `Delete` Actions, & `archived` / `deleted in app (ok to purge)` Subfolders)** -> Appended verbatim `User Note` to **Item #26** in `dev/docs/ROADMAP_AND_BACKLOG.md` on 11/17/2026.
-
+- **11/17/2026 Direct Chat Prompt (Systematic Worst-Case Row Width & Button Collapse Calculation Across Table Views Including File Manager `#114`)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Item #114** on 11/18/2026.
+- **11/18/2026 Scratchpad Note (AI Studio First-Run Startup & Lost-Connection Quick Reconnect Popup With Single Authenticate Button, Enter-to-Connect Input Box, & `"Go to Folders"` Button `#115`)** -> Ingested and resolved/archived to `dev/docs/ROADMAP_HISTORY.md` as **Item #115** on 11/18/2026.
+- **11/18/2026 Direct Chat Prompt (Bump Version to `0.20.8`, Complete Global Default Live Read Font & Size Setting With Text Sample & Built-In Font Choices `#110`, Defer `#114` to Low Priority, & Expand `#78` Off-Air DJ Message Proposal Notes)** -> Completed and archived **Item #110** to `dev/docs/ROADMAP_HISTORY.md`, moved **Item #114** to `Future / Deferred / Low Priority`, and appended verbatim `User Note` to **Item #78** in `dev/docs/ROADMAP_AND_BACKLOG.md` on 11/18/2026.
+- **11/19/2026 Direct Chat Prompt (`#110` Font Follow-Ups, Full Implementation of `#78` Admin-to-Show Messages & App Startup Notices, & Track `11.a` Follow-Up `#116`)** -> Updated **Item #110** and archived **Item #78** in `dev/docs/ROADMAP_HISTORY.md`, and logged follow-up **Item #116** in `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) on 11/19/2026.
+- **11/19/2026 Direct Chat Prompt (Show Substitutions for Guest Host / Swap & Evergreen Pre-Record Scheduling `#117`)** -> Ingested into `dev/docs/ROADMAP_AND_BACKLOG.md` (`Current / Next`) as **Item #117** on 11/19/2026.
+- **11/19/2026 Direct Chat Prompt (Move `#117` to Low Priority & Add Simple Station Login Log for Workstation/Version Map Analysis `#118`)** -> Moved **Item #117** and added **Item #118** under `Future / Deferred / Low Priority` in `dev/docs/ROADMAP_AND_BACKLOG.md` on 11/19/2026.

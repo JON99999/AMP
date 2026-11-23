@@ -8,7 +8,8 @@ import {
   AlertTriangle,
   CheckCircle,
   Eye,
-  EyeOff
+  EyeOff,
+  MessageSquare
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Announcement, LogEntry, Show } from '../types';
@@ -16,7 +17,10 @@ import { cn, getMP3Status, classifyMediaAsset } from '../lib/utils';
 import { reconcileScheduleAndLogs, toCanonicalDateString } from '../lib/temporalReconciliation';
 import { toStationDateParts, getStationTimezone } from '../lib/compatibility';
 
-export const getLogAssetType = (log: LogEntry): 'audio' | 'script' => {
+export const getLogAssetType = (log: LogEntry): 'audio' | 'script' | 'message' => {
+  if (log.assetType === 'message' || log.status === 'acknowledged') {
+    return 'message';
+  }
   return classifyMediaAsset(log.mp3Name, log.assetType);
 };
 
@@ -149,8 +153,11 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
   };
 
   // Filter logs by query and start/end dates, with optional on-the-fly missed break calculations
+  // Keep off-air message acknowledgements off the broadcast Log page (reported on Msgs instead)
   const filteredLogsBase = useMemo(() => {
-    let combinedLogs: LogEntry[] = [...logs];
+    let combinedLogs: LogEntry[] = logs.filter(
+      (l) => l && l.assetType !== 'message' && l.status !== 'acknowledged'
+    );
 
     // Compute missed breaks on the fly if enabled and announcements are loaded
     if (includeMissedBreaks && announcements.length > 0) {
@@ -941,6 +948,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                       isMissed 
                         ? "bg-red-50/50 text-red-950 border-l-4 border-l-red-500 font-semibold" 
                         : (i % 2 === 0 ? "bg-white" : "bg-slate-205"),
+                      !isMissed && getLogAssetType(log) === 'message' && "border-l-4 border-l-teal-600",
                       !isMissed && getLogAssetType(log) === 'script' && "border-l-4 border-l-purple-500",
                       !isMissed && getLogAssetType(log) === 'audio' && "border-l-4 border-l-blue-500"
                     )}
@@ -949,7 +957,9 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                     {containerWidth < 375 ? (
                       <div className="text-xs leading-tight min-w-0 w-full line-clamp-2 break-all">
                         <span className="inline-flex items-center gap-1 font-bold text-slate-850 align-baseline mr-1">
-                          {getLogAssetType(log) === 'script' ? (
+                          {getLogAssetType(log) === 'message' ? (
+                            <MessageSquare className="w-3.5 h-3.5 text-teal-600 inline shrink-0 self-center" />
+                          ) : getLogAssetType(log) === 'script' ? (
                             <FileText className="w-3.5 h-3.5 text-purple-500 inline shrink-0 self-center" />
                           ) : (
                             <Music className="w-3.5 h-3.5 text-slate-400 inline shrink-0 self-center" />
@@ -977,7 +987,9 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                       <div className="flex flex-col gap-0 min-w-0">
                         {/* Top row: Announcement Name : MP3 File */}
                         <div className="flex items-center gap-1.5 min-w-0 w-full truncate leading-tight">
-                          {getLogAssetType(log) === 'script' ? (
+                          {getLogAssetType(log) === 'message' ? (
+                            <MessageSquare className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                          ) : getLogAssetType(log) === 'script' ? (
                             <FileText className="w-3.5 h-3.5 text-purple-500 shrink-0" />
                           ) : (
                             <Music className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -1080,6 +1092,7 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                     isMissed 
                       ? "bg-red-50/50 text-red-950 border-l-4 border-l-red-500 font-semibold" 
                       : (i % 2 === 0 ? "bg-white" : "bg-slate-205"),
+                    !isMissed && getLogAssetType(log) === 'message' && "border-l-4 border-l-teal-600",
                     !isMissed && getLogAssetType(log) === 'script' && "border-l-4 border-l-purple-500",
                     !isMissed && getLogAssetType(log) === 'audio' && "border-l-4 border-l-blue-500"
                   )}
@@ -1108,7 +1121,9 @@ export default function LogTab({ logs, announcements = [], shows = [] }: LogTabP
                   <div className="flex-1 min-w-0 px-2 flex flex-col justify-center py-1 overflow-hidden gap-0">
                     {/* Top row: Announcement Name : MP3 File */}
                     <div className="flex items-center gap-1.5 min-w-0 w-full truncate leading-tight">
-                      {getLogAssetType(log) === 'script' ? (
+                      {getLogAssetType(log) === 'message' ? (
+                        <MessageSquare className="w-3 h-3 text-teal-600 shrink-0" />
+                      ) : getLogAssetType(log) === 'script' ? (
                         <FileText className="w-3 h-3 text-purple-500 shrink-0" />
                       ) : (
                         <Music className="w-3 h-3 text-slate-400 shrink-0" />

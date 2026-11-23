@@ -30,9 +30,24 @@ import {
   isLogForStationSlot,
   isLogPrerecordOrExport,
   setStationTimezone,
-  DEFAULT_STATION_TIMEZONE
+  DEFAULT_STATION_TIMEZONE,
+  DEFAULT_SCHEDULE_WINDOW_CONFIG,
+  resolveHighestAppVersion
 } from '../src/lib/compatibility';
-import { reconcileScheduleAndLogs } from '../src/lib/temporalReconciliation';
+import {
+  normalizeAdminMessages,
+  getAdminMessagesForShowOccurrence,
+  getBuiltInSystemMessages,
+  getPendingStartupMessages,
+  SYSTEM_MSG_VERSION_UPDATE_ID,
+  SYSTEM_MSG_REQUIRED_UPGRADE_ID
+} from '../src/lib/adminMessages';
+import {
+  reconcileScheduleAndLogs,
+  calculateGateSlotAssessment,
+  computePlayedGateBoundsMap,
+  resolveAnnouncementsForDate,
+} from '../src/lib/temporalReconciliation';
 import {
   normalizeAnnouncements,
   normalizeAnnouncement,
@@ -48,6 +63,8 @@ import {
   computeFileScheduleUsageMap,
   isTimeInShow,
   getShowsForSlot,
+  validateTimeGatedMp3s,
+  isGateExpiredOrInactivated,
 } from '../src/lib/scheduleEngine';
 import {
   mediaCatalogStore,
@@ -57,7 +74,7 @@ import {
   driveFileNameCache,
 } from '../src/lib/audioCache';
 import { resolveEffectiveLocalPaths } from '../src/lib/driveService';
-import { Announcement, AnnouncementType, Show } from '../src/types';
+import { AdminMessage, Announcement, AnnouncementType, LogEntry, Show } from '../src/types';
 
 export function runComprehensiveSchemaUpgradeTests() {
   console.log('🧪 Starting Canonical Schema Upgrade Verification (Importing SUT from src/lib/compatibility)...');
@@ -852,14 +869,9 @@ export function runComprehensiveSchemaUpgradeTests() {
     'Strict getMatchingMp3sForSlot must return 0 items during a leading gap before gate startDate'
   );
   assert.strictEqual(
-    getActiveMp3ForSlot(futureGateAnn, oct5NoonMs)?.mp3Url,
-    'FutureSpot.mp3',
-    'getActiveMp3ForSlot with default allowFutureFallback must return earliest future gate for preview'
-  );
-  assert.strictEqual(
-    getActiveMp3ForSlot(futureGateAnn, oct5NoonMs, { allowFutureFallback: false }),
+    getActiveMp3ForSlot(futureGateAnn, oct5NoonMs),
     null,
-    'getActiveMp3ForSlot with allowFutureFallback: false must return null during a leading gap'
+    'getActiveMp3ForSlot must strictly return null during a leading gap (no future-gate fallback)'
   );
 
   // 10d. Verify contiguous midnight transition & overnight show wrapping
@@ -1061,9 +1073,798 @@ export function runComprehensiveSchemaUpgradeTests() {
 
   console.log('✓ Stage 8: #36 TimeGatedMp3 Overlap Bridge, mediaCatalogStore & resolveEffectiveLocalPaths verified.');
 
+  // ---------------------------------------------------------------------------
+  // 12. Stage 9: #43 & #113 Schema Lineage & Gate Guard Verification (LIN-1..LIN-6)
+  // ---------------------------------------------------------------------------
+  console.log('🔄 Stage 9: Verifying #43/#113 Lineage Metadata, Gate-First Attribution, Played Bounds & Revision Snapshots...');
+
+  // 12a. LIN-1: seedLogEntrySiblings preserves optional gateId, rotationIndex, rotationTotal with v0.15.4 coexistence
+  const seededLineageLog = seedLogEntrySiblings({
+    timestamp: '2026-11-18T22:00:05.000Z',
+    announcementTime: '2026-11-18T22:00:00.000Z',
+    mp3Name: 'SponsorSpotA.mp3',
+    announcementName: 'Lineage Test (1/2)',
+    announcementId: 'lin-ann-1',
+    status: 'played',
+    playMode: 'Live',
+    assetType: 'audio',
+    gateId: 'gate-lin-1',
+    rotationIndex: 1,
+    rotationTotal: 2,
+  });
+  assert.strictEqual(seededLineageLog.gateId, 'gate-lin-1', 'LIN-1: seedLogEntrySiblings must preserve gateId');
+  assert.strictEqual(seededLineageLog.rotationIndex, 1, 'LIN-1: seedLogEntrySiblings must preserve rotationIndex');
+  assert.strictEqual(seededLineageLog.rotationTotal, 2, 'LIN-1: seedLogEntrySiblings must preserve rotationTotal');
+  assert.strictEqual(seededLineageLog.scheduledFor, '2026-11-18T22:00:00.000Z', 'LIN-1: v0.15.4/5 sibling fields must remain populated');
+
+  // 12b. LIN-2: gateId-first attribution prevents filename reuse from stealing logs across gates; legacy fallback still works
+  const linAnn: Announcement = normalizeAnnouncement({
+    id: 'lin-ann-1',
+    name: 'Lineage Test',
+    type: AnnouncementType.BASIC_HOURLY,
+    enabled: true,
+    minute: 0,
+    startDate: '2026-11-10T00:00',
+    endDate: '2026-11-30T23:59',
+    timeGatedMp3s: [
+      {
+        id: 'gate-lin-1',
+        startDate: '2026-11-10T00:00',
+        endDate: '2026-11-25T23:59',
+        mediaItems: [{ mp3Url: 'SponsorSpotA.mp3', assetType: 'audio' }],
+      },
+      {
+        id: 'gate-lin-2',
+        startDate: '2026-11-10T00:00',
+        endDate: '2026-11-30T23:59',
+        mediaItems: [{ mp3Url: 'SponsorSpotA.mp3', assetType: 'audio' }],
+      },
+    ],
+  });
+  const linLogs = [
+    {
+      timestamp: stationLocalToUtcIso('2026-11-18T14:00:05', DEFAULT_STATION_TIMEZONE),
+      announcementTime: stationLocalToUtcIso('2026-11-18T14:00:00', DEFAULT_STATION_TIMEZONE),
+      mp3Name: 'SponsorSpotA.mp3',
+      announcementName: 'Lineage Test',
+      announcementId: 'lin-ann-1',
+      status: 'played' as const,
+      playMode: 'Live' as const,
+      gateId: 'gate-lin-1',
+      rotationIndex: 1,
+      rotationTotal: 1,
+    },
+    {
+      // Legacy log without gateId — should match via legacy window + filename fallback
+      timestamp: stationLocalToUtcIso('2026-11-17T10:00:05', DEFAULT_STATION_TIMEZONE),
+      announcementTime: stationLocalToUtcIso('2026-11-17T10:00:00', DEFAULT_STATION_TIMEZONE),
+      mp3Name: 'SponsorSpotA.mp3',
+      announcementName: 'Lineage Test',
+      announcementId: 'lin-ann-1',
+      status: 'played' as const,
+      playMode: 'Live' as const,
+    },
+  ];
+  const linRefNow = new Date(2026, 10, 20, 12, 0, 0); // 2026-11-20T12:00
+  const gate1Eval = calculateGateSlotAssessment(linAnn, linAnn.timeGatedMp3s![0], linLogs, linRefNow);
+  const gate2Eval = calculateGateSlotAssessment(linAnn, linAnn.timeGatedMp3s![1], linLogs, linRefNow);
+  assert.strictEqual(gate1Eval.gateScore.played, 2, 'LIN-2: Gate #1 must receive both its gateId-matched log and legacy fallback log');
+  assert.strictEqual(gate2Eval.gateScore.played, 1, 'LIN-2: Gate #2 must NOT steal Gate #1 gateId-tagged log despite identical filename');
+  assert.strictEqual(gate1Eval.firstPlayedLocalIso, '2026-11-17T10:00', 'LIN-2: firstPlayedLocalIso must match earliest played slot');
+  assert.strictEqual(gate1Eval.lastPlayedLocalIso, '2026-11-18T14:00', 'LIN-2: lastPlayedLocalIso must match latest played slot');
+
+  // 12c. LIN-3 & LIN-4: Moving a played gate's End date into the past BEFORE lastPlayedLocalIso MUST hard-block (never skipped as expired)
+  const savedGatesForLin = [linAnn.timeGatedMp3s![0]];
+  const shortenedDraftGate = {
+    ...linAnn.timeGatedMp3s![0],
+    endDate: '2026-11-18T12:00', // Past (< 2026-11-20T12:00) AND before last play (2026-11-18T14:00)
+  };
+  const linBounds = computePlayedGateBoundsMap(linAnn, [shortenedDraftGate], linLogs, savedGatesForLin, linRefNow);
+  assert.strictEqual(linBounds['gate-lin-1'].playCount, 2, 'LIN-3: computePlayedGateBoundsMap must union saved + draft plays');
+  const shortenedValidation = validateTimeGatedMp3s(
+    [shortenedDraftGate],
+    '2026-11-20T12:00',
+    '2026-11-30T23:59',
+    '2026-11-10T00:00',
+    linBounds,
+    new Set<string>()
+  );
+  assert.strictEqual(
+    shortenedValidation.hasBlockingErrors,
+    true,
+    'LIN-3: Shortening a played gate End below lastPlayedLocalIso (even into the past) MUST hard-block'
+  );
+  assert(
+    shortenedValidation.blockingErrors.some(e => e.includes('END cannot be moved before its last logged play')),
+    'LIN-3: blockingErrors must explicitly cite last logged play bound'
+  );
+  assert(
+    shortenedValidation.blockingErrors.every(e => !e.startsWith('Gate #1: Gate #')),
+    'LIN-4: blockingErrors must never double-prefix Gate #'
+  );
+
+  // 12d. LIN-3: Moving Parent Announcement End before last play or Start after first play MUST hard-block
+  const parentShortenedValidation = validateTimeGatedMp3s(
+    savedGatesForLin,
+    '2026-11-20T12:00',
+    '2026-11-18T10:00', // Parent End before last play 2026-11-18T14:00
+    '2026-11-17T12:00', // Parent Start after first play 2026-11-17T10:00
+    linBounds,
+    new Set<string>()
+  );
+  assert.strictEqual(parentShortenedValidation.hasBlockingErrors, true, 'LIN-3: Parent Start/End violating played bounds MUST hard-block');
+  assert.strictEqual(parentShortenedValidation.parentBlockingErrors.length, 2, 'LIN-3: Both Parent Start and Parent End played violations must be reported');
+
+  // 12e. LIN-3/LIN-4: Active gate edited to inverted Start > End with past End MUST hard-block; pre-existing expired gate skipped
+  const invertedPastDraft = {
+    id: 'gate-inv-1',
+    startDate: '2026-11-21T00:00',
+    endDate: '2026-11-19T23:59', // Past (< now), yet Start > End
+    mediaItems: [{ mp3Url: 'Spot.mp3', assetType: 'audio' as const }],
+  };
+  const invValidation = validateTimeGatedMp3s([invertedPastDraft], '2026-11-20T12:00', undefined, undefined, undefined, new Set<string>());
+  assert.strictEqual(invValidation.hasBlockingErrors, true, 'LIN-4: Inverted Start > End with past End must hard-block');
+  const preExistingSkipped = validateTimeGatedMp3s(
+    [invertedPastDraft],
+    '2026-11-20T12:00',
+    undefined,
+    undefined,
+    undefined,
+    new Set<string>(['gate-inv-1'])
+  );
+  assert.strictEqual(preExistingSkipped.hasBlockingErrors, false, 'LIN-4: Pre-existing expired gates in preExistingExpiredIds must not trap unrelated edits');
+
+  // 12f. LIN-4: Overlap is hard-blocking (deduplicated once); schedule gap is soft warning only
+  const overlapValidation = validateTimeGatedMp3s(
+    [
+      { id: 'g-a', startDate: '2026-11-20T00:00', endDate: '2026-11-25T23:59', mediaItems: [{ mp3Url: 'A.mp3', assetType: 'audio' }] },
+      { id: 'g-b', startDate: '2026-11-23T00:00', endDate: '2026-11-28T23:59', mediaItems: [{ mp3Url: 'B.mp3', assetType: 'audio' }] },
+    ],
+    '2026-11-20T12:00'
+  );
+  assert.strictEqual(overlapValidation.hasBlockingErrors, true, 'LIN-4: Overlapping active gates must hard-block');
+  assert.strictEqual(
+    overlapValidation.blockingErrors.filter(e => e.includes('overlaps with')).length,
+    1,
+    'LIN-4: Pairwise overlap must be deduplicated to 1 entry in blockingErrors'
+  );
+
+  const gapOnlyValidation = validateTimeGatedMp3s(
+    [
+      { id: 'g-1', startDate: '2026-11-20T00:00', endDate: '2026-11-22T23:59', mediaItems: [{ mp3Url: 'A.mp3', assetType: 'audio' }] },
+      { id: 'g-2', startDate: '2026-11-25T00:00', endDate: '2026-11-28T23:59', mediaItems: [{ mp3Url: 'B.mp3', assetType: 'audio' }] },
+    ],
+    '2026-11-20T12:00',
+    '2026-11-28T23:59',
+    '2026-11-20T00:00'
+  );
+  assert.strictEqual(gapOnlyValidation.hasBlockingErrors, false, 'LIN-4: Intentional schedule gap must NOT hard-block');
+  assert.strictEqual(gapOnlyValidation.hasSoftWarnings, true, 'LIN-4: Intentional schedule gap must emit softWarning');
+
+  // 12g. LIN-6: resolveAnnouncementsForDate preserves historical revision gate snapshot
+  const revSnapAnn: Announcement = normalizeAnnouncement({
+    id: 'rev-snap-1',
+    name: 'Revision Snapshot Ann',
+    type: AnnouncementType.BASIC_HOURLY,
+    enabled: true,
+    minute: 0,
+    startDate: '2026-11-01T00:00',
+    validFrom: '2026-11-15T00:00:00.000Z',
+    validTo: null,
+    timeGatedMp3s: [
+      { id: 'head-gate', startDate: '2026-11-15T00:00', mediaItems: [{ mp3Url: 'HeadSpot.mp3', assetType: 'audio' }] },
+    ],
+    revisions: [
+      {
+        name: 'Revision Snapshot Ann',
+        type: AnnouncementType.BASIC_HOURLY,
+        enabled: true,
+        minute: 0,
+        startDate: '2026-11-01T00:00',
+        validFrom: '2026-11-01T00:00:00.000Z',
+        validTo: '2026-11-15T00:00:00.000Z',
+        timeGatedMp3s: [
+          { id: 'old-rev-gate', startDate: '2026-11-01T00:00', endDate: '2026-11-14T23:59', mediaItems: [{ mp3Url: 'OldSpot.mp3', assetType: 'audio' }] },
+        ],
+      },
+    ],
+  });
+  const pastResolved = resolveAnnouncementsForDate('2026-11-10', [revSnapAnn]);
+  assert.strictEqual(pastResolved.length, 1, 'LIN-6: Past date must resolve historical revision');
+  assert.strictEqual(
+    pastResolved[0].timeGatedMp3s?.[0]?.id,
+    'old-rev-gate',
+    'LIN-6: resolveAnnouncementsForDate must preserve historical rev.timeGatedMp3s snapshot'
+  );
+
+  // 12h. Reactivated previously-inactivated gate MUST be fully validated (never skipped by preExistingExpiredIds)
+  const savedInactivatedGate = {
+    ...linAnn.timeGatedMp3s![0],
+    inactivated: true,
+    inactivatedAt: '2026-11-19T12:00',
+  };
+  const preExistingFromInactivated = new Set<string>(
+    [savedInactivatedGate]
+      .filter(g => !g.inactivated && isGateExpiredOrInactivated(g, '2026-11-20T12:00'))
+      .map(g => g.id)
+  );
+  assert.strictEqual(
+    preExistingFromInactivated.has(savedInactivatedGate.id),
+    false,
+    'Inactivated saved gates must NOT enter preExistingExpiredIds'
+  );
+  const reactivatedBrokenGate = {
+    ...linAnn.timeGatedMp3s![0],
+    endDate: '2026-11-18T12:00', // Shortened below last play (14:00) after reactivating
+  };
+  const reactivatedValidation = validateTimeGatedMp3s(
+    [reactivatedBrokenGate],
+    '2026-11-20T12:00',
+    '2026-11-30T23:59',
+    '2026-11-10T00:00',
+    linBounds,
+    preExistingFromInactivated
+  );
+  assert.strictEqual(
+    reactivatedValidation.hasBlockingErrors,
+    true,
+    'Reactivated gate shortened before lastPlayedLocalIso MUST hard-block'
+  );
+
+  // 12i. LIN-4: Stubbed gate with valid Start/End and missing file attachment is a SOFT warning only (Save Anyway allowed)
+  const stubbedGateValidation = validateTimeGatedMp3s(
+    [
+      {
+        id: 'gate-stub-1',
+        startDate: '2026-11-20T00:00',
+        endDate: '2026-11-28T23:59',
+        mediaItems: [{ mp3Url: '' }],
+      },
+    ],
+    '2026-11-20T12:00',
+    '2026-11-28T23:59',
+    '2026-11-20T00:00'
+  );
+  assert.strictEqual(
+    stubbedGateValidation.hasBlockingErrors,
+    false,
+    'LIN-4: Missing file attachment on a stubbed gate must NOT hard-block save'
+  );
+  assert.strictEqual(
+    stubbedGateValidation.hasSoftWarnings,
+    true,
+    'LIN-4: Missing file attachment on a stubbed gate must emit a softWarning'
+  );
+  assert(
+    stubbedGateValidation.softWarnings.some(w => w.includes('File attachment selection is missing.')),
+    'LIN-4: softWarnings must explicitly report missing file attachment'
+  );
+
+  console.log('✓ Stage 9: #43/#113 Lineage Metadata, Gate-First Attribution, Played Bounds & Revision Snapshots verified.');
+
+  // ---------------------------------------------------------------------------
+  // 13. Stage 10: v0.20.8 Schema & Coexistence Verification (#1, #2, #3, #10, #110, #116)
+  // ---------------------------------------------------------------------------
+  console.log('🔄 Stage 10: Verifying v0.20.8 Admin Messages, Font Defaults, Cross-Folder Isolation, Monotonic highestAppVersion, Message Log Exclusion & Revision/Inactivation Persistence...');
+
+  // 10a. adminMessages[] normalization, v0.15.4/5 envelope-strip survival via data[0]._stationMeta & sidecar fallback, plus show targeting/acknowledgement
+  const sampleAdminMessages: AdminMessage[] = normalizeAdminMessages([
+    {
+      id: 'msg-show-1',
+      title: 'Studio Mic Reminder',
+      body: 'Use **Mic 2** for guest interviews.',
+      severity: 'alert',
+      enabled: true,
+      targetScope: 'single_show',
+      targetShowIds: ['show-v208-1'],
+      startDate: '2026-11-01T00:00',
+      endDate: '2026-11-30T23:59',
+      clearMode: 'once_acknowledged',
+      acknowledgedByShows: [],
+      createdAt: '2026-11-01T00:00:00.000Z',
+      updatedAt: '2026-11-01T00:00:00.000Z',
+    },
+    {
+      id: 'msg-startup-1',
+      title: 'Holiday Hours',
+      body: 'Station office closed Thursday.',
+      severity: 'info',
+      enabled: true,
+      targetScope: 'app_startup',
+      startupCondition: 'all_users',
+      startDate: '2026-11-01T00:00',
+      endDate: '2026-11-30T23:59',
+      clearMode: 'once_acknowledged',
+      acknowledgedByShows: [],
+      createdAt: '2026-11-01T00:00:00.000Z',
+      updatedAt: '2026-11-01T00:00:00.000Z',
+    },
+  ]);
+  const v208ShowFixture: Show = {
+    id: 'show-v208-1',
+    name: 'Show Spacer 1',
+    nameShort: 'Show_Spacer_1',
+    day: 'Wednesday',
+    startHour: 10,
+    startMinute: 0,
+    durationHours: 2,
+    durationMinutes: 0,
+    host: 'Host 1',
+    description: '',
+    active: true,
+    includeInUpNext: true,
+  };
+  const v208ShowsSaved = migrateShowsPayload(
+    { ShowsBackupCounter: 4, data: [v208ShowFixture] },
+    CURRENT_APP_VERSION,
+    4,
+    'America/New_York',
+    'ops@station.org',
+    { enabled: true, minutesBefore: 15 },
+    { windowBeforeMinutes: 6, windowAfterMinutes: 4, showLookaroundHours: 2, showLookaroundMinutes: 120, liveReadWpm: 165, defaultLiveReadFontSize: 24, defaultLiveReadFontFamily: 'verdana' },
+    sampleAdminMessages
+  );
+  assert.strictEqual(v208ShowsSaved.envelope.adminMessages?.length, 2, '10a: shows envelope must persist adminMessages');
+  assert.strictEqual(v208ShowsSaved.envelope._meta?.adminMessages?.length, 2, '10a: shows _meta must mirror adminMessages');
+  assert.strictEqual(v208ShowsSaved.envelope.data[0]._stationMeta?.adminMessages?.length, 2, '10a: data[0]._stationMeta must mirror adminMessages');
+
+  // Simulate v0.15.4/5 stripping top-level _meta and adminMessages (leaving only ShowsBackupCounter + data[] with _stationMeta)
+  const v15StrippedShowsPayload = {
+    ShowsBackupCounter: 5,
+    data: v208ShowsSaved.envelope.data,
+  };
+  const recoveredFromItemMeta = migrateShowsPayload(v15StrippedShowsPayload, CURRENT_APP_VERSION, 5);
+  assert.strictEqual(
+    recoveredFromItemMeta.envelope.adminMessages?.length,
+    2,
+    '10a: adminMessages must survive v0.15.4/5 envelope strip via data[0]._stationMeta'
+  );
+  assert.strictEqual(
+    recoveredFromItemMeta.envelope.adminMessages?.[0]?.id,
+    'msg-show-1',
+    '10a: recovered adminMessage ID must match original'
+  );
+
+  // Simulate v0.15.4/5 stripping envelope on empty data[] — explicit sidecar fallback must restore adminMessages
+  const recoveredFromSidecar = migrateShowsPayload(
+    { ShowsBackupCounter: 6, data: [] },
+    CURRENT_APP_VERSION,
+    6,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    sampleAdminMessages
+  );
+  assert.strictEqual(
+    recoveredFromSidecar.envelope.adminMessages?.length,
+    2,
+    '10a: explicit sidecar fallback must restore adminMessages when shows data[] is empty'
+  );
+
+  // Show message targeting & log-based acknowledgement
+  const msgTargetDate = new Date(2026, 10, 18, 10, 0, 0); // Wed Nov 18 2026 10:00
+  const targetedBeforeAck = getAdminMessagesForShowOccurrence(sampleAdminMessages, v208ShowFixture, msgTargetDate, []);
+  assert.strictEqual(targetedBeforeAck.length, 1, '10a: getAdminMessagesForShowOccurrence must match single_show message');
+  assert.strictEqual(targetedBeforeAck[0].acknowledged, false, '10a: unacknowledged message must report acknowledged=false');
+  const ackLogEntry: LogEntry = seedLogEntrySiblings({
+    timestamp: stationLocalToUtcIso('2026-11-18T10:01:00', DEFAULT_STATION_TIMEZONE),
+    announcementTime: stationLocalToUtcIso('2026-11-18T10:00:00', DEFAULT_STATION_TIMEZONE),
+    mp3Name: '',
+    announcementName: 'Studio Mic Reminder',
+    announcementId: 'msg-show-1',
+    status: 'acknowledged',
+    playMode: 'Live',
+    assetType: 'message',
+    showId: 'show-v208-1',
+    showName: 'Show Spacer 1',
+  });
+  const targetedAfterAck = getAdminMessagesForShowOccurrence(sampleAdminMessages, v208ShowFixture, msgTargetDate, [ackLogEntry]);
+  assert.strictEqual(targetedAfterAck[0].acknowledged, true, '10a: message acknowledged via LogEntry must report acknowledged=true');
+
+  // 10b. defaultLiveReadFontSize (clamped 14-40, default 20) & defaultLiveReadFontFamily (valid enum, default 'sans')
+  assert.strictEqual(
+    v208ShowsSaved.envelope.scheduleWindow?.defaultLiveReadFontSize,
+    24,
+    '10b: valid defaultLiveReadFontSize must persist'
+  );
+  assert.strictEqual(
+    v208ShowsSaved.envelope.scheduleWindow?.defaultLiveReadFontFamily,
+    'verdana',
+    '10b: valid defaultLiveReadFontFamily must persist'
+  );
+  const clampedFontShows = migrateShowsPayload(
+    { ShowsBackupCounter: 1, data: [v208ShowFixture] },
+    CURRENT_APP_VERSION,
+    1,
+    undefined,
+    undefined,
+    undefined,
+    { defaultLiveReadFontSize: 99, defaultLiveReadFontFamily: 'comic-sans' as any }
+  );
+  assert.strictEqual(
+    clampedFontShows.envelope.scheduleWindow?.defaultLiveReadFontSize,
+    40,
+    '10b: oversized defaultLiveReadFontSize must clamp to 40'
+  );
+  assert.strictEqual(
+    clampedFontShows.envelope.scheduleWindow?.defaultLiveReadFontFamily,
+    'sans',
+    '10b: invalid defaultLiveReadFontFamily must fall back to sans'
+  );
+  const minClampedFontShows = migrateShowsPayload(
+    { ShowsBackupCounter: 1, data: [v208ShowFixture] },
+    CURRENT_APP_VERSION,
+    1,
+    undefined,
+    undefined,
+    undefined,
+    { defaultLiveReadFontSize: 4, defaultLiveReadFontFamily: 'serif' }
+  );
+  assert.strictEqual(
+    minClampedFontShows.envelope.scheduleWindow?.defaultLiveReadFontSize,
+    14,
+    '10b: undersized defaultLiveReadFontSize must clamp to 14'
+  );
+  assert.strictEqual(
+    minClampedFontShows.envelope.scheduleWindow?.defaultLiveReadFontFamily,
+    'serif',
+    '10b: valid serif font family must persist'
+  );
+
+  // 10c. Server-runtime cross-folder isolation (#2): Folder A custom settings MUST NOT leak into Folder B bare legacy payload
+  const folderAResult = migrateShowsPayload(
+    { ShowsBackupCounter: 1, data: [v208ShowFixture] },
+    CURRENT_APP_VERSION,
+    1,
+    'America/Chicago',
+    'folder-a@station.org',
+    { enabled: false, minutesBefore: 35 },
+    { windowBeforeMinutes: 12, windowAfterMinutes: 8, showLookaroundHours: 3, showLookaroundMinutes: 180, liveReadWpm: 180, defaultLiveReadFontSize: 28, defaultLiveReadFontFamily: 'mono' },
+    sampleAdminMessages
+  );
+  assert.strictEqual(folderAResult.envelope.stationTimezone, 'America/Chicago', '10c: Folder A custom timezone set');
+  const folderBBareResult = migrateShowsPayload({ ShowsBackupCounter: 1, data: [] }, CURRENT_APP_VERSION, 1);
+  assert.strictEqual(
+    folderBBareResult.envelope.stationTimezone,
+    DEFAULT_STATION_TIMEZONE,
+    '10c: Folder B bare legacy payload must NOT inherit Folder A timezone'
+  );
+  assert.strictEqual(
+    folderBBareResult.envelope.adminContactInfo || '',
+    '',
+    '10c: Folder B bare legacy payload must NOT inherit Folder A adminContactInfo'
+  );
+  assert.strictEqual(
+    folderBBareResult.envelope.scheduleWindow?.windowBeforeMinutes,
+    DEFAULT_SCHEDULE_WINDOW_CONFIG.windowBeforeMinutes,
+    '10c: Folder B bare legacy payload must NOT inherit Folder A scheduleWindow'
+  );
+  assert.strictEqual(
+    folderBBareResult.envelope.scheduleWindow?.defaultLiveReadFontSize,
+    DEFAULT_SCHEDULE_WINDOW_CONFIG.defaultLiveReadFontSize,
+    '10c: Folder B bare legacy payload must use defaultLiveReadFontSize=20'
+  );
+  assert.strictEqual(
+    folderBBareResult.envelope.scheduleWindow?.defaultLiveReadFontFamily,
+    DEFAULT_SCHEDULE_WINDOW_CONFIG.defaultLiveReadFontFamily,
+    '10c: Folder B bare legacy payload must use defaultLiveReadFontFamily=sans'
+  );
+  assert.strictEqual(
+    folderBBareResult.envelope.adminMessages?.length,
+    0,
+    '10c: Folder B bare legacy payload must NOT inherit Folder A adminMessages'
+  );
+
+  // 10d. Monotonic highestAppVersion across shows.json, announcements.json, and logs.json + Built-In Version Notices
+  const futureVersion = '0.21.0';
+  const showsWithFutureHighest = migrateShowsPayload(
+    { _meta: { schemaVersion: 1, minAppVersion: '0.14.0', lastModifiedBy: futureVersion, highestAppVersion: futureVersion }, ShowsBackupCounter: 1, data: [v208ShowFixture] },
+    CURRENT_APP_VERSION,
+    1
+  );
+  assert.strictEqual(
+    showsWithFutureHighest.envelope._meta?.highestAppVersion,
+    futureVersion,
+    '10d: shows.json must monotonically preserve higher future highestAppVersion'
+  );
+  assert.strictEqual(
+    showsWithFutureHighest.envelope.data[0]._stationMeta?.highestAppVersion,
+    futureVersion,
+    '10d: shows.json data[0]._stationMeta must mirror highestAppVersion'
+  );
+  const annWithFutureHighest = migrateAnnouncementsPayload(
+    { _meta: { schemaVersion: 1, minAppVersion: '0.14.0', lastModifiedBy: futureVersion, highestAppVersion: futureVersion }, AnnouncementsBackupCounter: 1, data: [linAnn] },
+    CURRENT_APP_VERSION,
+    1
+  );
+  assert.strictEqual(
+    annWithFutureHighest.envelope._meta?.highestAppVersion,
+    futureVersion,
+    '10d: announcements.json must monotonically preserve higher future highestAppVersion'
+  );
+  assert.strictEqual(
+    annWithFutureHighest.envelope.data[0]._stationMeta?.highestAppVersion,
+    futureVersion,
+    '10d: announcements.json data[0]._stationMeta must mirror highestAppVersion'
+  );
+  const logsWithFutureHighest = migrateLogsPayload(
+    { _meta: { schemaVersion: 1, minAppVersion: '0.14.0', lastModifiedBy: futureVersion, highestAppVersion: futureVersion }, LogsBackupCounter: 1, data: [ackLogEntry] },
+    CURRENT_APP_VERSION,
+    1
+  );
+  assert.strictEqual(
+    logsWithFutureHighest.envelope._meta?.highestAppVersion,
+    futureVersion,
+    '10d: logs.json must monotonically preserve higher future highestAppVersion'
+  );
+
+  // Built-in system notices: old_version (compatible schema, newer app seen) vs old_version_schema (schema/minAppVersion upgrade required)
+  const compatReportNewerSeen = assessDataCompatibility({
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    minAppVersion: CURRENT_MIN_APP_VERSION,
+    lastModifiedBy: CURRENT_APP_VERSION,
+    highestAppVersion: futureVersion,
+  });
+  const builtInsUpdateOnly = getBuiltInSystemMessages([], CURRENT_APP_VERSION, compatReportNewerSeen);
+  const updateDesc = builtInsUpdateOnly.find((b) => b.id === SYSTEM_MSG_VERSION_UPDATE_ID);
+  const requiredDesc = builtInsUpdateOnly.find((b) => b.id === SYSTEM_MSG_REQUIRED_UPGRADE_ID);
+  assert.strictEqual(updateDesc?.wouldTriggerNow, true, '10d: old_version built-in notice must trigger when highestAppVersion > current');
+  assert.strictEqual(requiredDesc?.wouldTriggerNow, false, '10d: old_version_schema notice must NOT trigger when schema is compatible');
+
+  const compatReportBreaking = assessDataCompatibility({
+    schemaVersion: CURRENT_SCHEMA_VERSION + 1,
+    minAppVersion: futureVersion,
+    lastModifiedBy: futureVersion,
+    highestAppVersion: futureVersion,
+  });
+  const pendingBreakingStartup = getPendingStartupMessages(sampleAdminMessages, CURRENT_APP_VERSION, compatReportBreaking, msgTargetDate);
+  assert(
+    pendingBreakingStartup.some((m) => m.id === SYSTEM_MSG_REQUIRED_UPGRADE_ID),
+    '10d: getPendingStartupMessages must include Required Upgrade notice on schema/minAppVersion mismatch'
+  );
+  assert(
+    !pendingBreakingStartup.some((m) => m.id === SYSTEM_MSG_VERSION_UPDATE_ID),
+    '10d: softer version-update notice must be suppressed when Required Upgrade notice triggers'
+  );
+  assert(
+    pendingBreakingStartup.some((m) => m.id === 'msg-startup-1'),
+    '10d: active custom app_startup admin message must be included in getPendingStartupMessages'
+  );
+  assert.strictEqual(resolveHighestAppVersion('0.20.8', '0.21.0', '0.20.7'), '0.21.0', '10d: resolveHighestAppVersion must return max semver');
+
+  // 10e. LogEntry status:'acknowledged' / assetType:'message' sibling preservation & exclusion from play/miss/extra reconciliation
+  assert.strictEqual(ackLogEntry.status, 'acknowledged', '10e: seedLogEntrySiblings must preserve status=acknowledged');
+  assert.strictEqual(ackLogEntry.assetType, 'message', '10e: seedLogEntrySiblings must preserve assetType=message');
+  const reconWithMessageLog = reconcileScheduleAndLogs(
+    '2026-11-18',
+    [linAnn],
+    [v208ShowFixture],
+    [ackLogEntry],
+    new Date(2026, 10, 18, 12, 0, 0)
+  );
+  assert.strictEqual(
+    reconWithMessageLog.totalPlayed,
+    0,
+    '10e: status=acknowledged / assetType=message logs must NEVER count as played announcements in reconcileScheduleAndLogs'
+  );
+  assert.strictEqual(
+    reconWithMessageLog.totalExtra,
+    0,
+    '10e: status=acknowledged / assetType=message logs must NEVER count as extra plays in reconcileScheduleAndLogs'
+  );
+
+  // 10f. AnnouncementRevision.timeGatedMp3s & TimeGatedMediaItem.inactivated/inactivatedAt survival across normalizeAnnouncement & migrateAnnouncementsPayload
+  const annWithRevAndInactivatedItem: Announcement = normalizeAnnouncement({
+    id: 'rev-inact-ann-1',
+    name: 'Revision & Inactivated Item Spot',
+    type: AnnouncementType.BASIC_HOURLY,
+    enabled: true,
+    minute: 30,
+    startDate: '2026-11-01T00:00',
+    metadata: {
+      createdBy: 'Admin',
+      createdDate: '2026-11-01T00:00:00.000Z',
+      lastModifiedBy: CURRENT_APP_VERSION,
+      lastModifiedDate: '2026-11-10T18:00:00.000Z',
+    },
+    timeGatedMp3s: [
+      {
+        id: 'gate-rev-1',
+        startDate: '2026-11-01T00:00',
+        endDate: '2026-11-30T23:59',
+        mediaItems: [
+          { mp3Url: 'RetiredTrack.mp3', assetType: 'audio', inactivated: true, inactivatedAt: '2026-11-10T18:00:00.000Z' },
+          { mp3Url: 'ActiveTrack.mp3', assetType: 'audio' },
+        ],
+      },
+    ],
+    revisions: [
+      {
+        name: 'Revision & Inactivated Item Spot',
+        type: AnnouncementType.BASIC_HOURLY,
+        enabled: true,
+        minute: 30,
+        startDate: '2026-11-01T00:00',
+        validFrom: '2026-11-01T00:00:00.000Z',
+        validTo: '2026-11-10T18:00:00.000Z',
+        timeGatedMp3s: [
+          {
+            id: 'gate-rev-old',
+            startDate: '2026-11-01T00:00',
+            endDate: '2026-11-10T17:59',
+            mediaItems: [{ mp3Url: 'OriginalSpot.mp3', assetType: 'audio' }],
+          },
+        ],
+      },
+    ],
+  });
+  assert.strictEqual(
+    annWithRevAndInactivatedItem.timeGatedMp3s?.[0]?.mediaItems?.[0]?.inactivated,
+    true,
+    '10f: normalizeAnnouncement must preserve per-media-item inactivated flag'
+  );
+  assert.strictEqual(
+    annWithRevAndInactivatedItem.timeGatedMp3s?.[0]?.mp3Url,
+    'ActiveTrack.mp3',
+    '10f: normalizeAnnouncement must mirror first active mediaItem onto flat sibling mp3Url'
+  );
+  const migratedRevAnn = migrateAnnouncementsPayload(
+    { AnnouncementsBackupCounter: 1, data: [annWithRevAndInactivatedItem] },
+    CURRENT_APP_VERSION,
+    1
+  );
+  assert.strictEqual(
+    migratedRevAnn.envelope.data[0].timeGatedMp3s?.[0]?.mediaItems?.[0]?.inactivated,
+    true,
+    '10f: migrateAnnouncementsPayload must preserve per-media-item inactivated flag'
+  );
+  assert.strictEqual(
+    migratedRevAnn.envelope.data[0].revisions?.[0]?.timeGatedMp3s?.[0]?.mediaItems?.[0]?.mp3Url,
+    'OriginalSpot.mp3',
+    '10f: migrateAnnouncementsPayload must preserve AnnouncementRevision.timeGatedMp3s snapshots'
+  );
+
+  // 10g. v0.15.4 envelope-strip ping-pong MUST NOT overwrite inactivated mediaItems[0] when flat mp3Url mirrors active mediaItems[1]
+  const stripped0154AnnPayload = {
+    AnnouncementsBackupCounter: 2,
+    data: migratedRevAnn.envelope.data,
+  };
+  const reloadedAfter0154Strip = migrateAnnouncementsPayload(stripped0154AnnPayload, CURRENT_APP_VERSION, 2);
+  const reloadedGateItems = reloadedAfter0154Strip.envelope.data[0].timeGatedMp3s?.[0]?.mediaItems || [];
+  assert.strictEqual(
+    reloadedGateItems[0]?.mp3Url,
+    'RetiredTrack.mp3',
+    '10g: v0.15.4 envelope strip must NOT overwrite inactivated mediaItems[0].mp3Url with active sibling'
+  );
+  assert.strictEqual(
+    reloadedGateItems[0]?.inactivated,
+    true,
+    '10g: inactivated flag on mediaItems[0] must survive v0.15.4 envelope strip'
+  );
+  assert.strictEqual(
+    reloadedGateItems[1]?.mp3Url,
+    'ActiveTrack.mp3',
+    '10g: active mediaItems[1].mp3Url must remain intact after v0.15.4 envelope strip'
+  );
+
+  // 10h. Client normalizeAnnouncement MUST preserve inactivated mediaItems[0] under v0.15.4 metadata & target first active index on flat edit
+  const v15ClientReconcileSame = normalizeAnnouncement({
+    ...migratedRevAnn.envelope.data[0],
+    metadata: {
+      createdBy: 'Admin',
+      createdDate: '2026-11-01T00:00:00.000Z',
+      lastModifiedBy: '0.15.4',
+      lastModifiedDate: '2026-11-11T00:00:00.000Z',
+    },
+  });
+  assert.strictEqual(
+    v15ClientReconcileSame.timeGatedMp3s?.[0]?.mediaItems?.[0]?.mp3Url,
+    'RetiredTrack.mp3',
+    '10h: client normalizeAnnouncement must NOT overwrite inactivated mediaItems[0] when flat mp3Url matches active mediaItems[1]'
+  );
+  assert.strictEqual(
+    v15ClientReconcileSame.timeGatedMp3s?.[0]?.mediaItems?.[0]?.inactivated,
+    true,
+    '10h: client normalizeAnnouncement must preserve inactivated flag on mediaItems[0]'
+  );
+
+  const v15ClientReconcileEdited = normalizeAnnouncement({
+    ...migratedRevAnn.envelope.data[0],
+    metadata: {
+      createdBy: 'Admin',
+      createdDate: '2026-11-01T00:00:00.000Z',
+      lastModifiedBy: '0.15.4',
+      lastModifiedDate: '2026-11-11T00:00:00.000Z',
+    },
+    timeGatedMp3s: [
+      {
+        ...migratedRevAnn.envelope.data[0].timeGatedMp3s![0],
+        mp3Url: 'V15EditedActive.mp3',
+      },
+    ],
+  });
+  assert.strictEqual(
+    v15ClientReconcileEdited.timeGatedMp3s?.[0]?.mediaItems?.[0]?.mp3Url,
+    'RetiredTrack.mp3',
+    '10h: v0.15.4 flat gate edit must keep inactivated mediaItems[0] untouched'
+  );
+  assert.strictEqual(
+    v15ClientReconcileEdited.timeGatedMp3s?.[0]?.mediaItems?.[1]?.mp3Url,
+    'V15EditedActive.mp3',
+    '10h: v0.15.4 flat gate edit must reconcile into the first active mediaItem index'
+  );
+
+  // Also verify shows.json envelope settings take precedence over stale sidecar values while falling back when stripped
+  const showsWithFreshSettings = {
+    _meta: {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      minAppVersion: CURRENT_MIN_APP_VERSION,
+      lastModifiedBy: CURRENT_APP_VERSION,
+      stationTimezone: 'America/New_York',
+      adminContactInfo: 'fresh-admin@station.org',
+      scheduleWindow: {
+        ...DEFAULT_SCHEDULE_WINDOW_CONFIG,
+        defaultLiveReadFontFamily: 'serif' as const,
+        defaultLiveReadFontSize: 24,
+      },
+    },
+    stationTimezone: 'America/New_York',
+    adminContactInfo: 'fresh-admin@station.org',
+    scheduleWindow: {
+      ...DEFAULT_SCHEDULE_WINDOW_CONFIG,
+      defaultLiveReadFontFamily: 'serif' as const,
+      defaultLiveReadFontSize: 24,
+    },
+    ShowsBackupCounter: 5,
+    data: [v208ShowFixture],
+  };
+  const staleSidecar = {
+    stationTimezone: 'America/Los_Angeles',
+    adminContactInfo: 'stale-admin@station.org',
+    scheduleWindow: {
+      ...DEFAULT_SCHEDULE_WINDOW_CONFIG,
+      defaultLiveReadFontFamily: 'mono' as const,
+      defaultLiveReadFontSize: 16,
+    },
+  };
+  const resolvedTz = showsWithFreshSettings.stationTimezone || showsWithFreshSettings._meta?.stationTimezone || staleSidecar.stationTimezone;
+  const resolvedContact =
+    showsWithFreshSettings.adminContactInfo !== undefined
+      ? showsWithFreshSettings.adminContactInfo
+      : staleSidecar.adminContactInfo;
+  const resolvedWindow =
+    showsWithFreshSettings.scheduleWindow || showsWithFreshSettings._meta?.scheduleWindow || staleSidecar.scheduleWindow;
+  const showsPrecedenceResult = migrateShowsPayload(
+    showsWithFreshSettings,
+    CURRENT_APP_VERSION,
+    5,
+    resolvedTz,
+    resolvedContact,
+    undefined,
+    resolvedWindow
+  );
+  assert.strictEqual(
+    showsPrecedenceResult.envelope.stationTimezone,
+    'America/New_York',
+    '10h: shows.json stationTimezone must take precedence over stale sidecar'
+  );
+  assert.strictEqual(
+    showsPrecedenceResult.envelope.adminContactInfo,
+    'fresh-admin@station.org',
+    '10h: shows.json adminContactInfo must take precedence over stale sidecar'
+  );
+  assert.strictEqual(
+    showsPrecedenceResult.envelope.scheduleWindow?.defaultLiveReadFontFamily,
+    'serif',
+    '10h: shows.json scheduleWindow must take precedence over stale sidecar'
+  );
+
+  console.log('✓ Stage 10: v0.20.8 Admin Messages, Font Defaults, Cross-Folder Isolation, Monotonic highestAppVersion, Message Log Exclusion & Revision/Inactivation Persistence verified.');
+
   // Clean up
   fs.rmSync(tempDir, { recursive: true, force: true });
-  console.log('✅ ALL PRODUCTION SCHEMA UPGRADE, SIBLING BRIDGE & SCHEDULE ENGINE TESTS PASSED WITH 100% INTEGRITY.');
+  console.log('✅ ALL PRODUCTION SCHEMA UPGRADE, SIBLING BRIDGE, SCHEDULE ENGINE, LINEAGE & v0.20.8 TESTS PASSED WITH 100% INTEGRITY.');
 }
 
 runComprehensiveSchemaUpgradeTests();
