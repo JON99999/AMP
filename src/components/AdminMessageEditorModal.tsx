@@ -395,7 +395,7 @@ export default function AdminMessageEditorModal({
             <MessageSquare className="w-5 h-5 shrink-0" />
             <div className="min-w-0">
               <h2 className="text-sm font-black uppercase tracking-wider truncate">
-                Admin to Show Message Editor
+                Admin-to-Show Message Editor
               </h2>
               <p className="text-xs text-white/85 truncate">
                 {reuseSourceMessage && isNew

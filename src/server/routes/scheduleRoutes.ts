@@ -101,6 +101,353 @@ export function registerScheduleRoutes(app: express.Express): void {
     );
   };
 
+  // ============================================================================
+  // Local Data Health Diagnosis & Admin Backup Recovery Helpers (#130, #133)
+  // ============================================================================
+  type BackupTargetKey = 'announcements' | 'shows' | 'logs';
+
+  const validateParsedDataPayload = (
+    target: BackupTargetKey,
+    rawText: string,
+    options?: { requireNonEmpty?: boolean }
+  ): { valid: boolean; recordCount: number; error?: string } => {
+    if (!rawText || !rawText.trim()) {
+      return { valid: false, recordCount: 0, error: 'File is empty' };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (err: any) {
+      return { valid: false, recordCount: 0, error: `Invalid JSON: ${err?.message || 'parse failed'}` };
+    }
+    let records: any[] | null = null;
+    if (Array.isArray(parsed)) {
+      records = parsed;
+    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.data)) {
+      records = parsed.data;
+    }
+    if (!records) {
+      return { valid: false, recordCount: 0, error: 'Missing expected data array structure' };
+    }
+    for (const item of records) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return { valid: false, recordCount: 0, error: `Invalid entry inside ${target} data array` };
+      }
+    }
+    if (options?.requireNonEmpty && records.length === 0) {
+      return { valid: false, recordCount: 0, error: 'Backup contains 0 records' };
+    }
+    return { valid: true, recordCount: records.length };
+  };
+
+  const matchesBackupTargetFilename = (target: BackupTargetKey, fileName: string): boolean => {
+    const lower = fileName.toLowerCase();
+    if (!lower.endsWith('.json')) return false;
+    if (target === 'announcements') {
+      return (
+        lower === 'announcements_backup.json' ||
+        lower === 'schedules_backup.json' ||
+        lower.startsWith('announcements_') ||
+        lower.startsWith('announcements.backup') ||
+        lower.startsWith('schedules_') ||
+        lower.startsWith('schedules.backup')
+      );
+    }
+    if (target === 'shows') {
+      return (
+        lower === 'shows_backup.json' ||
+        lower.startsWith('shows_') ||
+        lower.startsWith('shows.backup')
+      );
+    }
+    return (
+      lower === 'logs_backup.json' ||
+      lower.startsWith('logs_') ||
+      lower.startsWith('logs.backup')
+    );
+  };
+
+  const getBackupSearchDirsForTarget = (
+    target: BackupTargetKey
+  ): Array<{ dir: string; sourceDir: 'settings/backups' | 'logs/backups' }> => {
+    const dirs: Array<{ dir: string; sourceDir: 'settings/backups' | 'logs/backups' }> = [];
+    const settingsDir = getAmpSettingsDir();
+    const logsDir = getAmpLogsDir();
+    if (target === 'logs') {
+      if (logsDir) dirs.push({ dir: path.join(logsDir, 'backups'), sourceDir: 'logs/backups' });
+      if (settingsDir) dirs.push({ dir: path.join(settingsDir, 'backups'), sourceDir: 'settings/backups' });
+    } else if (settingsDir) {
+      dirs.push({ dir: path.join(settingsDir, 'backups'), sourceDir: 'settings/backups' });
+    }
+    return dirs;
+  };
+
+  const listAndValidateBackupCandidates = (target: BackupTargetKey) => {
+    const searchDirs = getBackupSearchDirsForTarget(target);
+    const seenKeys = new Set<string>();
+    const candidates: Array<{
+      fileName: string;
+      sourceDir: 'settings/backups' | 'logs/backups';
+      mtimeMs: number;
+      modifiedIso: string;
+      sizeBytes: number;
+      valid: boolean;
+      recordCount: number;
+      validationError?: string;
+    }> = [];
+
+    for (const { dir, sourceDir } of searchDirs) {
+      if (!dir || !fs.existsSync(dir)) continue;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (_) {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        if (!matchesBackupTargetFilename(target, entry.name)) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (!isPathWithinAnyDir(fullPath, [dir])) continue;
+        const dedupeKey = `${sourceDir}:${entry.name.toLowerCase()}`;
+        if (seenKeys.has(dedupeKey)) continue;
+        seenKeys.add(dedupeKey);
+
+        let mtimeMs = 0;
+        let sizeBytes = 0;
+        try {
+          const st = fs.statSync(fullPath);
+          mtimeMs = st.mtimeMs;
+          sizeBytes = st.size;
+        } catch (_) {
+          continue;
+        }
+
+        let valid = false;
+        let recordCount = 0;
+        let validationError: string | undefined;
+        try {
+          const raw = fs.readFileSync(fullPath, 'utf-8');
+          const check = validateParsedDataPayload(target, raw, { requireNonEmpty: true });
+          valid = check.valid;
+          recordCount = check.recordCount;
+          validationError = check.error;
+        } catch (readErr: any) {
+          valid = false;
+          validationError = readErr?.message || 'Unable to read backup file';
+        }
+
+        candidates.push({
+          fileName: entry.name,
+          sourceDir,
+          mtimeMs,
+          modifiedIso: new Date(mtimeMs || Date.now()).toISOString(),
+          sizeBytes,
+          valid,
+          recordCount,
+          ...(validationError ? { validationError } : {})
+        });
+      }
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return candidates;
+  };
+
+  const inspectTargetHealth = (target: BackupTargetKey) => {
+    const label =
+      target === 'announcements' ? 'Announcements (announcements.json)' :
+      target === 'shows' ? 'Shows (shows.json)' :
+      'Play Logs (logs.json)';
+
+    const baseDir = target === 'logs' ? getAmpLogsDir() : getAmpSettingsDir();
+    const primaryPath =
+      target === 'announcements' ? getCalendarFilePath() :
+      target === 'shows' ? getShowsFilePath() :
+      getLogFilePath();
+
+    if (!baseDir || !primaryPath) {
+      return {
+        key: target,
+        label,
+        primaryName: `${target}.json`,
+        status: 'error' as const,
+        cause: 'connection_lost' as const,
+        error: 'Configured folder path is missing or offline.',
+        backupCount: 0
+      };
+    }
+
+    try {
+      if (!fs.existsSync(baseDir)) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'connection_lost' as const,
+          error: 'Target folder cannot be reached on disk.',
+          backupCount: 0
+        };
+      }
+      fs.accessSync(baseDir, fs.constants.R_OK);
+    } catch (accessErr: any) {
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'error' as const,
+        cause: 'connection_lost' as const,
+        error: accessErr?.message || 'Folder is not readable.',
+        backupCount: 0
+      };
+    }
+
+    const backups = listAndValidateBackupCandidates(target);
+    const backupCount = backups.length;
+    const validNonEmptyBackups = backups.filter((b) => b.valid && b.recordCount > 0);
+
+    if (!fs.existsSync(primaryPath)) {
+      if (backupCount > 0) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'missing_file' as const,
+          error: `${path.basename(primaryPath)} is missing, but ${backupCount} backup file${backupCount === 1 ? '' : 's'} exist.`,
+          backupCount
+        };
+      }
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'ok' as const,
+        cause: 'ok' as const,
+        backupCount: 0
+      };
+    }
+
+    try {
+      const raw = fs.readFileSync(primaryPath, 'utf-8');
+      const check = validateParsedDataPayload(target, raw);
+      if (!check.valid) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'malformed_file' as const,
+          error: check.error || 'File is malformed or corrupted.',
+          backupCount
+        };
+      }
+      if (check.recordCount === 0 && validNonEmptyBackups.length > 0) {
+        return {
+          key: target,
+          label,
+          primaryName: path.basename(primaryPath),
+          status: 'error' as const,
+          cause: 'missing_file' as const,
+          error: `${path.basename(primaryPath)} has 0 records while ${validNonEmptyBackups.length} valid backup file${validNonEmptyBackups.length === 1 ? '' : 's'} exist.`,
+          backupCount
+        };
+      }
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'ok' as const,
+        cause: 'ok' as const,
+        backupCount
+      };
+    } catch (readErr: any) {
+      const code = String(readErr?.code || '').toUpperCase();
+      const isConnErr = code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || code === 'ENOTCONN' || code === 'EIO';
+      return {
+        key: target,
+        label,
+        primaryName: path.basename(primaryPath),
+        status: 'error' as const,
+        cause: (isConnErr ? 'connection_lost' : 'malformed_file') as 'connection_lost' | 'malformed_file',
+        error: readErr?.message || 'Unable to read data file.',
+        backupCount
+      };
+    }
+  };
+
+  const extractRawAdminContactFromText = (rawText: string): string | null => {
+    if (!rawText || typeof rawText !== 'string') return null;
+    const match = rawText.match(/"adminContactInfo"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (!match || !match[1]) return null;
+    try {
+      const decoded = JSON.parse(`"${match[1]}"`);
+      return typeof decoded === 'string' && decoded.trim() ? decoded.trim() : null;
+    } catch (_) {
+      const trimmed = match[1].trim();
+      return trimmed ? trimmed : null;
+    }
+  };
+
+  const extractRawAdminContactFromDisk = (): string => {
+    try {
+      const sidecar = readStationSettingsSidecar();
+      if (sidecar?.adminContactInfo && String(sidecar.adminContactInfo).trim()) {
+        return String(sidecar.adminContactInfo).trim();
+      }
+    } catch (_) {}
+
+    const settingsDir = getAmpSettingsDir();
+    const candidatePaths: Array<string | null> = [
+      settingsDir ? path.join(settingsDir, 'station_settings.json') : null,
+      getShowsFilePath(),
+      getCalendarFilePath(),
+      getShowsBackupPath(),
+      getCalendarBackupPath()
+    ];
+
+    for (const filePath of candidatePaths) {
+      if (!filePath) continue;
+      try {
+        if (fs.existsSync(filePath)) {
+          const raw = fs.readFileSync(filePath, 'utf-8');
+          const extracted = extractRawAdminContactFromText(raw);
+          if (extracted) return extracted;
+        }
+      } catch (_) {}
+    }
+
+    if (settingsDir) {
+      const backupsDir = path.join(settingsDir, 'backups');
+      try {
+        if (fs.existsSync(backupsDir)) {
+          const entries = fs
+            .readdirSync(backupsDir)
+            .filter((name) => name.toLowerCase().endsWith('.json'))
+            .map((name) => {
+              const fullPath = path.join(backupsDir, name);
+              let mtimeMs = 0;
+              try {
+                mtimeMs = fs.statSync(fullPath).mtimeMs;
+              } catch (_) {}
+              return { fullPath, mtimeMs };
+            })
+            .sort((a, b) => b.mtimeMs - a.mtimeMs);
+          for (const entry of entries.slice(0, 10)) {
+            try {
+              const raw = fs.readFileSync(entry.fullPath, 'utf-8');
+              const extracted = extractRawAdminContactFromText(raw);
+              if (extracted) return extracted;
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    return '';
+  };
+
   // API - Announcements (Unified Local + Google Drive Provider)
   app.get('/api/announcements', async (req, res) => {
     try {
@@ -114,6 +461,14 @@ export function registerScheduleRoutes(app: express.Express): void {
       const backupPath = getCalendarBackupPath();
       const { parsed, fileExists } = await readJsonFileWithCloudCatchUp(filePath, backupPath);
       if (!fileExists) {
+        const existingBackups = listAndValidateBackupCandidates('announcements');
+        if (existingBackups.length > 0) {
+          return res.status(500).json({
+            error: 'announcements.json is missing while backup files exist.',
+            code: 'MISSING_FILE_WITH_BACKUPS',
+            backupAvailable: true
+          });
+        }
         if (withEnvelope) {
           return res.json({
             _meta: null,
@@ -255,6 +610,14 @@ export function registerScheduleRoutes(app: express.Express): void {
       const backupPath = getShowsBackupPath();
       const { parsed, fileExists } = await readJsonFileWithCloudCatchUp(filePath, backupPath);
       if (!fileExists) {
+        const existingBackups = listAndValidateBackupCandidates('shows');
+        if (existingBackups.length > 0) {
+          return res.status(500).json({
+            error: 'shows.json is missing while backup files exist.',
+            code: 'MISSING_FILE_WITH_BACKUPS',
+            backupAvailable: true
+          });
+        }
         if (withEnvelope) {
           return res.json({
             _meta: null,
@@ -919,6 +1282,14 @@ export function registerScheduleRoutes(app: express.Express): void {
       const backupPath = getLogBackupPath();
       const { parsed, fileExists } = await readJsonFileWithCloudCatchUp(filePath, backupPath);
       if (!fileExists) {
+        const existingBackups = listAndValidateBackupCandidates('logs');
+        if (existingBackups.length > 0) {
+          return res.status(500).json({
+            error: 'logs.json is missing while backup files exist.',
+            code: 'MISSING_FILE_WITH_BACKUPS',
+            backupAvailable: true
+          });
+        }
         return res.json([]);
       }
       const rawLogs = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
@@ -1032,7 +1403,7 @@ export function registerScheduleRoutes(app: express.Express): void {
       const backupSidecar = readStationSettingsSidecar();
       const failedStores: string[] = [];
 
-      const parseExistingStoreOrRecordFailure = (storeName: string, targetPath: string): any | null => {
+      const parseExistingStoreOrRecordFailure = (storeName: BackupTargetKey, targetPath: string): any | null => {
         const raw = fs.readFileSync(targetPath, 'utf-8');
         if (!raw || !raw.trim()) {
           console.error(`Skipping backup for empty ${storeName}.json to prevent data wipe.`);
@@ -1049,6 +1420,15 @@ export function registerScheduleRoutes(app: express.Express): void {
             failedStores.push(`${storeName}.json`);
             return null;
           }
+          const records = Array.isArray(parsed) ? parsed : parsed.data;
+          if (
+            records.length === 0 &&
+            listAndValidateBackupCandidates(storeName).some((b) => b.valid && b.recordCount > 0)
+          ) {
+            console.error(`Skipping backup for 0-record ${storeName}.json while non-empty backups exist.`);
+            failedStores.push(`${storeName}.json`);
+            return null;
+          }
           return parsed;
         } catch (pe) {
           console.error(`Skipping backup for malformed ${storeName}.json to prevent data wipe:`, pe);
@@ -1060,15 +1440,20 @@ export function registerScheduleRoutes(app: express.Express): void {
       // Backup schedules (preserving _meta and sibling fields)
       if (calendarPath) {
         if (!fs.existsSync(calendarPath)) {
-          const initialAnn = migrateAnnouncementsPayload(
-            { AnnouncementsBackupCounter: 0, data: [] },
-            CURRENT_APP_VERSION,
-            -1,
-            undefined,
-            undefined,
-            backupSidecar?.scheduleWindow
-          );
-          atomicWriteFileSync(calendarPath, JSON.stringify(initialAnn.envelope, null, 2));
+          if (listAndValidateBackupCandidates('announcements').length > 0) {
+            console.error('Skipping auto-creation of missing announcements.json because backups exist.');
+            failedStores.push('announcements.json');
+          } else {
+            const initialAnn = migrateAnnouncementsPayload(
+              { AnnouncementsBackupCounter: 0, data: [] },
+              CURRENT_APP_VERSION,
+              -1,
+              undefined,
+              undefined,
+              backupSidecar?.scheduleWindow
+            );
+            atomicWriteFileSync(calendarPath, JSON.stringify(initialAnn.envelope, null, 2));
+          }
         }
 
         if (fs.existsSync(calendarPath)) {
@@ -1120,8 +1505,13 @@ export function registerScheduleRoutes(app: express.Express): void {
       // Backup logs (preserving _meta and seeding sibling fields)
       if (logPath) {
         if (!fs.existsSync(logPath)) {
-          const initialLogs = migrateLogsPayload({ LogsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
-          atomicWriteFileSync(logPath, JSON.stringify(initialLogs.envelope, null, 2));
+          if (listAndValidateBackupCandidates('logs').length > 0) {
+            console.error('Skipping auto-creation of missing logs.json because backups exist.');
+            failedStores.push('logs.json');
+          } else {
+            const initialLogs = migrateLogsPayload({ LogsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
+            atomicWriteFileSync(logPath, JSON.stringify(initialLogs.envelope, null, 2));
+          }
         }
 
         if (fs.existsSync(logPath)) {
@@ -1154,8 +1544,13 @@ export function registerScheduleRoutes(app: express.Express): void {
       // Backup shows (preserving _meta and sibling fields)
       if (showsPath) {
         if (!fs.existsSync(showsPath)) {
-          const initialShows = migrateShowsPayload({ ShowsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
-          atomicWriteFileSync(showsPath, JSON.stringify(initialShows.envelope, null, 2));
+          if (listAndValidateBackupCandidates('shows').length > 0) {
+            console.error('Skipping auto-creation of missing shows.json because backups exist.');
+            failedStores.push('shows.json');
+          } else {
+            const initialShows = migrateShowsPayload({ ShowsBackupCounter: 0, data: [] }, CURRENT_APP_VERSION, -1);
+            atomicWriteFileSync(showsPath, JSON.stringify(initialShows.envelope, null, 2));
+          }
         }
 
         if (fs.existsSync(showsPath)) {
@@ -1198,7 +1593,7 @@ export function registerScheduleRoutes(app: express.Express): void {
       if (failedStores.length > 0) {
         return res.status(500).json({
           success: false,
-          error: `Backup skipped for malformed file(s): ${failedStores.join(', ')}`,
+          error: `Backup skipped for malformed or missing file(s): ${failedStores.join(', ')}`,
           failedStores
         });
       }
@@ -1211,265 +1606,8 @@ export function registerScheduleRoutes(app: express.Express): void {
   });
 
   // ============================================================================
-  // Local Data Health Diagnosis & Admin Backup Recovery
+  // Local Data Health Diagnosis & Admin Backup Recovery Endpoints
   // ============================================================================
-  type BackupTargetKey = 'announcements' | 'shows' | 'logs';
-
-  const validateParsedDataPayload = (
-    target: BackupTargetKey,
-    rawText: string
-  ): { valid: boolean; recordCount: number; error?: string } => {
-    if (!rawText || !rawText.trim()) {
-      return { valid: false, recordCount: 0, error: 'File is empty' };
-    }
-    let parsed: any;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch (err: any) {
-      return { valid: false, recordCount: 0, error: `Invalid JSON: ${err?.message || 'parse failed'}` };
-    }
-    let records: any[] | null = null;
-    if (Array.isArray(parsed)) {
-      records = parsed;
-    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.data)) {
-      records = parsed.data;
-    }
-    if (!records) {
-      return { valid: false, recordCount: 0, error: 'Missing expected data array structure' };
-    }
-    for (const item of records) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) {
-        return { valid: false, recordCount: 0, error: `Invalid entry inside ${target} data array` };
-      }
-    }
-    return { valid: true, recordCount: records.length };
-  };
-
-  const matchesBackupTargetFilename = (target: BackupTargetKey, fileName: string): boolean => {
-    const lower = fileName.toLowerCase();
-    if (!lower.endsWith('.json')) return false;
-    if (target === 'announcements') {
-      return (
-        lower === 'announcements_backup.json' ||
-        lower === 'schedules_backup.json' ||
-        lower.startsWith('announcements_') ||
-        lower.startsWith('announcements.backup') ||
-        lower.startsWith('schedules_') ||
-        lower.startsWith('schedules.backup')
-      );
-    }
-    if (target === 'shows') {
-      return (
-        lower === 'shows_backup.json' ||
-        lower.startsWith('shows_') ||
-        lower.startsWith('shows.backup')
-      );
-    }
-    return (
-      lower === 'logs_backup.json' ||
-      lower.startsWith('logs_') ||
-      lower.startsWith('logs.backup')
-    );
-  };
-
-  const getBackupSearchDirsForTarget = (
-    target: BackupTargetKey
-  ): Array<{ dir: string; sourceDir: 'settings/backups' | 'logs/backups' }> => {
-    const dirs: Array<{ dir: string; sourceDir: 'settings/backups' | 'logs/backups' }> = [];
-    const settingsDir = getAmpSettingsDir();
-    const logsDir = getAmpLogsDir();
-    if (target === 'logs') {
-      if (logsDir) dirs.push({ dir: path.join(logsDir, 'backups'), sourceDir: 'logs/backups' });
-      if (settingsDir) dirs.push({ dir: path.join(settingsDir, 'backups'), sourceDir: 'settings/backups' });
-    } else if (settingsDir) {
-      dirs.push({ dir: path.join(settingsDir, 'backups'), sourceDir: 'settings/backups' });
-    }
-    return dirs;
-  };
-
-  const listAndValidateBackupCandidates = (target: BackupTargetKey) => {
-    const searchDirs = getBackupSearchDirsForTarget(target);
-    const seenKeys = new Set<string>();
-    const candidates: Array<{
-      fileName: string;
-      sourceDir: 'settings/backups' | 'logs/backups';
-      mtimeMs: number;
-      modifiedIso: string;
-      sizeBytes: number;
-      valid: boolean;
-      recordCount: number;
-      validationError?: string;
-    }> = [];
-
-    for (const { dir, sourceDir } of searchDirs) {
-      if (!dir || !fs.existsSync(dir)) continue;
-      let entries: fs.Dirent[] = [];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch (_) {
-        continue;
-      }
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-        if (!matchesBackupTargetFilename(target, entry.name)) continue;
-        const fullPath = path.join(dir, entry.name);
-        if (!isPathWithinAnyDir(fullPath, [dir])) continue;
-        const dedupeKey = `${sourceDir}:${entry.name.toLowerCase()}`;
-        if (seenKeys.has(dedupeKey)) continue;
-        seenKeys.add(dedupeKey);
-
-        let mtimeMs = 0;
-        let sizeBytes = 0;
-        try {
-          const st = fs.statSync(fullPath);
-          mtimeMs = st.mtimeMs;
-          sizeBytes = st.size;
-        } catch (_) {
-          continue;
-        }
-
-        let valid = false;
-        let recordCount = 0;
-        let validationError: string | undefined;
-        try {
-          const raw = fs.readFileSync(fullPath, 'utf-8');
-          const check = validateParsedDataPayload(target, raw);
-          valid = check.valid;
-          recordCount = check.recordCount;
-          validationError = check.error;
-        } catch (readErr: any) {
-          valid = false;
-          validationError = readErr?.message || 'Unable to read backup file';
-        }
-
-        candidates.push({
-          fileName: entry.name,
-          sourceDir,
-          mtimeMs,
-          modifiedIso: new Date(mtimeMs || Date.now()).toISOString(),
-          sizeBytes,
-          valid,
-          recordCount,
-          ...(validationError ? { validationError } : {})
-        });
-      }
-    }
-
-    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return candidates;
-  };
-
-  const inspectTargetHealth = (target: BackupTargetKey) => {
-    const label =
-      target === 'announcements' ? 'Announcements (announcements.json)' :
-      target === 'shows' ? 'Shows (shows.json)' :
-      'Play Logs (logs.json)';
-
-    const baseDir = target === 'logs' ? getAmpLogsDir() : getAmpSettingsDir();
-    const primaryPath =
-      target === 'announcements' ? getCalendarFilePath() :
-      target === 'shows' ? getShowsFilePath() :
-      getLogFilePath();
-
-    if (!baseDir || !primaryPath) {
-      return {
-        key: target,
-        label,
-        primaryName: `${target}.json`,
-        status: 'error' as const,
-        cause: 'connection_lost' as const,
-        error: 'Configured folder path is missing or offline.',
-        backupCount: 0
-      };
-    }
-
-    try {
-      if (!fs.existsSync(baseDir)) {
-        return {
-          key: target,
-          label,
-          primaryName: path.basename(primaryPath),
-          status: 'error' as const,
-          cause: 'connection_lost' as const,
-          error: 'Target folder cannot be reached on disk.',
-          backupCount: 0
-        };
-      }
-      fs.accessSync(baseDir, fs.constants.R_OK);
-    } catch (accessErr: any) {
-      return {
-        key: target,
-        label,
-        primaryName: path.basename(primaryPath),
-        status: 'error' as const,
-        cause: 'connection_lost' as const,
-        error: accessErr?.message || 'Folder is not readable.',
-        backupCount: 0
-      };
-    }
-
-    const backups = listAndValidateBackupCandidates(target);
-    const backupCount = backups.length;
-
-    if (!fs.existsSync(primaryPath)) {
-      if (backupCount > 0) {
-        return {
-          key: target,
-          label,
-          primaryName: path.basename(primaryPath),
-          status: 'error' as const,
-          cause: 'missing_file' as const,
-          error: `${path.basename(primaryPath)} is missing, but ${backupCount} backup file${backupCount === 1 ? '' : 's'} exist.`,
-          backupCount
-        };
-      }
-      return {
-        key: target,
-        label,
-        primaryName: path.basename(primaryPath),
-        status: 'ok' as const,
-        cause: 'ok' as const,
-        backupCount: 0
-      };
-    }
-
-    try {
-      const raw = fs.readFileSync(primaryPath, 'utf-8');
-      const check = validateParsedDataPayload(target, raw);
-      if (!check.valid) {
-        return {
-          key: target,
-          label,
-          primaryName: path.basename(primaryPath),
-          status: 'error' as const,
-          cause: 'malformed_file' as const,
-          error: check.error || 'File is malformed or corrupted.',
-          backupCount
-        };
-      }
-      return {
-        key: target,
-        label,
-        primaryName: path.basename(primaryPath),
-        status: 'ok' as const,
-        cause: 'ok' as const,
-        backupCount
-      };
-    } catch (readErr: any) {
-      const code = String(readErr?.code || '').toUpperCase();
-      const isConnErr = code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || code === 'ENOTCONN' || code === 'EIO';
-      return {
-        key: target,
-        label,
-        primaryName: path.basename(primaryPath),
-        status: 'error' as const,
-        cause: (isConnErr ? 'connection_lost' : 'malformed_file') as 'connection_lost' | 'malformed_file',
-        error: readErr?.message || 'Unable to read data file.',
-        backupCount
-      };
-    }
-  };
-
   app.get('/api/backups/diagnose', (_req, res) => {
     try {
       const targets: BackupTargetKey[] = ['announcements', 'shows', 'logs'];
@@ -1484,15 +1622,19 @@ export function registerScheduleRoutes(app: express.Express): void {
         overallCause = 'missing_file';
       }
 
+      const detectedAdminContactInfo = extractRawAdminContactFromDisk();
+
       res.json({
         overallCause,
-        files
+        files,
+        detectedAdminContactInfo
       });
     } catch (e: any) {
       res.status(500).json({
         overallCause: 'connection_lost',
         error: e?.message || 'Failed to diagnose station data files',
-        files: []
+        files: [],
+        detectedAdminContactInfo: extractRawAdminContactFromDisk()
       });
     }
   });
@@ -1551,7 +1693,7 @@ export function registerScheduleRoutes(app: express.Express): void {
       }
 
       const rawBackupText = fs.readFileSync(resolvedBackupPath, 'utf-8');
-      const validation = validateParsedDataPayload(target, rawBackupText);
+      const validation = validateParsedDataPayload(target, rawBackupText, { requireNonEmpty: true });
       if (!validation.valid) {
         return res.status(400).json({
           error: `Backup file "${cleanName}" failed validation: ${validation.error || 'Malformed JSON'}`

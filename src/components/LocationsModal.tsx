@@ -205,7 +205,12 @@ export const LocationsModal: React.FC<LocationsModalProps> = ({
   const [dismissedFirstRunContact, setDismissedFirstRunContact] = useState(false);
 
   const activeAdminContact = (adminContactInfo !== undefined ? adminContactInfo : getAdminContactInfo()).trim();
-  const showFirstRunAdminContactBanner = isAdmin && !hasSavedAdminContact && !activeAdminContact && !dismissedFirstRunContact;
+  const showFirstRunAdminContactBanner =
+    isAdmin &&
+    !localPathsUnavailable &&
+    !hasSavedAdminContact &&
+    !activeAdminContact &&
+    !dismissedFirstRunContact;
 
   const handleBrowseAmp = async () => {
     const selected = await onBrowseNative("amp");

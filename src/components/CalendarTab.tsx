@@ -10,7 +10,6 @@ import { STATION_TIMEZONE_OPTIONS, getStationTimezone, setStationTimezone, getSt
 import LiveReadPopout from './LiveReadPopout';
 import ScheduleAuditModal from './ScheduleAuditModal';
 import { MilitaryTimeInput } from './MilitaryTimeInput';
-import { PlacementPresetModal } from './PlacementPresetModal';
 import { MediaPickerModal } from './MediaPickerModal';
 import { CopyEditorModal } from './CopyEditorModal';
 import { normalizeReadTimeDisplay } from '../lib/liveReadFormatting';
@@ -187,6 +186,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     softWarnings: string[];
   } | null>(null);
   const [saveValidationOverrideEndDate, setSaveValidationOverrideEndDate] = useState<string | undefined>(undefined);
+  const [focusBottomProblemGateNonce, setFocusBottomProblemGateNonce] = useState<number>(0);
   const isNew = editingId ? !announcements.some(s => s.id === editingId) : false;
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -209,7 +209,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [inactivateEndModal, setInactivateEndModal] = useState<{ date: string; time: string } | null>(null);
-  const [placementModal, setPlacementModal] = useState<AnnouncementPlacementModalState | null>(null);
   const [selectedListMediaByAnnId, setSelectedListMediaByAnnId] = useState<Record<string, string>>({});
   const [copyEditorState, setCopyEditorState] = useState<{
     isOpen: boolean;
@@ -370,300 +369,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       timeGatedMp3s: nextList
     });
     return gateId;
-  };
-
-  const handleSelectPlacementPreset = (preset: SchedulePresetOption) => {
-    setPlacementModal(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        selectedPresetId: preset.id,
-        startDate: preset.startDate,
-        startTime: preset.startTime,
-        endDate: preset.endDate,
-        endTime: preset.endTime,
-        transitionMp3Id: preset.transitionMp3Id,
-        transitionMp3Index: preset.transitionMp3Index,
-        transitionMp3Title: preset.transitionMp3Title,
-        previousGateEndDate: preset.defaultPreviousGateEndDate || '',
-        previousGateEndTime: preset.defaultPreviousGateEndTime || ''
-      };
-    });
-  };
-
-  const handleUpdatePlacementModalDates = (
-    updates: Partial<{
-      startDate: string;
-      startTime: string;
-      endDate: string;
-      endTime: string;
-      previousGateEndDate: string;
-      previousGateEndTime: string;
-      adjacentGateUpdate: {
-        gateId: string;
-        startDate?: string;
-        startTime?: string;
-        endDate?: string;
-        endTime?: string;
-      };
-    }>
-  ) => {
-    setPlacementModal(prev => {
-      if (!prev) return null;
-
-      if (updates.adjacentGateUpdate) {
-        const { gateId, startDate, startTime, endDate, endTime } = updates.adjacentGateUpdate;
-        const nextActiveGates = (prev.activeGates || []).map(g => {
-          if (g.id !== gateId) return g;
-          return {
-            ...g,
-            startDate: startDate !== undefined ? startDate : g.startDate,
-            startTime: startTime !== undefined ? startTime : g.startTime,
-            endDate: endDate !== undefined ? endDate : g.endDate,
-            endTime: endTime !== undefined ? endTime : g.endTime,
-          };
-        });
-        return {
-          ...prev,
-          activeGates: nextActiveGates,
-        };
-      }
-
-      // If user edited the open-ended previous gate's End date/time directly,
-      // automatically set the new gate's Start date/time to 1 minute later (#68).
-      if (updates.previousGateEndDate !== undefined || updates.previousGateEndTime !== undefined) {
-        const nextPrevEndDate =
-          updates.previousGateEndDate !== undefined
-            ? updates.previousGateEndDate
-            : prev.previousGateEndDate || '';
-        const nextPrevEndTime =
-          updates.previousGateEndTime !== undefined
-            ? updates.previousGateEndTime
-            : prev.previousGateEndTime || '23:59';
-        if (nextPrevEndDate) {
-          const prevEndIso = `${nextPrevEndDate}T${nextPrevEndTime || '23:59'}`;
-          const autoStart = getNextGapAutoFillStart(prevEndIso);
-          return {
-            ...prev,
-            previousGateEndDate: nextPrevEndDate,
-            previousGateEndTime: nextPrevEndTime || '23:59',
-            startDate: autoStart.startDate,
-            startTime: autoStart.startTime,
-          };
-        } else {
-          return {
-            ...prev,
-            previousGateEndDate: '',
-            previousGateEndTime: updates.previousGateEndTime ?? '',
-            startDate: '',
-            startTime: '',
-          };
-        }
-      }
-
-      const nextStartDate = updates.startDate !== undefined ? updates.startDate : prev.startDate;
-      const nextStartTime = updates.startTime !== undefined ? updates.startTime : prev.startTime;
-      const nextEndDate = updates.endDate !== undefined ? updates.endDate : prev.endDate;
-      const nextEndTime = updates.endTime !== undefined ? updates.endTime : prev.endTime;
-
-      // 1. Check if this combination matches any of the gap presets (excluding 'custom')
-      const matchingPreset = prev.presets.find(p => {
-        if (p.id === 'custom' || p.transitionMp3Id) return false;
-        const matchStart = (p.startDate || '') === (nextStartDate || '') && (p.startTime || '') === (nextStartTime || '');
-        const matchEnd = (p.endDate || '') === (nextEndDate || '') && (p.endTime || '') === (nextEndTime || '');
-        return matchStart && matchEnd;
-      });
-
-      if (matchingPreset) {
-        return {
-          ...prev,
-          startDate: nextStartDate,
-          startTime: nextStartTime,
-          endDate: nextEndDate,
-          endTime: nextEndTime,
-          selectedPresetId: matchingPreset.id,
-          transitionMp3Id: matchingPreset.transitionMp3Id,
-          transitionMp3Index: matchingPreset.transitionMp3Index,
-          transitionMp3Title: matchingPreset.transitionMp3Title,
-          previousGateEndDate: '',
-          previousGateEndTime: ''
-        };
-      }
-
-      // 2. Check for "After" edits in "Last file has a blank end" scenarios
-      const trailingTransitionPreset = prev.presets.find(p => p.transitionMp3Id);
-      if (trailingTransitionPreset && (prev.transitionMp3Id || !nextEndDate)) {
-        const refStart = trailingTransitionPreset.referenceStartDate;
-        const nextStartDt = nextStartDate ? `${nextStartDate}T${nextStartTime || '00:00'}` : '';
-        if (refStart && nextStartDt && nextStartDt > refStart) {
-          const backfillEndIso = computeBackfilledEndTime(nextStartDt);
-          return {
-            ...prev,
-            startDate: nextStartDate,
-            startTime: nextStartTime || '00:00',
-            endDate: nextEndDate,
-            endTime: nextEndTime,
-            selectedPresetId: trailingTransitionPreset.id,
-            transitionMp3Id: trailingTransitionPreset.transitionMp3Id,
-            transitionMp3Index: trailingTransitionPreset.transitionMp3Index,
-            transitionMp3Title: trailingTransitionPreset.transitionMp3Title,
-            previousGateEndDate: getDatePart(backfillEndIso),
-            previousGateEndTime: getTimePart(backfillEndIso) || '23:59'
-          };
-        }
-      }
-
-      return {
-        ...prev,
-        startDate: nextStartDate,
-        startTime: nextStartTime,
-        endDate: nextEndDate,
-        endTime: nextEndTime,
-        selectedPresetId: 'custom',
-        transitionMp3Id: undefined,
-        transitionMp3Index: undefined,
-        transitionMp3Title: undefined,
-        previousGateEndDate: '',
-        previousGateEndTime: ''
-      };
-    });
-  };
-
-  const handleCancelPlacementModal = () => {
-    setPlacementModal(null);
-  };
-
-  const handleConfirmPlacementModal = () => {
-    if (!placementModal) return;
-    const current = formData.timeGatedMp3s || [];
-    const mp3Name = placementModal.pendingFile ? placementModal.pendingFile.name : '';
-    const rawDur = placementModal.pendingFile?.duration;
-    const mp3Duration = rawDur === undefined || rawDur === null 
-      ? undefined 
-      : typeof rawDur === 'number' 
-        ? formatDuration(rawDur) 
-        : String(rawDur);
-
-    const startIso = placementModal.startDate
-      ? (placementModal.startTime ? `${placementModal.startDate}T${placementModal.startTime}` : `${placementModal.startDate}T00:00`)
-      : '';
-    const endIso = placementModal.endDate
-      ? (placementModal.endTime ? `${placementModal.endDate}T${placementModal.endTime}` : `${placementModal.endDate}T23:59`)
-      : undefined;
-
-    if (!startIso) {
-      return;
-    }
-
-    const existingForPlacement = announcements.find(s => s.id === editingId);
-    const placementPlayedBounds = computePlayedGateBoundsMap(
-      { ...formData, id: editingId || formData.id },
-      current,
-      logs,
-      existingForPlacement?.timeGatedMp3s
-    );
-
-    let updatedCurrent = [...current];
-    if (placementModal.activeGates && placementModal.activeGates.length > 0) {
-      const editedGates = placementModal.activeGates;
-      updatedCurrent = updatedCurrent.map(m => {
-        const edited = editedGates.find(g => g.id === m.id);
-        if (!edited) return m;
-        const gateBounds = placementPlayedBounds[m.id];
-        const hasPlays = Boolean(gateBounds && gateBounds.playCount > 0);
-        const editedStart =
-          hasPlays
-            ? m.startDate
-            : edited.startDate
-              ? `${edited.startDate}T${edited.startTime || '00:00'}`
-              : m.startDate;
-        const candidateEnd = edited.endDate
-          ? `${edited.endDate}T${edited.endTime || '23:59'}`
-          : undefined;
-        const violatesLastPlay = Boolean(
-          hasPlays &&
-            candidateEnd &&
-            gateBounds?.lastPlayedLocalIso &&
-            formatToDatetimeLocal(candidateEnd) < gateBounds.lastPlayedLocalIso
-        );
-        return {
-          ...m,
-          startDate: editedStart,
-          endDate: violatesLastPlay ? m.endDate : candidateEnd,
-        };
-      });
-    }
-
-    if (placementModal.transitionMp3Id && startIso) {
-      const explicitPrevEnd =
-        placementModal.previousGateEndDate
-          ? `${placementModal.previousGateEndDate}T${placementModal.previousGateEndTime || '23:59'}`
-          : computeBackfilledEndTime(startIso);
-      const transBounds = placementPlayedBounds[placementModal.transitionMp3Id];
-      const violatesLastPlay = Boolean(
-        transBounds &&
-          transBounds.playCount > 0 &&
-          transBounds.lastPlayedLocalIso &&
-          explicitPrevEnd &&
-          formatToDatetimeLocal(explicitPrevEnd) < transBounds.lastPlayedLocalIso
-      );
-      if (!violatesLastPlay) {
-        updatedCurrent = updatedCurrent.map(m =>
-          m.id === placementModal.transitionMp3Id ? { ...m, endDate: explicitPrevEnd } : m
-        );
-      }
-    } else {
-      const sortedCurrent = sortMp3sByStartDate(updatedCurrent);
-      const last = sortedCurrent[sortedCurrent.length - 1];
-      if (last && (!last.endDate || !last.endDate.trim()) && startIso > (last.startDate || '')) {
-        const backfillEnd = computeBackfilledEndTime(startIso);
-        const lastBounds = placementPlayedBounds[last.id];
-        const violatesLastPlay = Boolean(
-          lastBounds &&
-            lastBounds.playCount > 0 &&
-            lastBounds.lastPlayedLocalIso &&
-            backfillEnd &&
-            formatToDatetimeLocal(backfillEnd) < lastBounds.lastPlayedLocalIso
-        );
-        if (!violatesLastPlay) {
-          updatedCurrent = updatedCurrent.map(m =>
-            m.id === last.id ? { ...m, endDate: backfillEnd } : m
-          );
-        }
-      }
-    }
-
-    const gateId = `mp3-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const resolvedItems: TimeGatedMediaItem[] =
-      placementModal.pendingMediaItems && placementModal.pendingMediaItems.length > 0
-        ? placementModal.pendingMediaItems
-        : [
-            {
-              mp3Url: mp3Name,
-              assetType: placementModal.inferredAssetType,
-              duration: mp3Duration,
-              ...(placementModal.pendingFile?.approximateReadTime
-                ? { approximateReadTime: placementModal.pendingFile.approximateReadTime }
-                : {}),
-              ...(placementModal.pendingFile?.backupMp3Url
-                ? { backupMp3Url: placementModal.pendingFile.backupMp3Url }
-                : {})
-            }
-          ];
-    const newEntry: TimeGatedMp3 = {
-      id: gateId,
-      startDate: startIso,
-      endDate: endIso,
-      mediaItems: resolvedItems
-    };
-
-    const updated = sortMp3sByStartDate([...updatedCurrent, newEntry]);
-    setFormData({
-      ...formData,
-      timeGatedMp3s: updated
-    });
-
-    setPlacementModal(null);
   };
 
   // Audit states for save confirmations
@@ -883,7 +588,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     window.ampHasUnsavedChanges = () => {
       if (editingId !== null) return true;
       if (editingShowId !== null) return true;
-      if (placementModal !== null) return true;
       if (copyEditorState.isOpen) return true;
       if (isPickerOpen) return true;
       if (previewScriptFile !== null) return true;
@@ -897,7 +601,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       setEditingShowId(null);
       setShowValidationErrors([]);
       setDeleteShowConfirmId(null);
-      setPlacementModal(null);
       setCopyEditorState({ isOpen: false });
       setIsPickerOpen(false);
       setPreviewScriptFile(null);
@@ -914,7 +617,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
   }, [
     editingId,
     editingShowId,
-    placementModal,
     copyEditorState.isOpen,
     isPickerOpen,
     previewScriptFile,
@@ -1904,7 +1606,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
       isScheduleAuditOpen ||
       deleteConfirmId !== null ||
       inactivateEndModal !== null ||
-      placementModal !== null ||
       showCancelConfirm ||
       previewScriptFile !== null ||
       selectedCalendarShow !== null ||
@@ -1923,7 +1624,6 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
     isScheduleAuditOpen,
     deleteConfirmId,
     inactivateEndModal,
-    placementModal,
     showCancelConfirm,
     previewScriptFile,
     selectedCalendarShow,
@@ -3534,6 +3234,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
           savedGates={announcements.find(a => a.id === editingId)?.timeGatedMp3s}
           initialFocusTarget={initialEditorFocusTarget}
           onClearInitialFocusTarget={() => setInitialEditorFocusTarget(null)}
+          focusBottomProblemGateNonce={focusBottomProblemGateNonce}
           logs={logs}
           pickerDurations={pickerDurations}
           metadataCache={metadataCache}
@@ -4934,6 +4635,7 @@ function CalendarTab({ announcements, onSave, isAdmin, onAdminToggle, now: _live
                 onClick={() => {
                   setSaveValidationState(null);
                   setSaveValidationOverrideEndDate(undefined);
+                  setFocusBottomProblemGateNonce(prev => prev + 1);
                 }}
                 className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
               >

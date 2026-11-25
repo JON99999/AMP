@@ -14,12 +14,14 @@ import {
 export interface MachinePersonaSectionProps {
   shows?: Show[];
   compact?: boolean;
+  requireEditUnlock?: boolean;
   onSaved?: () => void;
 }
 
 export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
   shows = [],
   compact = false,
+  requireEditUnlock = false,
   onSaved,
 }) => {
   const initial = getMachinePersona();
@@ -27,6 +29,7 @@ export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
   const [pcUseType, setPcUseType] = useState<MachinePcUseType>(initial.pcUseType);
   const [personaName, setPersonaName] = useState<string>(initial.personaName);
   const [savedNotice, setSavedNotice] = useState<boolean>(false);
+  const [isEditingUnlocked, setIsEditingUnlocked] = useState<boolean>(!requireEditUnlock);
 
   const runtimeCtx = useMemo(() => getRuntimeAppContext(), []);
 
@@ -65,6 +68,9 @@ export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
     });
     setSavedNotice(true);
     window.setTimeout(() => setSavedNotice(false), 1800);
+    if (requireEditUnlock) {
+      setIsEditingUnlocked(false);
+    }
     if (notifyClose) {
       onSaved?.();
     }
@@ -111,6 +117,54 @@ export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
         </span>
       </div>
 
+      {savedNotice && requireEditUnlock && !isEditingUnlocked && (
+        <div className="text-xs font-bold flex items-center gap-1.5 text-emerald-800 bg-emerald-50 p-2 rounded border border-emerald-200">
+          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+          <span>Computer logging persona saved.</span>
+        </div>
+      )}
+
+      {requireEditUnlock && !isEditingUnlocked ? (
+        <>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-0.5">
+            <div className="space-y-1 min-w-0">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Optional courtesy label attached when this computer acknowledges notices on the Msgs tab.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <span className="truncate">
+                  Active label:{' '}
+                  <strong className="text-slate-800">
+                    {getEffectivePersonaLabel(currentStored)}
+                  </strong>
+                  {' · '}
+                  {currentStored.personaType === 'personal' ? 'Personal PC' : 'Shared PC'}
+                  {currentStored.personaName.trim() ? ` · ${getPcUseTypeLabel(currentStored.pcUseType)}` : ''}
+                </span>
+                <span className="inline-flex items-center gap-1 font-mono text-slate-400">
+                  <Sparkles className="w-3 h-3" />
+                  <span>{currentStored.machineId}</span>
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const latest = getMachinePersona();
+                setPersonaType(latest.personaType);
+                setPcUseType(latest.pcUseType);
+                setPersonaName(latest.personaName);
+                setSavedNotice(false);
+                setIsEditingUnlocked(true);
+              }}
+              className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-350 rounded text-xs font-black uppercase tracking-wider cursor-pointer transition-all shrink-0"
+            >
+              Edit Computer Persona...
+            </button>
+          </div>
+        </>
+      ) : (
+      <>
       <p className="text-xs text-slate-600 leading-snug">
         Optional courtesy label attached when this computer acknowledges notices on the Msgs tab.
       </p>
@@ -242,6 +296,21 @@ export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
             }
             className="flex-1 min-w-0 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-blue-500"
           />
+          {requireEditUnlock && (
+            <button
+              type="button"
+              onClick={() => {
+                const latest = getMachinePersona();
+                setPersonaType(latest.personaType);
+                setPcUseType(latest.pcUseType);
+                setPersonaName(latest.personaName);
+                setIsEditingUnlocked(false);
+              }}
+              className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold cursor-pointer transition-colors shrink-0"
+            >
+              Cancel
+            </button>
+          )}
           <button
             type="button"
             onClick={() => commitPersona(personaType, pcUseType, personaName, true)}
@@ -249,7 +318,7 @@ export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
               'px-3 py-1.5 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-colors shrink-0',
               savedNotice
                 ? 'bg-emerald-600 text-white'
-                : hasUnsavedChanges || onSaved
+                : hasUnsavedChanges || onSaved || requireEditUnlock
                   ? 'bg-blue-600 hover:bg-blue-700 text-white'
                   : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
             )}
@@ -284,6 +353,8 @@ export const MachinePersonaSection: React.FC<MachinePersonaSectionProps> = ({
           <span>{currentStored.machineId}</span>
         </span>
       </div>
+      </>
+      )}
     </div>
   );
 };

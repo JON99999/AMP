@@ -491,7 +491,7 @@ export default function LocalHelpModal({
             </p>
 
             {/* This Computer (Logging Persona) — Editable by All Users */}
-            <MachinePersonaSection shows={shows} />
+            <MachinePersonaSection shows={shows} requireEditUnlock={true} />
 
             {/* Station Timezone Maintenance Card (Admin Only) */}
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-left space-y-3">

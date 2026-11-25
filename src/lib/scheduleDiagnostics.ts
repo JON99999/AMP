@@ -364,15 +364,71 @@ export function evaluateScheduleDiagnostics({
 
         // Case A: Schedule Gap / No file covers this realized slot
         if (matchingEntries.length === 0) {
-          // Check if slot is after the last scheduled time-gated item ended
-          const sortedEntries = [...timeGated].filter(t => !t.inactivated && t.endDate).sort((a, b) => {
-            const aEnd = a.endDate ? new Date(formatToDatetimeLocal(a.endDate)).getTime() : 0;
-            const bEnd = b.endDate ? new Date(formatToDatetimeLocal(b.endDate)).getTime() : 0;
-            return bEnd - aEnd;
-          });
-          const lastEndedItem = sortedEntries[0];
-          const lastEndMs = lastEndedItem?.endDate ? new Date(formatToDatetimeLocal(lastEndedItem.endDate)).getTime() : NaN;
-          const isPostExpiration = !isNaN(lastEndMs) && slotMs > lastEndMs;
+          const fullMonthNames = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+          ];
+          const toOrdinalDay = (dayNum: number): string => {
+            const mod100 = dayNum % 100;
+            if (mod100 >= 11 && mod100 <= 13) return `${dayNum}th`;
+            switch (dayNum % 10) {
+              case 1: return `${dayNum}st`;
+              case 2: return `${dayNum}nd`;
+              case 3: return `${dayNum}rd`;
+              default: return `${dayNum}th`;
+            }
+          };
+          const formatGapBoundaryLabel = (rawIso: string): string => {
+            const normalized = formatToDatetimeLocal(rawIso);
+            const [dPart, tPart] = normalized.split('T');
+            if (!dPart) return rawIso;
+            const [yStr, mStr, dayStr] = dPart.split('-');
+            const mIdx = parseInt(mStr || '', 10) - 1;
+            const dayNum = parseInt(dayStr || '', 10);
+            if (isNaN(mIdx) || mIdx < 0 || mIdx > 11 || isNaN(dayNum)) return normalized;
+            const monthLabel = fullMonthNames[mIdx];
+            const timeLabel12 = tPart ? formatTime12(tPart) : '';
+            return timeLabel12
+              ? `${monthLabel} ${toOrdinalDay(dayNum)} at ${timeLabel12}`
+              : `${monthLabel} ${toOrdinalDay(dayNum)}`;
+          };
+
+          const activeGates = timeGated.filter(t => !t.inactivated);
+          let prevEndGate: { iso: string; ms: number } | null = null;
+          let nextStartGate: { iso: string; ms: number } | null = null;
+
+          for (const g of activeGates) {
+            if (g.endDate && g.endDate.trim()) {
+              const endIso = formatToDatetimeLocal(g.endDate);
+              const endMs = new Date(endIso).getTime();
+              if (!isNaN(endMs) && endMs < slotMs) {
+                if (!prevEndGate || endMs > prevEndGate.ms) {
+                  prevEndGate = { iso: endIso, ms: endMs };
+                }
+              }
+            }
+            if (g.startDate && g.startDate.trim()) {
+              const startIso = formatToDatetimeLocal(g.startDate);
+              const startMs = new Date(startIso).getTime();
+              if (!isNaN(startMs) && startMs > slotMs) {
+                if (!nextStartGate || startMs < nextStartGate.ms) {
+                  nextStartGate = { iso: startIso, ms: startMs };
+                }
+              }
+            }
+          }
+
+          const isIntermediateGap = Boolean(prevEndGate && nextStartGate);
+          const isLeadingGap = Boolean(!prevEndGate && nextStartGate);
+          const isPostExpiration = Boolean(prevEndGate && !nextStartGate);
+
+          const gapDescription = isIntermediateGap
+            ? `"${s.name}" has no announcements scheduled between ${formatGapBoundaryLabel(prevEndGate!.iso)} and ${formatGapBoundaryLabel(nextStartGate!.iso)}.`
+            : isLeadingGap
+              ? `"${s.name}" has no announcements scheduled before ${formatGapBoundaryLabel(nextStartGate!.iso)}.`
+              : isPostExpiration
+                ? `"${s.name}" has no announcements scheduled after ${formatGapBoundaryLabel(prevEndGate!.iso)}.`
+                : `"${s.name}" has a gap with no announcements scheduled at this time.`;
 
           addIssue({
             id: `gap_${s.id}_${dayKey}_${hour}_${minute}`,
@@ -387,9 +443,7 @@ export function evaluateScheduleDiagnostics({
             announcementId: s.id,
             announcementName: s.name,
             announcementType: s.type,
-            description: isPostExpiration
-              ? `"${s.name}" has no announcements scheduled after the last scheduled announcement.`
-              : `"${s.name}" has a gap with no announcements scheduled at this time.`,
+            description: gapDescription,
             suggestedAction: isPostExpiration
               ? 'Add a new time-gated item or extend the end date of the last active item to maintain continuous coverage.'
               : 'Add or adjust time-gated start/end dates so this time window is covered.'

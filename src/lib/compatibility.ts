@@ -5,7 +5,7 @@ import type { AdminMessage } from '../types';
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const CURRENT_MIN_APP_VERSION = "0.16.0";
-export const CURRENT_APP_VERSION = "0.20.8";
+export const CURRENT_APP_VERSION = "0.20.9";
 
 export const DEFAULT_STATION_TIMEZONE = 'America/Chicago';
 

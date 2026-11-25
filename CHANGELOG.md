@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.9] - 2026-11-24
+
+### Fixed & Changed
+- **Schema Integrity, Malformed/Missing File Detection, & Validated Backup Recovery (`#130`, `#131`, `#133`)**:
+  - Updated `inspectTargetHealth` (`src/server/routes/scheduleRoutes.ts`) and `fetchDataForMode` / `loadShows` (`src/App.tsx`, `src/hooks/useScheduleManager.ts`) to prevent auto-creating or backing up empty `0`-record files when backups exist, clear stale in-memory schedule caches on health failure, flag missing or `0`-record primary files when valid non-empty backups exist, and skip `0`-record backups during backup candidate validation (`#133`).
+  - Updated `canUseAdminBackup` in `src/App.tsx` to include `isAdminApp` so `AMP Admin` presents `Retry`, `Fix Folder`, and `Try a Backup` immediately on launch and across all tabs (`#131`).
+  - Added raw-text admin contact signature extraction (`extractRawAdminContactFromDisk`) for corrupted JSON files and a post-retry `"Quit AMP"` prompt on non-Admin malformed/missing file screens (`#130`).
+- **Live / Prerecord Behavior & Offline Configured Station Folder Diagnosis (`#126`, `#128`)**:
+  - Hid `(x/y)` gate rotation counts from visible DJ card titles in `Player -> Prerecord` (`PlayerPrerecordAnnouncementCard` in `src/components/player/PlayerAnnouncementCard.tsx`) while preserving them in the hover tooltip (`#126`).
+  - Updated startup verification (`initSettings`) and `Retry Sync` (`fetchDataForMode`) in `src/App.tsx` plus `LocationsModal.tsx` so an already-configured local station folder that is offline on disk lands on **Connection Lost / Connection Refresh Troubleshooting** (`Retry Sync`, `Reset Cache & Reload`, `Configure Storage Folders`) instead of popping open First-Run Setup (`#128`).
+- **Editor Smart Focus, `CopyEditorModal` Unsaved Prompt, Audit Gap Phrasing, & UI Polish (`#119`, `#121`–`#125`, `#127`, `#129`)**:
+  - Restored session baseline tracking and the centered `Unsaved Changes` confirmation dialog on `Cancel` / `X` in `src/components/CopyEditorModal.tsx` (`#121`).
+  - Updated Smart Focus Priority 1 on `+ ADD GATE` (`src/components/calendar/AnnouncementEditorView.tsx`) to scroll to and auto-open the inline `"Transition"` calendar when the prior gate is open-ended (`#122`), and wired `Return to Editor to Fix` on blocking gate errors (`src/components/CalendarTab.tsx`) to scroll to and open the calendar for the bottom problem gate (`#123`).
+  - Fixed schedule gap boundary detection in `src/lib/scheduleDiagnostics.ts` so open-ended subsequent gates are respected and intermediate gaps display bounded dates (`"has no announcements scheduled between <Month Day> at <12h> and <Month Day> at <12h>."`) (`#124`).
+  - Hyphenated `"Admin-to-Show Message Editor"` in `src/components/AdminMessageEditorModal.tsx` (`#125`), standardized bottom action button sizing on `Edit Show Settings` in `src/components/calendar/ShowsManagerView.tsx` (`#129`), wrapped Computer Logging Persona in an `"Edit Computer Persona..."` challenge unlock in `src/components/LocalHelpModal.tsx` / `src/components/MachinePersonaSection.tsx` (`#119`), and made the top-left header AMP icon and `"AMP"` label clickable to open a dismissible splash screen overlay in `src/App.tsx` (`#127`).
+- **Dead-Code & Unused Dependency Cleanup (`v0.20.9`)**:
+  - Removed unused legacy `PlacementPresetModal.tsx`, `useModalState.ts`, and `usePlaybackModeState.ts` modules and cleaned up dead `PlacementPresetModal` import and state handlers from `src/components/CalendarTab.tsx`.
+  - Removed unused `@google/genai` devDependency from `package.json` and synchronized `package-lock.json`.
+
 ## [0.20.8] - 2026-11-18
 
 ### Fixed & Changed

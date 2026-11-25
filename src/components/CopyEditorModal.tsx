@@ -189,6 +189,17 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   const [loadingContent, setLoadingContent] = useState(false);
   const [loadedSessionKey, setLoadedSessionKey] = useState<string | null>(null);
   const loadedInitialTextRef = useRef<string>('');
+  const loadedInitialRoundtripTextRef = useRef<string>('');
+  const initialSessionSnapshotRef = useRef<{
+    sessionKey: string;
+    fileNameStem: string;
+    autoApplyReadTime: boolean;
+    manualReadTime: string;
+    customSelectedBackupAudio: string | null;
+    doNotAttachAudio: boolean;
+    adoptNewSplitFile: boolean;
+  } | null>(null);
+  const [showUnsavedCloseConfirm, setShowUnsavedCloseConfirm] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [overwritePromptName, setOverwritePromptName] = useState<string | null>(null);
@@ -312,8 +323,32 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
   useLayoutEffect(() => {
     if (isSessionLoaded && !isNonTextCopyMode && editorRef.current) {
       editorRef.current.innerHTML = markdownTxtToEditableHtml(loadedInitialTextRef.current);
+      loadedInitialRoundtripTextRef.current = editableHtmlToMarkdownTxt(editorRef.current);
     }
   }, [isSessionLoaded, isNonTextCopyMode, loadedSessionKey]);
+
+  useEffect(() => {
+    if (!isSessionLoaded || !loadedSessionKey) return;
+    if (initialSessionSnapshotRef.current?.sessionKey === loadedSessionKey) return;
+    initialSessionSnapshotRef.current = {
+      sessionKey: loadedSessionKey,
+      fileNameStem,
+      autoApplyReadTime,
+      manualReadTime,
+      customSelectedBackupAudio,
+      doNotAttachAudio,
+      adoptNewSplitFile
+    };
+  }, [
+    isSessionLoaded,
+    loadedSessionKey,
+    fileNameStem,
+    autoApplyReadTime,
+    manualReadTime,
+    customSelectedBackupAudio,
+    doNotAttachAudio,
+    adoptNewSplitFile
+  ]);
 
   useEffect(() => {
     if (
@@ -382,9 +417,14 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
       setLoadedSessionKey(null);
       setLoadingContent(false);
       loadedInitialTextRef.current = '';
+      loadedInitialRoundtripTextRef.current = '';
+      initialSessionSnapshotRef.current = null;
+      setShowUnsavedCloseConfirm(false);
       return;
     }
     const activeSessionKey = `${sourceFileToCopy || ''}::${initialFileName || ''}::${initialReadTime || ''}::${suggestedBaseNameRef.current || ''}`;
+    initialSessionSnapshotRef.current = null;
+    setShowUnsavedCloseConfirm(false);
     setErrorMsg(null);
     setOverwritePromptName(null);
     setReadTimeWarning(null);
@@ -1437,6 +1477,40 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
     setTestPopupContent(serialized);
   };
 
+  const hasUnsavedChanges = (): boolean => {
+    if (!isSessionLoaded) return false;
+    const snap = initialSessionSnapshotRef.current;
+    if (!snap || snap.sessionKey !== loadedSessionKey) return false;
+
+    if (fileNameStem.trim() !== snap.fileNameStem.trim()) return true;
+    if (adoptNewSplitFile !== snap.adoptNewSplitFile) return true;
+
+    if (!isNonTextCopyMode) {
+      const currentMarkdown = editorRef.current
+        ? editableHtmlToMarkdownTxt(editorRef.current)
+        : bodyText;
+      const baselineMarkdown =
+        loadedInitialRoundtripTextRef.current || loadedInitialTextRef.current;
+      if (currentMarkdown !== baselineMarkdown) return true;
+      if (autoApplyReadTime !== snap.autoApplyReadTime) return true;
+      if (!autoApplyReadTime && manualReadTime.trim() !== snap.manualReadTime.trim()) return true;
+      if (customSelectedBackupAudio !== snap.customSelectedBackupAudio) return true;
+      if (doNotAttachAudio !== snap.doNotAttachAudio) return true;
+      if (Boolean(uploadedAudioOriginalName)) return true;
+    }
+
+    return false;
+  };
+
+  const handleRequestClose = () => {
+    if (isSaving || isUploadingBackupAudio) return;
+    if (hasUnsavedChanges()) {
+      setShowUnsavedCloseConfirm(true);
+      return;
+    }
+    onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-slate-900/65 backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-[706px] overflow-hidden border border-slate-200 flex flex-col max-h-[95vh]">
@@ -1464,7 +1538,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
             className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
             title="Close"
           >
@@ -2232,7 +2306,7 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
             <button
               type="button"
               disabled={isSaving || isUploadingBackupAudio}
-              onClick={onClose}
+              onClick={handleRequestClose}
               className="px-3.5 py-1.5 border border-slate-200 rounded text-xs font-black text-slate-600 hover:bg-slate-100 uppercase tracking-wider bg-white cursor-pointer disabled:opacity-50"
             >
               Cancel
@@ -2261,6 +2335,57 @@ export const CopyEditorModal: React.FC<CopyEditorModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Centered Pop-Up Modal for Unsaved Changes Warning (#121) */}
+      {showUnsavedCloseConfirm && (
+        <div
+          className="fixed inset-0 z-[185] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
+          onClick={() => setShowUnsavedCloseConfirm(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-sm border border-slate-200 overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-3.5 px-4 bg-amber-50 border-b border-amber-200 flex items-center gap-2.5">
+              <div className="bg-amber-600 p-1.5 rounded text-white shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-amber-950 uppercase tracking-widest leading-none">
+                  Unsaved Changes
+                </h4>
+                <p className="text-xs text-amber-800 font-bold mt-1">
+                  You have unsaved live read edits.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 text-xs font-medium text-slate-600 leading-relaxed">
+              Closing this editor will discard any unsaved script changes. Are you sure you want to leave?
+            </div>
+
+            <div className="p-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowUnsavedCloseConfirm(false)}
+                className="px-3.5 py-1.5 border border-slate-300 rounded text-xs font-black text-slate-700 hover:bg-slate-100 uppercase tracking-wider bg-white cursor-pointer"
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowUnsavedCloseConfirm(false);
+                  onClose();
+                }}
+                className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-black uppercase tracking-wider cursor-pointer"
+              >
+                Discard &amp; Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Centered Pop-Up Modal for Filename Collision / Overwrite Prompt (#102) */}
       {overwritePromptName && (

@@ -6,7 +6,15 @@ This document records the exact, verified schema, data format, structural storag
 
 ## 1. Complete Chronological Version Schema Audit
 
-### Current Release: v0.20.8
+### Current Release: v0.20.9
+- **App Version**: `0.20.9`
+- **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
+- **Changes vs. v0.20.8**:
+  - **No Breaking Schema Change**: `announcements.json`, `shows.json`, and `logs.json` remain on `_meta.schemaVersion: 1`.
+  - **Backup Integrity, Offline-Folder Diagnosis, & Beta Fixes (`#119`, `#121`–`#131`, `#133`)**: Hardened missing/`0`-record JSON detection, non-empty backup validation, raw-text admin contact extraction on corrupted files, Admin initial backup-recovery routing, offline already-configured folder diagnosis (`Connection Lost`), `Player -> Prerecord` DJ rotation badge hiding, `CopyEditorModal` unsaved-changes prompting, gate smart-focus/audit gap phrasing, `Edit Show Settings` footer button sizing, Computer Persona edit-unlock gating, and header splash overlay trigger.
+  - **Dead-Code & Dependency Cleanup**: Removed unused `PlacementPresetModal.tsx`, `useModalState.ts`, `usePlaybackModeState.ts`, and `@google/genai` devDependency; full Schema v1 compatibility maintained across all stores.
+
+### v0.20.8
 - **App Version**: `0.20.8`
 - **Schema Version**: `1` (`CURRENT_SCHEMA_VERSION = 1`, `MIN_SUPPORTED_APP_VERSION = "0.14.0"`)
 - **Changes vs. v0.20.7**:

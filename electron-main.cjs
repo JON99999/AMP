@@ -5,7 +5,7 @@ const os = require('os');
 const net = require('net');
 const http = require('http');
 
-const APP_VERSION = '0.20.8';
+const APP_VERSION = '0.20.9';
 const AMP_GITHUB_REPO_URL = 'https://github.com/JON99999/AMP';
 
 // ==========================================================================================
@@ -851,7 +851,7 @@ For full component listings and complete license texts, see OPEN_SOURCE_LICENSES
               type: 'info',
               title: 'About AMP',
               message: 'AMP - Announcement Media Player',
-              detail: 'Version 0.20.8\nAMP = Announcement Media Player\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.'
+              detail: 'Version 0.20.9\nAMP = Announcement Media Player\nCross-platform Desktop MP3 Scheduler optimized for MacOS and Windows.'
             });
           }
         }

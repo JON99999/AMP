@@ -129,14 +129,14 @@ In **`v0.15.4` Admin -> Calendar -> Announcements**, add:
    - **Upfront Calendar Picker Guards (`#43/#113`)**:
      - Open Gate #1's **`End`** calendar (2-month popover showing gate bars & boundaries, `#108`): confirm days *before* today's logged play render muted red with strikethrough and `cursor-not-allowed`.
      - Click an impossible past day: confirm the popover displays the exact played-timestamp reason upfront and keeps **`OK`** disabled. Close popover.
-   - **Priority 1a Smart Focus (Open-Ended Prior Gate)**:
-     - Click **`+ ADD GATE`** while Gate #1 has no `End` date: confirm the editor inserts Gate #2, scrolls to Gate #1, and automatically opens Gate #1's **`End`** calendar!
-     - Set Gate #1's `End` date to **tomorrow at 11:59 PM** -> click **`OK`** (verify Announcement `End` stays decoupled/blank, `#94`).
+   - **Priority 1a Smart Focus (Open-Ended Prior Gate — `#122`)**:
+     - Click **`+ ADD GATE`** while Gate #1 has no `End` date: confirm the editor inserts Gate #2, scrolls to the inline **`Transition`** bar between Gate #1 and Gate #2, and automatically opens the **`Transition`** calendar!
+     - Pick **day after tomorrow** (or set Gate #1's `End` date to **tomorrow at 11:59 PM**) -> click **`OK`** (verify Announcement `End` stays decoupled/blank, `#94`).
    - **Stubbed Missing File Soft Warning (`LIN-4`)**:
-     - Leave Gate #2's `"No file selected (Required)"` empty (with valid Start = day after tomorrow, End = 7 days out) and click **`Save`**: confirm an amber **soft warning** modal appears with **`"Save Anyway"`** enabled! Click `Cancel` (stay in editor).
-   - **Grace Notice for Temporary Overlap + `650ms` Typing Debounce (`#43/#113`)**:
+     - Leave Gate #2's `"No file selected (Required)"` empty (with valid Start = day after tomorrow, End = 7 days out) and click **`Save`**: confirm an amber **soft warning** modal appears with **`"Save Anyway"`** enabled! Click `Return to Editor to Fix` (stay in editor).
+   - **Grace Notice for Temporary Overlap + `650ms` Typing Debounce (`#43/#113`, `#123`)**:
      - On unplayed Gate #2, open its **`Start`** calendar and pick **today** (overlapping Gate #1): confirm a red warning strip appears inside the popover warning save will be blocked until resolved, while **`OK`** stays clickable. Click **`OK`**, confirm inline **Overlap** interstitial bar appears (`#108`).
-     - Click **`Save`** while overlapping: confirm **hard block** (no `"Save Anyway"`).
+     - Click **`Save`** while overlapping: confirm **hard block** (no `"Save Anyway"`), and click **`Return to Editor to Fix`** -> confirm the editor scrolls to and opens the calendar for the bottom problem gate (`Gate #2`, `#123`).
      - Click the time input on Gate #2 and type `"1"` then pause briefly, then `"1:30 PM"`: confirm typed text is **never auto-reverted** and partial typing does not flash errors mid-keystroke (`650ms` debounce).
      - Use the inline interstitial button to push Gate #2 cleanly after Gate #1 (creating a 1-day gap on purpose) -> verify the inline **Gap** bar appears (`Extend Gate #1`, `Set Gate #2 to Prior`, `Add New Gate`).
    - **Multi-Select & Rotation (`#97`, `#112`)**:
@@ -176,12 +176,12 @@ In **`v0.15.4` Admin -> Calendar -> Announcements**, add:
 1. **Create & Edit Messages (`#78`, `#116`, Z-Index Fix)**:
    - Open **`Calendar -> Msgs`**: confirm **Built-In System Notices** (`Required AMP Upgrade Notice`, `AMP Update Available`) are pinned at the top with Admin contact info (`beta-admin@station.org`) and enable/disable toggles.
    - Click **`+ New Message`**:
-     - Confirm title reads **`Admin to Show Message Editor`** (uses `"Show"`, not `"DJ"`).
+     - Confirm title reads **`Admin-to-Show Message Editor`** (uses `"Show"`, not `"DJ"`).
      - Create Message 1: Title = `Beta Studio Note`, Scope = **`Selected Shows`** (`Beta Show One` AND `Beta Show Two`), Severity = `Alert (!)`, Clear Mode = `Only show once`, Body = `Test off-air note for beta testing.`.
      - Confirm the `"Reminder, this is NOT a private message..."` popup appears on targeting specific shows and on Save (`#116`).
-     - Create Message 2: Title = `Beta Launch Notice`, Scope = **`AMP Launch`** (`All Users`), Severity = `Info (i)`, Clear Mode = `Only show once`. Confirm the non-private reminder does **not** nag on an `All Users` / Everybody message.
+     - Create Message 2: Title = `Beta Launch Notice`, Scope = **`AMP Launch`** (button label **`AMP Launch`**, applies to All Users), Severity = `Info (i)`, Clear Mode = `Only show once`. Confirm the non-private reminder does **not** nag on an `All Users` / Everybody message.
      - Confirm `Msgs` list shows **`At Launch`** (`MonitorPlay`) vs **`On Show`** (`Speech`) left icons and aligned `Details` / `Read` / `Archive` columns.
-   - **Reader -> Edit Z-Index Fix**: From **`Calendar -> Shows`**, open the `"Message for Beta Show One"` reader popup, then click **`Edit`**: confirm `Admin to Show Message Editor` opens cleanly **above** the reader popup. Close both.
+   - **Reader -> Edit Z-Index Fix**: From **`Calendar -> Shows`**, open the `"Message for Beta Show One"` reader popup, then click **`Edit`**: confirm `Admin-to-Show Message Editor` opens cleanly **above** the reader popup. Close both.
 2. **Post-Splash Startup Notice + `Player -> Live` Off-Air Notes & Playback**:
    - Relaunch `AMP Admin`: confirm after the 6-second splash closes, **`Beta Launch Notice`** pops directly into the reader modal. Acknowledge it (confirm it clears on next launch).
    - In **`Player -> Live`** (during `Beta Show One`):

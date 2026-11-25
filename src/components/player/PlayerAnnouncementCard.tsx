@@ -932,7 +932,7 @@ export function PrerecordAnnouncementCard({
                     : 'text-slate-800'
             )}
           >
-            {formatRotatedAnnouncementName(s.name, activeMp3)}
+            {s.name}
           </div>
 
           {isScript ? (

@@ -192,7 +192,7 @@ export function useScheduleManager({
             const sysTz = setStationTimezone(detectSystemStationTimezone());
             setStationTimezoneState(sysTz);
             setShows(loadedShows);
-            if (!isReadOnlyRef.current) {
+            if (!isReadOnlyRef.current && loadedShows.length > 0) {
               fetch('/api/shows', {
                 method: 'POST',
                 headers,
@@ -212,6 +212,8 @@ export function useScheduleManager({
             setShows(loadedShows);
           }
         }
+      } else {
+        setShows([]);
       }
     } catch (e) {
       console.error('Failed to load shows:', e);

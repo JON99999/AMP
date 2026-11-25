@@ -182,6 +182,16 @@ export const BackupRecoverySection: React.FC<BackupRecoverySectionProps> = ({
       setSuccessMsg(
         `Restored ${TARGET_LABELS[selectedTarget]} from ${chosen.fileName} (${chosen.recordCount} entries).`
       );
+      setTargetHealth((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'ok',
+              cause: 'ok',
+              error: undefined,
+            }
+          : prev
+      );
       if (onBackupRestored) {
         await Promise.resolve(onBackupRestored());
       }
@@ -286,7 +296,7 @@ export const BackupRecoverySection: React.FC<BackupRecoverySectionProps> = ({
                     {targetHealth.cause === 'ok'
                       ? 'Current file is readable and valid.'
                       : targetHealth.cause === 'missing_file'
-                        ? 'Current file is missing.'
+                        ? targetHealth.error || 'Current file is missing.'
                         : targetHealth.cause === 'malformed_file'
                           ? `Current file is malformed (${targetHealth.error || 'invalid JSON'}).`
                           : 'Folder connection lost.'}
@@ -320,7 +330,7 @@ export const BackupRecoverySection: React.FC<BackupRecoverySectionProps> = ({
                   <div className="flex items-center gap-1.5 font-bold">
                     <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     <span>
-                      Skipped {skippedMalformed.length} malformed backup
+                      Skipped {skippedMalformed.length} malformed or empty backup
                       {skippedMalformed.length === 1 ? '' : 's'}:
                     </span>
                   </div>

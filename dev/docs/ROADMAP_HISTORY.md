@@ -614,3 +614,83 @@
     - *"Do 6 right now. Assess the whole thing. It it is possible to know which file was read/played, and which gate it was a part of, and to keep track of that historically, then those are the main things to make sure are kept straight as modifications occur. Make sure that the controls for editing and reusing gates are such that the user can't bypass the controls for handling gaps and changes. It isn't an audit concern so much for which file and track was played when as long as it is recorded, and as long as we can prove the slot itself as scheduled at the time was played."*
     - *"Sounds all perfect. Execute. And also, make a checklist/history of that whole set of changes so that I can have you reference it properly. Make sure to say it in a raw way that is resilient to subsequence passes diluting or changing it with compression and rewrites and partial saves."*
   - **Outcome**: Completed (`#113` implemented; `#43` formally closed as By Design) — Created `dev/docs/SCHEMA_LINEAGE.md` (with raw immutable invariant ledger `LIN-1` through `LIN-6`); added optional `gateId`, `rotationIndex`, and `rotationTotal` lineage fields on all new `LogEntry` writes with `gateId`-first gate attribution and legacy fallback (`LIN-1`, `LIN-2`); locked `Start` and bounded `End` on active gates with logged plays so plays cannot be orphaned or re-enable `Delete` (`LIN-3`); separated hard blocking gate errors (missing Start/file, `Start > End`, overlaps, played-date violations) from soft warnings (gaps/overreach) so `"Save Anyway"` cannot bypass hard gate conflicts (`LIN-4`); updated `Reuse` and `Split to New Gate` to clone only active non-inactivated media rows (`LIN-5`); and updated historical `resolveAnnouncementsForDate()` to preserve revision gate snapshots (`LIN-6`).
+
+- **#130 — Non-Admin Malformed File Error Screen: Prompt User to Quit After Unsuccessful Retry & Raw-Text Parse for Admin Contact Signature (`Finding 12` / `Step 42.b`)**
+  - **User Note**:
+    - *(Step 42.b — Test B — Malformed File on Non-Admin: Confirm error screen offers `Retry` ONLY)*:
+    - *"42 Test B was correct. However, put a development note in that after a retry is unsuccessful, ask the user to quit. Is it possible to do a raw parse of the file, if it is text, to look for the signature of the admin so that the admin text can be displayed to the user? Consider that for an improvement."*
+  - **Outcome**: Completed — Added raw-text regex extraction (`extractRawAdminContactFromDisk` in `scheduleRoutes.ts`) that scans `station_settings.json`, `shows.json`, `announcements.json`, and recent backups for `"adminContactInfo"` even when `JSON.parse` fails; displayed the extracted Administrator Contact info on non-Admin malformed/missing file screens; and tracked retry failures (`malformedRetryCount`) so an unsuccessful retry updates the prompt to advise quitting AMP and reveals a `"Quit AMP"` button.
+
+- **#131 — Admin Initial Malformed-File Recovery Prompt Only Shows `"Retry"` Until Navigating to `Folders` (`Finding 13` / `Step 43.b`)**
+  - **User Note**:
+    - *(Step 43.b — Test C — Admin Buried Backup Recovery: Confirm prompt offers `Retry`, `Fix Folder`, or `Try a Backup`)*:
+    - *"43.b. The options eventually pop up if you go to the folders section. But on first load, and on clicking anything else in the app, you only see \"retry\"."*
+  - **Outcome**: Completed — Updated `canUseAdminBackup` in `src/App.tsx` to include `isAdminApp` (`isAdminApp || isAdmin || isAiStudio`) so `AMP Admin` immediately presents `Retry`, `Fix Folder`, and `Try a Backup` on initial launch and across all tabs.
+
+- **#133 — Missing `shows.json` Detection, Stale Cache Clearing, & Skipping `0`-Entry Backups During Backup Validation (`Finding 15` / `Step 44.b`–`44.e`)**
+  - **User Note**:
+    - *(Step 44.b–44.e — Delete `shows.json` leaving `settings\backups\shows_*`, refresh AMP Admin, confirm missing file triggers `Fix Folder` / `Try a Backup` flow, and restore backup)*:
+    - *"For Windows Portable, the \"shows\" has no shows, but nothing is triggered, and the Calendar and the player both still show everything that had been shown before. (Just nothing new is showing as time goes on the Player. So, it's like the cache is still present for it for the last time, and the Calendar seems to have everything, but prerecord has no shows to pull and playlist doesn't either.) So, 44.b is a fail. If I go directly to ADMIN BACKUP RECOVERY in the Folders>Help module, it seems to think shows is \"Current file is readable and valid.\" If I use a backup per 44.e, it does repair everything. One note, that should go with the note before about malformed files, when files are written with nothing in place, then you get 0 entry backups that look good, but are obviously unusable. The parser that flags malformed files should probably also flag for backups with nothing in them, and seek the first backup with actual records in the data that isn't malformed."*
+  - **Outcome**: Completed — Prevented `fetchDataForMode` from falling through to `loadShows()` and `runArchiving()` after a failed local health check and cleared stale in-memory `announcements`, `shows`, and `logs` state on malformed/missing file errors; guarded `GET /api/shows`, `GET /api/announcements`, `GET /api/logs`, `POST /api/trigger-backup`, and `loadShows()` against auto-creating or backing up empty `0`-record files when backups exist; updated `inspectTargetHealth` to flag missing or `0`-record primary files when valid non-empty backups exist; and updated backup candidate validation to reject `0`-record backups (`requireNonEmpty: true`) so `BackupRecoverySection` automatically skips empty backups and selects the newest valid backup with actual records.
+
+- **#126 — Hide `(x/y)` Gate Rotation Badges on DJ Cards in `Player -> Prerecord` (`Finding 8` / `Step 33.c` — `#112` Follow-Up)**
+  - **User Note**:
+    - *(Step 33.c — Switch to `Player -> Prerecord` for `Beta Show Two`: confirm `(x/y)` rotation badges remain hidden on DJ cards)*:
+    - *"33.c this fails. (1/2) and (2/2) are still showing."*
+  - **Outcome**: Completed — Removed `formatRotatedAnnouncementName` from the visible DJ card title in `PlayerPrerecordAnnouncementCard` (`src/components/player/PlayerAnnouncementCard.tsx`) so `(x/y)` gate rotation numbers stay hidden on DJ cards in `Player -> Prerecord` while remaining in the hover tooltip.
+
+- **#128 — Offline / Missing Already-Configured Station Folder Triggers First-Run Setup Instead of `Connection Lost` Troubleshooting (`Finding 10` / `Step 38.d`)**
+  - **User Note**:
+    - *(Step 38.d — Test A — Lost Connection / Offline Folder: Confirm AMP diagnoses `Connection Lost` and displays `Retry Sync`, `Reset Cache & Reload`, and `Configure Storage Folders`, and never suggests restoring a backup)*:
+    - *"38.d. It didn't do a \"connection lost\", but I'm not sure it was supposed to because how would it know it lost a connection. Maybe it should have because the folder locataion is set and just not found. Instead, it just tells me I need to do a first run set up and has the actual proper folder still in the default. \"Missing Folders / Files Detected  Did not find AMP folder, settings folder, logs folder, media_announcements folder, media_evergreens folder, and media_shows folder in folders H:\\My Drive\\development.noindex\\AMP_0.20.8TEST_Copy. Please pick or browse for a valid existing folder location.  Pick / Edit Folders\" is what shows up when I hit Save and Close without pointing to a new file or doing the \"First-run setup\". So, I think this is a fail since the folder is alredy configured, just not there, obviously.  Not sure how to test a backup in this scenario, so I can't confire 38.e really."*
+  - **Outcome**: Completed — Updated `initSettings` and `fetchDataForMode` in `src/App.tsx` so an already-configured local station folder that is offline on disk lands on the **Connection Lost / Connection Refresh Troubleshooting** view (displaying `Retry Sync`, `Reset Cache & Reload`, and `Configure Storage Folders` without opening the First-Run Setup modal or suggesting a backup restore), re-verifies folder reachability on `Retry Sync`, and suppresses the `"First-Run Setup: Admin Contact Info"` banner in `LocationsModal.tsx` when an already-configured path is temporarily unreachable.
+
+- **#121 — `CopyEditorModal` Missing `Unsaved Changes` Warning Prompt on `Cancel` / `X` (`Finding 3` / `Step 17.k`)**
+  - **User Note**:
+    - *(Step 17.k — Edit one character in script text and click `Cancel` or `X`: confirm `Unsaved Changes` prompt appears)*:
+    - *"17.k. The Unsaved Changes prompt did not appear. It just cancelled without warning."*
+  - **Outcome**: Completed — Added session baseline snapshot tracking (`loadedInitialRoundtripTextRef` and `initialSessionSnapshotRef`) and a centered `Unsaved Changes` confirmation dialog (`Keep Editing` / `Discard & Cancel`) triggered on `Cancel` or `X` in `src/components/CopyEditorModal.tsx` whenever script text, filename, read time, or backup audio settings have unsaved edits.
+
+- **#122 — Smart Focus Target on `+ ADD GATE` With Open-Ended Prior Gate: Open Gap `"Transition"` Calendar Instead of Gate #1 Calendar (`Finding 4` / `Step 20.a`)**
+  - **User Note**:
+    - *(Step 20.a — Click `+ ADD GATE` while Gate #1 has no End date: confirm editor inserts Gate #2, scrolls up, and auto-opens Gate #1's End calendar)*:
+    - *"20.a worked right. however, in this case, I had intended in the design concept to open the gap \"Transition\" calendar rather than the Gate #1 calendar."*
+  - **Outcome**: Completed — Added `inputDataKey` (`gate-transition-<gateId>`) and `data-transition-handler-for` to the inline `"Transition"` interstitial calendar in `src/components/calendar/AnnouncementEditorView.tsx`, and updated Smart Focus Priority 1 to scroll to and open the `"Transition"` calendar when adding a gate after an open-ended prior gate.
+
+- **#123 — Gate Overlap Hard Block: Auto-Scroll to and Open the Calendar for the Bottom Problem Gate When Returning to Fix (`Finding 5` / `Step 20.e`)**
+  - **User Note**:
+    - *(Step 20.e — Click Save while overlapping: confirm hard block prevents saving)*:
+    - *"20.e when returning to fix, the calendar for the bottom gate with a problem should be opened and scrolled to."*
+  - **Outcome**: Completed — Wired `focusBottomProblemGateNonce` from the `Return to Editor to Fix` action in `src/components/CalendarTab.tsx` into `src/components/calendar/AnnouncementEditorView.tsx` so dismissing a blocking gate error automatically locates the bottom-most active gate with a problem, scrolls to it, highlights it, and opens its offending calendar input.
+
+- **#124 — `Issues` (`ScheduleAuditModal`) Intermediate Gap Phrasing: Show Bounded Gap Dates Instead of `"after the last scheduled announcement"` (`Finding 6` / `Step 22.b`)**
+  - **User Note**:
+    - *(Step 22.b — Open `Issues` (Schedule Audit): confirm intentional gap surfaces in summary row with `Show dates` / `Hide dates` toggle)*:
+    - *"22.b has the issue properly highlighted. HOWEVER, the message is  \"\"Beta Hourly Audio\" has no announcements scheduled after the last scheduled announcement.\"  This is not really the case because it is a gap, not an open ended. So, the message in this case should be more like \"\"Beta Hourly Audio\" has no announcements scheduled between November 24th at 11:59PM and Novemeber 26th at 12:00AM.\" Or possibly \"scheduled on November 5th\"."*
+  - **Outcome**: Completed — Fixed gap boundary detection in `src/lib/scheduleDiagnostics.ts` so open-ended subsequent gates are no longer ignored, distinguishing bounded intermediate gaps (`"has no announcements scheduled between <Month Day> at <12h> and <Month Day> at <12h>."`), leading gaps (`"before <...>"`), and true post-expiration trailing gaps (`"after <...>"`).
+
+- **#125 — Hyphenate `"Admin-to-Show Message Editor"` Modal Title & Align Test Plan Labels (`Finding 7` / `Step 28.c`, `28.l`, `28.m`, `21.d`)**
+  - **User Note**:
+    - *(Step 28.c — Click `+ New Message`: confirm modal title is `Admin to Show Message Editor`; Step 28.l/m — Scope: `AMP Launch (All Users)`)*:
+    - *"For 28.c, this is correct, but it should probably be \"Admin-to-Show Message Editor\"  For 28.m and 28.l, the button is just \"AMP Launch\" for the text. This is ok behavior. Just a note that the test was wrong. It's wrong a few places like that in the plan. I assume because it was written before I refined, and never got fixed for some minor details?"*
+  - **Outcome**: Completed — Hyphenated the modal header to `"Admin-to-Show Message Editor"` in `src/components/AdminMessageEditorModal.tsx` and aligned the modal title and `AMP Launch` scope button wording in `dev/docs/TESTING_PLAN_v0.20.8.md`.
+
+- **#129 — Fix Bottom Button Sizing on `Edit Show Settings` (`ShowEditorForm`) (`Finding 11`)**
+  - **User Note**:
+    - *"Note for development... \"Edit Show Settings\", the buttons on the bottom are sized horribly and need fixed. This should go on the regular roadmap."*
+  - **Outcome**: Completed — Standardized bottom footer button heights (`h-8`), compact padding, `whitespace-nowrap`, `shrink-0`, and `flex-wrap` layout in `src/components/calendar/ShowsManagerView.tsx` so all `Edit Show Settings` action buttons stay crisp, single-line, and uniformly sized.
+
+- **#119 — Wrap Computer Logging Persona Section in an `"Edit"` Challenge Button (`Finding 1` / `Step 12.b`)**
+  - **User Note**:
+    - *(Step 12.b — Navigate in AMP Admin to `Folders` -> `Help` -> `System Maintenance & Reset`: confirm `Win Beta Tester` persona is visible and editable)*:
+    - *"12.b. The persona is visible and editable. However, start a list of roadmap/findings. As a finding for this, bput that the section needs to be wrapped in an \"Edit\" challenge button like the other sections below it. This is a low priority issue."*
+    - *(11/24/2026 User Note)*: *"119 and 127 are trivial and should be moved to active, but need to be stacked to the last of the to-do list in case I run out of daily credits."*
+  - **Outcome**: Completed — Added `requireEditUnlock` mode to `src/components/MachinePersonaSection.tsx` and enabled it in `src/components/LocalHelpModal.tsx` so Computer Logging Persona starts in a locked read-only summary with an `"Edit Computer Persona..."` challenge button (matching the maintenance sections below it) and `Cancel` / `Save` controls while keeping `FirstLaunchPersonaModal` directly editable.
+
+- **#127 — Click Top-Left Header AMP Icon or `"AMP"` Word to Show Opening Splash Screen (`Finding 9`)**
+  - **User Note**:
+    - *"Add a new feature roadmap, low priority, for the splash screen to show up when people click the AMP icon or AMP word on the top left."*
+    - *(11/24/2026 User Note)*: *"119 and 127 are trivial and should be moved to active, but need to be stacked to the last of the to-do list in case I run out of daily credits."*
+  - **Outcome**: Completed — Converted the top-left header AMP icon and `"AMP"` label in `src/App.tsx` into a clickable button that displays a dismissible (`click` or `Esc`) overlay of the opening splash screen (edition icon, edition name, version, `"AMP = Announcement Media Player"`, and Computer Persona summary) without interrupting audio playback or active views.
+
+

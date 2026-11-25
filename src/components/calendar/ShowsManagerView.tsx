@@ -440,16 +440,16 @@ export function ShowEditorForm({
           </div>
         </div>
 
-        <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center shrink-0">
-          <div className="flex gap-2">
+        <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap justify-between items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             {!isNewShow && (
               <button
                 type="button"
                 disabled={isSavingShow}
                 onClick={() => handleDeleteShow(showFormData.id!)}
-                className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                className="h-8 px-3 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5 shrink-0" />
                 <span>Delete Show</span>
               </button>
             )}
@@ -461,10 +461,10 @@ export function ShowEditorForm({
                   const existing = shows.find((s) => s.id === showFormData.id);
                   onViewMessagesForShow(existing || (showFormData as Show));
                 }}
-                className="px-3.5 py-2 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                className="h-8 px-3 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
                 title="View current and historical messages for this show"
               >
-                <Speech className="w-3.5 h-3.5" />
+                <Speech className="w-3.5 h-3.5 shrink-0" />
                 <span>
                   Messages ({activeMessagesCountByShowId[showFormData.id] || 0})
                 </span>
@@ -482,11 +482,11 @@ export function ShowEditorForm({
                     onSendMessageToShow(showFormData as Show);
                   }
                 }}
-                className="px-3.5 py-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                className="h-8 px-3 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
                 title="Create an off-air message for this show"
               >
-                <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                <Speech className="w-3.5 h-3.5" />
+                <Plus className="w-3.5 h-3.5 stroke-[3] shrink-0" />
+                <Speech className="w-3.5 h-3.5 shrink-0" />
                 <span>Add Msg</span>
               </button>
             )}
@@ -494,13 +494,13 @@ export function ShowEditorForm({
               type="button"
               disabled={isSavingShow}
               onClick={handleResetForm}
-              className="px-4 py-2 bg-slate-105 hover:bg-slate-200 text-slate-600 border border-slate-300 rounded text-xs font-black uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+              className="h-8 px-3 bg-slate-105 hover:bg-slate-200 text-slate-600 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
             >
               Reset
             </button>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2 ml-auto">
             <button
               type="button"
               disabled={isSavingShow}
@@ -508,7 +508,7 @@ export function ShowEditorForm({
                 onClearShowValidationErrors?.();
                 setEditingShowId(null);
               }}
-              className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+              className="h-8 px-3.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded text-xs font-black uppercase tracking-wider flex items-center whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancel
             </button>
@@ -516,14 +516,14 @@ export function ShowEditorForm({
               type="submit"
               disabled={isSavingShow}
               className={cn(
-                'px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer',
+                'h-8 px-4 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700 rounded text-xs font-black uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer',
                 isSavingShow && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isSavingShow ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
               ) : (
-                <Save className="w-3.5 h-3.5" />
+                <Save className="w-3.5 h-3.5 shrink-0" />
               )}
               <span>{isSavingShow ? 'Saving...' : 'Save Changes'}</span>
             </button>

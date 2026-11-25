@@ -86,6 +86,7 @@ export interface AnnouncementEditorViewProps {
     mp3Url?: string;
   } | null;
   onClearInitialFocusTarget?: () => void;
+  focusBottomProblemGateNonce?: number;
   logs: LogEntry[];
   pickerDurations: Record<string, string>;
   metadataCache: Record<string, { title?: string; artist?: string; album?: string }>;
@@ -146,6 +147,7 @@ export function AnnouncementEditorView({
   savedGates,
   initialFocusTarget,
   onClearInitialFocusTarget,
+  focusBottomProblemGateNonce = 0,
   logs,
   pickerDurations,
   metadataCache,
@@ -740,12 +742,21 @@ export function AnnouncementEditorView({
 
     let action:
       | { type: 'gap-handler'; gateId: string }
-      | { type: 'calendar'; key: string; cardGateId: string }
+      | { type: 'calendar'; key: string; cardGateId: string; scrollSelector?: string }
       | { type: 'card-only'; gateId: string };
 
-    // Priority 1: Open-ended prior gate or gap handler immediately before target gate
+    // Priority 1: Open-ended prior gate -> open gap "Transition" calendar when target Start is blank (#122), or gap handler
     if (prevGate && (!prevGate.endDate || !prevGate.endDate.trim())) {
-      action = { type: 'calendar', key: `gate-${prevGate.id}-end`, cardGateId: prevGate.id };
+      if (!targetGate.startDate || !targetGate.startDate.trim()) {
+        action = {
+          type: 'calendar',
+          key: `gate-transition-${targetGate.id}`,
+          cardGateId: targetGate.id,
+          scrollSelector: `[data-transition-handler-for="${targetGate.id}"]`,
+        };
+      } else {
+        action = { type: 'calendar', key: `gate-${prevGate.id}-end`, cardGateId: prevGate.id };
+      }
     } else if (liveValidation.gapStartIds.has(targetGate.id) || hasRenderedGapHandlerBefore) {
       action = { type: 'gap-handler', gateId: targetGate.id };
     }
@@ -803,10 +814,13 @@ export function AnnouncementEditorView({
         const inputEl = document.querySelector(
           `input[data-date-input-key="${action.key}"]`
         ) as HTMLInputElement | null;
+        const customScrollEl = action.scrollSelector
+          ? (document.querySelector(action.scrollSelector) as HTMLElement | null)
+          : null;
         const cardEl = document.querySelector(
           `[data-gate-card-id="${action.cardGateId}"]`
         ) as HTMLElement | null;
-        const scrollEl = cardEl || inputEl;
+        const scrollEl = customScrollEl || cardEl || inputEl;
         if (scrollEl && typeof scrollEl.scrollIntoView === 'function') {
           scrollEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -832,6 +846,149 @@ export function AnnouncementEditorView({
     dateFocusTimersRef.current.push(scrollTimer);
   }, [
     pendingDateFocusGateId,
+    formData,
+    savedGates,
+    logs,
+    playedGateBounds,
+    sessionActiveGateIds,
+    clearDateFocusTimers,
+  ]);
+
+  // #123: When returning to editor to fix a blocking gate error (e.g., overlap),
+  // auto-scroll to and open the calendar for the bottom gate with a problem.
+  const lastHandledProblemNonceRef = React.useRef<number>(focusBottomProblemGateNonce);
+  React.useEffect(() => {
+    if (!focusBottomProblemGateNonce || focusBottomProblemGateNonce === lastHandledProblemNonceRef.current) {
+      return;
+    }
+    lastHandledProblemNonceRef.current = focusBottomProblemGateNonce;
+    if (typeof document === 'undefined') return;
+
+    const currentList = formData.timeGatedMp3s || [];
+    if (currentList.length === 0) return;
+
+    const nowIso = getCurrentDatetimeLocal();
+    const preExistingExpiredIds = new Set<string>(
+      (savedGates || [])
+        .filter(g => !g.inactivated && isGateExpiredOrInactivated(g, nowIso))
+        .map(g => g.id)
+    );
+    const liveValidation = validateTimeGatedMp3s(
+      currentList,
+      nowIso,
+      formData.endDate,
+      formData.startDate,
+      playedGateBounds,
+      preExistingExpiredIds
+    );
+
+    const activeGates = currentList.filter(item => {
+      const rawExpired = isGateExpiredOrInactivated(item, nowIso);
+      const isKeptInActive = !item.inactivated && sessionActiveGateIds.has(item.id);
+      return !(rawExpired && !isKeptInActive);
+    });
+
+    const hasBlockingGateProblem = (g: TimeGatedMp3) =>
+      liveValidation.overlapStartIds.has(g.id) ||
+      liveValidation.overlapEndIds.has(g.id) ||
+      liveValidation.missingStartIds.has(g.id) ||
+      (liveValidation.errors[g.id] || []).length > 0;
+
+    const hasAnyDateProblem = (g: TimeGatedMp3) =>
+      hasBlockingGateProblem(g) ||
+      liveValidation.gapStartIds.has(g.id) ||
+      liveValidation.gapEndIds.has(g.id) ||
+      liveValidation.overreachStartIds.has(g.id) ||
+      liveValidation.overreachEndIds.has(g.id);
+
+    let problemGate: TimeGatedMp3 | undefined;
+    for (let i = activeGates.length - 1; i >= 0; i--) {
+      if (hasBlockingGateProblem(activeGates[i])) {
+        problemGate = activeGates[i];
+        break;
+      }
+    }
+    if (!problemGate) {
+      for (let i = activeGates.length - 1; i >= 0; i--) {
+        if (hasAnyDateProblem(activeGates[i])) {
+          problemGate = activeGates[i];
+          break;
+        }
+      }
+    }
+    if (!problemGate) return;
+
+    const targetGate = problemGate;
+    const targetBounds = playedGateBounds[targetGate.id];
+    const targetAssessment = calculateGateSlotAssessment(formData, targetGate, logs);
+    const targetPlayCount = Math.max(
+      targetAssessment.gateScore.played,
+      targetBounds?.playCount || 0
+    );
+    const isStartLocked = targetPlayCount > 0;
+
+    let targetKey: string | null = null;
+    let customScrollSelector: string | undefined;
+
+    if (
+      !targetGate.startDate?.trim() &&
+      document.querySelector(`[data-transition-handler-for="${targetGate.id}"]`)
+    ) {
+      targetKey = `gate-transition-${targetGate.id}`;
+      customScrollSelector = `[data-transition-handler-for="${targetGate.id}"]`;
+    } else if (
+      !isStartLocked &&
+      (liveValidation.missingStartIds.has(targetGate.id) ||
+        liveValidation.overlapStartIds.has(targetGate.id) ||
+        liveValidation.gapStartIds.has(targetGate.id) ||
+        liveValidation.overreachStartIds.has(targetGate.id))
+    ) {
+      targetKey = `gate-${targetGate.id}-start`;
+    } else if (
+      liveValidation.overlapEndIds.has(targetGate.id) ||
+      (liveValidation.errors[targetGate.id] || []).length > 0 ||
+      liveValidation.gapEndIds.has(targetGate.id) ||
+      liveValidation.overreachEndIds.has(targetGate.id)
+    ) {
+      targetKey = `gate-${targetGate.id}-end`;
+    } else {
+      targetKey = isStartLocked ? `gate-${targetGate.id}-end` : `gate-${targetGate.id}-start`;
+    }
+
+    clearDateFocusTimers();
+    setHighlightedGateId(targetGate.id);
+    const clearHighlightTimer = window.setTimeout(() => {
+      setHighlightedGateId(prev => (prev === targetGate.id ? null : prev));
+    }, 2400);
+    dateFocusTimersRef.current.push(clearHighlightTimer);
+
+    const scrollTimer = window.setTimeout(() => {
+      const inputEl = targetKey
+        ? (document.querySelector(`input[data-date-input-key="${targetKey}"]`) as HTMLInputElement | null)
+        : null;
+      const customScrollEl = customScrollSelector
+        ? (document.querySelector(customScrollSelector) as HTMLElement | null)
+        : null;
+      const cardEl = document.querySelector(
+        `[data-gate-card-id="${targetGate.id}"]`
+      ) as HTMLElement | null;
+      const scrollEl = customScrollEl || cardEl || inputEl;
+      if (scrollEl && typeof scrollEl.scrollIntoView === 'function') {
+        scrollEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      if (targetKey && inputEl && !inputEl.disabled) {
+        const openCalTimer = window.setTimeout(() => {
+          inputEl.focus({ preventScroll: true });
+          window.dispatchEvent(
+            new CustomEvent('amp-open-calendar-input', { detail: { key: targetKey } })
+          );
+        }, 200);
+        dateFocusTimersRef.current.push(openCalTimer);
+      }
+    }, 60);
+    dateFocusTimersRef.current.push(scrollTimer);
+  }, [
+    focusBottomProblemGateNonce,
     formData,
     savedGates,
     logs,
@@ -3433,6 +3590,7 @@ export function AnnouncementEditorView({
                       return (
                         <div
                           key={`mid-open-${currGate.id}-${nextGate.id}`}
+                          data-transition-handler-for={nextGate.id}
                           className="px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50/95 flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-amber-900 shadow-2xs"
                         >
                           <div className="flex items-center gap-2 flex-wrap min-w-0 max-w-full">
@@ -3445,6 +3603,7 @@ export function AnnouncementEditorView({
                             </span>
                             <div className="flex items-center gap-px bg-white px-1 py-0.5 rounded border border-amber-300">
                               <CalendarDateInput
+                                inputDataKey={`gate-transition-${nextGate.id}`}
                                 role="start"
                                 pairedDate={getDatePart(nextGate.endDate)}
                                 currentTime={getTimePart(suggestedTransitionIso) || '00:00'}
